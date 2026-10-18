@@ -151,6 +151,8 @@ jobs:
           name: next-build
           path: .next/
           retention-days: 3
+          # .next is a dot-directory: excluded by default hidden-file rules
+          include-hidden-files: true
 
   e2e-dry-run:
     name: E2E dry run
