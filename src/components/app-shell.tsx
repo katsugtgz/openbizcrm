@@ -45,9 +45,10 @@ export interface ShellUser {
 
 const NAV_ITEMS = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
-  { label: "Karyawan", href: "#", icon: Users },
-  { label: "Presensi", href: "#", icon: Fingerprint },
-  { label: "Cuti", href: "#", icon: CalendarDays },
+  { label: "Karyawan", href: "/karyawan", icon: Users },
+  { label: "Presensi", href: "/presensi", icon: Fingerprint },
+  { label: "Cuti", href: "/cuti", icon: CalendarDays },
+  { label: "Penggajian", href: "/penggajian", icon: BanknoteIcon },
   { label: "CRM", href: "#", icon: Building2 },
   { label: "Proyek", href: "#", icon: ClipboardList },
   { label: "Akuntansi", href: "#", icon: BanknoteIcon },
@@ -153,7 +154,10 @@ function OrgSwitcher({ user }: { user: ShellUser }) {
       className="flex min-w-0 items-center gap-2 rounded-md border px-3 py-1.5"
       title={user.organizationId ?? "Tanpa organisasi"}
     >
-      <Building2 className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      <Building2
+        className="size-4 shrink-0 text-muted-foreground"
+        aria-hidden="true"
+      />
       <span className="truncate text-sm font-medium">
         {user.organizationId
           ? `Org ${user.organizationId.slice(0, 8)}…`

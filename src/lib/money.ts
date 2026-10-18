@@ -36,3 +36,20 @@ export function parseIDRInput(input: string): number {
   }
   return amount;
 }
+
+/**
+ * Guard angka rupiah dari sumber non-UI (import Excel, API, seed): wajib
+ * integer aman, non-negatif. Melempar MoneyError kalau tidak.
+ */
+export function assertSafeAmount(amount: number, label = "Jumlah"): number {
+  if (!Number.isInteger(amount)) {
+    throw new MoneyError(`${label} harus angka bulat (integer).`);
+  }
+  if (amount < 0) {
+    throw new MoneyError(`${label} tidak boleh negatif.`);
+  }
+  if (amount > Number.MAX_SAFE_INTEGER) {
+    throw new MoneyError(`${label} terlalu besar (> Number.MAX_SAFE_INTEGER).`);
+  }
+  return amount;
+}

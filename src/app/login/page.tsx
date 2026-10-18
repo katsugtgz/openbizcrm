@@ -24,9 +24,24 @@ function isWorkosConfigured(): boolean {
 
 /** Dev fixture list — same identities as src/db/seed.ts. */
 const SEED_USERS = [
-  { id: "seed-owner-1", email: "owner@contoh.co.id", name: "Budi Owner", role: "Owner" },
-  { id: "seed-admin-1", email: "admin@contoh.co.id", name: "Sari Admin", role: "Admin" },
-  { id: "seed-member-1", email: "member@contoh.co.id", name: "Andi Member", role: "Member" },
+  {
+    id: "seed-owner-1",
+    email: "owner@contoh.co.id",
+    name: "Budi Owner",
+    role: "Owner",
+  },
+  {
+    id: "seed-admin-1",
+    email: "admin@contoh.co.id",
+    name: "Sari Admin",
+    role: "Admin",
+  },
+  {
+    id: "seed-member-1",
+    email: "member@contoh.co.id",
+    name: "Andi Member",
+    role: "Member",
+  },
 ] as const;
 
 /** Runtime-only: WorkOS authorization URL is uncached, per-request data. */
@@ -47,7 +62,13 @@ async function SignInBody() {
   return (
     <div className="flex flex-col gap-4">
       {!fakeMode && isWorkosConfigured() ? (
-        <Suspense fallback={<Button size="lg" className="w-full" disabled>Memuat…</Button>}>
+        <Suspense
+          fallback={
+            <Button size="lg" className="w-full" disabled>
+              Memuat…
+            </Button>
+          }
+        >
           <WorkosSignIn />
         </Suspense>
       ) : !fakeMode ? (
@@ -106,7 +127,13 @@ export default function LoginPage() {
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
-            <Suspense fallback={<Button size="lg" className="w-full" disabled>Memuat…</Button>}>
+            <Suspense
+              fallback={
+                <Button size="lg" className="w-full" disabled>
+                  Memuat…
+                </Button>
+              }
+            >
               <SignInBody />
             </Suspense>
           </CardContent>

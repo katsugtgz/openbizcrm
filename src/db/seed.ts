@@ -13,9 +13,24 @@ const ORG_NAME = "PT Contoh Sejahtera";
 const ORG_SLUG = "contoh-sejahtera";
 
 const SEED_USERS = [
-  { workosUserId: "seed-owner-1", email: "owner@contoh.co.id", name: "Budi Owner", role: "owner" as const },
-  { workosUserId: "seed-admin-1", email: "admin@contoh.co.id", name: "Sari Admin", role: "admin" as const },
-  { workosUserId: "seed-member-1", email: "member@contoh.co.id", name: "Andi Member", role: "member" as const },
+  {
+    workosUserId: "seed-owner-1",
+    email: "owner@contoh.co.id",
+    name: "Budi Owner",
+    role: "owner" as const,
+  },
+  {
+    workosUserId: "seed-admin-1",
+    email: "admin@contoh.co.id",
+    name: "Sari Admin",
+    role: "admin" as const,
+  },
+  {
+    workosUserId: "seed-member-1",
+    email: "member@contoh.co.id",
+    name: "Andi Member",
+    role: "member" as const,
+  },
 ];
 
 const SEED_BRANCHES = [
@@ -72,9 +87,7 @@ async function seed() {
     const existing = await db
       .select()
       .from(orgMemberships)
-      .where(
-        eq(orgMemberships.orgId, org.id),
-      );
+      .where(eq(orgMemberships.orgId, org.id));
     if (!existing.some((m) => m.userId === user.id)) {
       await db
         .insert(orgMemberships)

@@ -33,6 +33,8 @@ export default defineConfig({
         "src/app/**",
         // Drizzle schema is declarative; db client needs a live DATABASE_URL.
         "src/db/**",
+        // Dokumentasi sumber payroll, bukan kode.
+        "src/lib/payroll/PAYROLL-SOURCES.md",
       ],
       // Skeleton baseline — raise as real feature coverage lands.
       thresholds: {

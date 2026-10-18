@@ -15,9 +15,7 @@ describe("formatIDR", () => {
   });
 
   it("Number.MAX_SAFE_INTEGER => Rp9.007.199.254.740.991", () => {
-    expect(formatIDR(Number.MAX_SAFE_INTEGER)).toBe(
-      "Rp9.007.199.254.740.991",
-    );
+    expect(formatIDR(Number.MAX_SAFE_INTEGER)).toBe("Rp9.007.199.254.740.991");
   });
 
   it("negatif => -Rp1.000", () => {
@@ -29,7 +27,9 @@ describe("formatIDR", () => {
   });
 
   it("> MAX_SAFE_INTEGER => throws", () => {
-    expect(() => formatIDR(Number.MAX_SAFE_INTEGER + 1)).toThrow(/terlalu besar/i);
+    expect(() => formatIDR(Number.MAX_SAFE_INTEGER + 1)).toThrow(
+      /terlalu besar/i,
+    );
   });
 });
 
@@ -46,7 +46,7 @@ describe("parseIDRInput", () => {
     expect(parseIDRInput("1500000")).toBe(1500000);
   });
 
-  it('MAX_SAFE digit string => Number.MAX_SAFE_INTEGER', () => {
+  it("MAX_SAFE digit string => Number.MAX_SAFE_INTEGER", () => {
     expect(parseIDRInput("9007199254740991")).toBe(Number.MAX_SAFE_INTEGER);
   });
 
@@ -70,7 +70,7 @@ describe("parseIDRInput", () => {
     expect(() => parseIDRInput("abc")).toThrow(/angka/i);
   });
 
-  it('string kosong => throws', () => {
+  it("string kosong => throws", () => {
     expect(() => parseIDRInput("")).toThrow(/angka/i);
   });
 

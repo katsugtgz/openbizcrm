@@ -43,10 +43,7 @@ export async function createUser(input: {
 export async function updateUser(
   id: string,
   input: Partial<
-    Pick<
-      User,
-      "workosUserId" | "email" | "name" | "avatarUrl" | "currentOrgId"
-    >
+    Pick<User, "workosUserId" | "email" | "name" | "avatarUrl" | "currentOrgId">
   >,
 ): Promise<User> {
   const [user] = await db

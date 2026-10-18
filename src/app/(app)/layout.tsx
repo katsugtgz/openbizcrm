@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { AppShell } from "@/components/app-shell";
+import { Toaster } from "@/components/ui/sonner";
 
 /**
  * Runtime session gate + chrome. Session read lives in the Suspense hole
@@ -29,6 +30,7 @@ async function AuthenticatedShell({
       }}
     >
       {children}
+      <Toaster position="top-right" richColors />
     </AppShell>
   );
 }

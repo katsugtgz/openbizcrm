@@ -1,36 +1,52 @@
 /**
  * Thin persistence for approval requests: state serialized to a jsonb column.
- * No logic here — all rules live in the pure engine.
+ * No logic here — all rules live in the pure engine. Table lives in
+ * src/db/schema.ts (single definition — drizzle-kit reads schema.ts).
  */
 import { eq } from "drizzle-orm";
-import { jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { db } from "@/db";
+import { approvalRequests } from "@/db/schema";
 import type { ApprovalRequest } from "./engine";
 
-export const approvalRequests = pgTable("approval_requests", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  requestId: text("request_id").notNull().unique(),
-  organizationId: uuid("organization_id").notNull(),
-  state: jsonb("state").$type<ApprovalRequest>().notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
-
-export function saveApprovalRequest(organizationId: string, req: ApprovalRequest) {
-  return db
+/** Upsert by requestId; resolves to the row id (FK target for leave_requests). */
+export async function saveApprovalRequest(
+  organizationId: string,
+  req: ApprovalRequest,
+): Promise<{ id: string }> {
+  await db
     .insert(approvalRequests)
     .values({ requestId: req.requestId, organizationId, state: req })
     .onConflictDoUpdate({
       target: approvalRequests.requestId,
       set: { state: req, updatedAt: new Date() },
     });
+  const [row] = await db
+    .select({ id: approvalRequests.id })
+    .from(approvalRequests)
+    .where(eq(approvalRequests.requestId, req.requestId))
+    .limit(1);
+  return row;
 }
 
-export async function getApprovalRequest(requestId: string): Promise<ApprovalRequest | null> {
+export async function getApprovalRequest(
+  requestId: string,
+): Promise<ApprovalRequest | null> {
   const rows = await db
     .select({ state: approvalRequests.state })
     .from(approvalRequests)
     .where(eq(approvalRequests.requestId, requestId))
+    .limit(1);
+  return rows[0]?.state ?? null;
+}
+
+/** Lookup per approval_requests.id (uuid PK), dipakai FK dari leave_requests.approvalId. */
+export async function getApprovalRequestByRowId(
+  rowId: string,
+): Promise<ApprovalRequest | null> {
+  const rows = await db
+    .select({ state: approvalRequests.state })
+    .from(approvalRequests)
+    .where(eq(approvalRequests.id, rowId))
     .limit(1);
   return rows[0]?.state ?? null;
 }

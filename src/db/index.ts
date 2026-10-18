@@ -35,11 +35,9 @@ function shouldUseNeon(url: string): boolean {
   }
 }
 
-const databaseUrl = resolveDatabaseUrl();
-const useNeon = shouldUseNeon(databaseUrl);
-
 function createDb() {
-  if (useNeon) {
+  const databaseUrl = resolveDatabaseUrl();
+  if (shouldUseNeon(databaseUrl)) {
     // On Node (non-edge), the Neon driver needs a WebSocket constructor.
     // Node 22 ships a stable global WebSocket, so no `ws` dependency needed.
     if (!neonConfig.webSocketConstructor && !globalThis.WebSocket) {
@@ -55,10 +53,39 @@ function createDb() {
     return drizzleNeon(pool, { schema });
   }
 
-  const client = postgres(databaseUrl);
+  const client = postgres(databaseUrl, { max: 5 });
   return drizzlePostgres(client, { schema });
 }
 
-export const db = createDb();
-export const dbDriver: "neon" | "postgres" = useNeon ? "neon" : "postgres";
+type Db = ReturnType<typeof createDb>;
+
+let realDb: Db | null = null;
+
+function getRealDb(): Db {
+  realDb ??= createDb();
+  return realDb;
+}
+
+/**
+ * Lazy db handle: resolves DATABASE_URL and connects on FIRST PROPERTY
+ * ACCESS, never at import time — so `next build` can collect route/page
+ * data in CI (no DATABASE_URL there) without throwing. The resolved
+ * instance is cached (one pool per process).
+ */
+export const db: Db = new Proxy({} as Db, {
+  get(_target, prop, receiver) {
+    const real = getRealDb();
+    const value = Reflect.get(real as object, prop, receiver);
+    return typeof value === "function" ? value.bind(real) : value;
+  },
+  has(_target, prop) {
+    return prop in (getRealDb() as object);
+  },
+});
+
+export const dbDriver: "neon" | "postgres" = shouldUseNeon(
+  process.env.DATABASE_URL ?? "",
+)
+  ? "neon"
+  : "postgres";
 export { schema };

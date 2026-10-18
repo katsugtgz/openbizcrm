@@ -160,3 +160,17 @@
     transform: translateY(0);
   }
 }
+
+/* Slip gaji: cetak bersih A4, sembunyikan chrome aplikasi. */
+@media print {
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+  nav,
+  aside,
+  header.app-shell-header,
+  .print\:hidden {
+    display: none !important;
+  }
+}
