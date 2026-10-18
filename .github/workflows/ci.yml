@@ -81,6 +81,28 @@ jobs:
   test:
     name: Test (coverage)
     runs-on: ubuntu-latest
+
+    # Integration tests (repos.integration.test.ts, RUN_DB_TESTS=1) cover the
+    # repo layer; without them the functions-coverage threshold fails.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: openbizcrm
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      RUN_DB_TESTS: "1"
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/openbizcrm
+
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -104,6 +126,9 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - name: Push schema to Postgres
+        run: bun run db:push
 
       - name: Run tests with coverage
         run: npx --no-install vitest run --coverage
