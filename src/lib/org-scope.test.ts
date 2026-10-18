@@ -30,9 +30,7 @@ describe("hasRole", () => {
 describe("requireRole", () => {
   it("null => OrgScopeError NO_MEMBERSHIP", () => {
     expect(() => requireRole(null, "member")).toThrow(OrgScopeError);
-    expect(() => requireRole(null, "member")).toThrow(
-      /bukan anggota/i,
-    );
+    expect(() => requireRole(null, "member")).toThrow(/bukan anggota/i);
     const err = catchCode(() => requireRole(null, "member"));
     expect(err).toBe("NO_MEMBERSHIP");
   });

@@ -42,3 +42,9 @@ next-env.d.ts
 
 # exception: example env committed for OSS setup
 !.env.example
+
+# PR scratch files
+pr2-*.md
+pr2-*.json
+
+.vitest/

@@ -23,9 +23,7 @@ describe("landing page CTAs", () => {
 
 describe("dashboard", () => {
   it("renders the 4 stat cards with placeholder values and the empty activity state", async () => {
-    const { default: Dashboard } = await import(
-      "@/app/(app)/dashboard/page"
-    );
+    const { default: Dashboard } = await import("@/app/(app)/dashboard/page");
     render(<Dashboard />);
 
     for (const label of [
@@ -38,9 +36,7 @@ describe("dashboard", () => {
     }
     // Placeholder values
     expect(screen.getAllByText("—")).toHaveLength(4);
-    expect(
-      screen.getByText(/Belum ada aktivitas/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Belum ada aktivitas/)).toBeInTheDocument();
   });
 });
 
@@ -60,7 +56,9 @@ describe("app shell", () => {
     const { AppShell } = await import("@/components/app-shell");
 
     render(
-      <AppShell user={{ name: "Budi Owner", email: user.email, organizationId: null }}>
+      <AppShell
+        user={{ name: "Budi Owner", email: user.email, organizationId: null }}
+      >
         <div>isi</div>
       </AppShell>,
     );
