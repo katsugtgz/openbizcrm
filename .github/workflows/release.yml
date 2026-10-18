@@ -1,0 +1,62 @@
+# OpenBizCRM — Release
+# Action versions verified via GitHub API on 2026-10-18:
+#   actions/checkout@v7.0.1, oven-sh/setup-bun@v2.2.0, actions/setup-node@v7.1.0,
+#   actions/cache@v6.1.0, softprops/action-gh-release@v3.0.3
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  NEXT_TELEMETRY_DISABLED: 1
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Cache Bun
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+
+      - name: Setup Node 22 (Next must never run under the Bun runtime)
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck (tsc --noEmit)
+        run: npx --no-install tsc --noEmit
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Build (Next under Node)
+        run: bun run build
+
+      - name: Pack release artifact
+        run: tar -czf "openbizcrm-${{ github.ref_name }}.tar.gz" .next public package.json next.config.*
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3.0.3
+        with:
+          files: openbizcrm-*.tar.gz
+          generate_release_notes: true

@@ -1,0 +1,22 @@
+# OpenBizCRM — Dependency review on PRs
+# Action versions verified via GitHub API on 2026-10-18:
+#   actions/checkout@v7.0.1, actions/dependency-review-action@v4
+
+name: Dependency Review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Dependency review
+        uses: actions/dependency-review-action@v4

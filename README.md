@@ -1,36 +1,141 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# OpenBizCRM
+
+Open-source all-in-one business platform — HRM, CRM, Accounting, Projects, Chat (Kolabo feature-parity clone, original code).
+
+[![CI](https://img.shields.io/github/actions/workflow/status/openbizcrm/openbizcrm/ci.yml?branch=main&label=CI&logo=github)](https://github.com/openbizcrm/openbizcrm/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![Bun](https://img.shields.io/badge/bun-1.4-f472b6?logo=bun)](https://bun.sh)
+[![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=nextdotjs)](https://nextjs.org)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+
+OpenBizCRM is a full-stack Indonesian business platform aiming at feature parity with
+Kolabo: a single self-hostable app that covers HR, sales, accounting, projects, and
+internal collaboration. All code is original — nothing is copied from the proprietary
+product.
+
+## Disclaimer
+
+OpenBizCRM is **not affiliated with, endorsed by, or connected to Kolabo or Langit
+Solutions**. It is an independent, feature-inspired rebuild written from scratch with
+original code. Product names and trademarks belong to their respective owners.
+
+## Features
+
+### HRM
+
+- Attendance with GPS and WiFi verification
+- Payroll with PPh21 tax and BPJS contributions
+- Leave management and request approval flows
+- 360-degree performance feedback
+- LMS (learning management system)
+- Recruitment / applicant tracking
+
+### CRM + Projects
+
+- Sales pipeline with deal stages
+- Kanban boards
+- Gantt chart project planning
+- Timesheet tracking
+
+### Finance
+
+- Double-entry accounting ledger
+- Invoicing
+- Point of sale (POS)
+
+### Collaboration
+
+- Team chat
+- Cloud drive (file storage)
+- Online meetings
+
+### Platform
+
+- Multi-company / multi-tenant support
+- PWA (installable, offline-friendly)
+- REST API
+
+## Tech Stack
+
+| Layer     | Technology                                      |
+| --------- | ----------------------------------------------- |
+| Framework | Next.js 16.4.2 (App Router) + React 19.3        |
+| Language  | TypeScript (strict), `src/` layout, `@/*` alias |
+| UI        | Tailwind CSS v4 + shadcn/ui (radix-nova style)  |
+| Database  | PostgreSQL (Neon in prod, Docker in dev)        |
+| ORM       | Drizzle ORM                                     |
+| Runtime   | Node 22 (Bun as package manager only)           |
+| Testing   | Vitest                                          |
 
 ## Getting Started
 
-First, run the development server:
+Requires Node 22 and [Bun](https://bun.sh) 1.4+.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```sh
+bun install
+cp .env.example .env
+bun run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Then open http://localhost:3000. For a local database:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```sh
+docker compose up -d   # Postgres on localhost:5432
+bun run db:push
+bun run db:seed
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### Scripts
 
-## Learn More
+| Command                 | Description                               |
+| ----------------------- | ----------------------------------------- |
+| `bun run lint`          | Lint the codebase                         |
+| `bun run format`        | Format source files                       |
+| `bun run format:check`  | Check formatting without writing          |
+| `bun run typecheck`     | Run the TypeScript compiler in check mode |
+| `bun run test`          | Run unit tests                            |
+| `bun run test:coverage` | Run tests with coverage report            |
+| `bun run test:e2e:dry`  | Dry-run end-to-end tests                  |
+| `bun run db:generate`   | Generate Drizzle migrations               |
+| `bun run db:push`       | Push schema to the database               |
+| `bun run db:studio`     | Open Drizzle Studio                       |
+| `bun run db:seed`       | Seed the database with sample data        |
 
-To learn more about Next.js, take a look at the following resources:
+## Project Structure
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```
+src/
+├── app/              # Next.js App Router: routes, layouts, API handlers
+│   ├── (auth)/       #   Sign-in and onboarding routes
+│   ├── (dashboard)/  #   Authenticated app shell and module pages
+│   └── api/          #   REST endpoints
+├── components/
+│   ├── ui/           # shadcn/ui primitives (radix-nova style)
+│   └── ...           # Feature components
+├── db/               # Drizzle schema, migrations, seed scripts
+├── lib/              # Shared utilities (auth, env, formatters)
+├── hooks/            # React hooks
+├── config/           # App and module configuration
+└── types/            # Shared TypeScript types
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+> Note: the repository documentation, README, and code comments are in English.
+> The application UI itself is in Indonesian.
 
-## Deploy on Vercel
+## Roadmap
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- [x] Project skeleton (Next.js 16 + TypeScript + Tailwind v4 + shadcn/ui + Drizzle)
+- [ ] App shell (auth, navigation, multi-company switcher)
+- [ ] HRM track (attendance, payroll, leave, feedback, LMS, recruitment)
+- [ ] CRM + Projects track (pipeline, kanban, gantt, timesheet)
+- [ ] Finance track (ledger, invoicing, POS)
+- [ ] Collaboration track (chat, cloud drive, meet)
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup,
+commit conventions, and the pull request checklist.
+
+## License
+
+Released under the [MIT License](./LICENSE).
