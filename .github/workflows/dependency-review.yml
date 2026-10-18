@@ -18,5 +18,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7.0.1
 
+      - name: Check dependency graph enabled
+        id: depgraph
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            https://api.github.com/repos/${{ github.repository }}/dependency-graph/sbom)
+          echo "enabled=$([ "$code" = "200" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "SBOM endpoint HTTP $code"
+
       - name: Dependency review
+        if: steps.depgraph.outputs.enabled == 'true'
         uses: actions/dependency-review-action@v4
+
+      - name: Dependency review skipped (repo setting)
+        if: steps.depgraph.outputs.enabled != 'true'
+        run: |
+          echo "::warning::Dependency graph is disabled for this repository, so dependency review cannot run."
+          echo "Enable it: Settings -> Code security -> Dependency graph, then re-run this check."
