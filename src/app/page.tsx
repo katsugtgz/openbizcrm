@@ -45,7 +45,7 @@ export default function Home() {
             </span>
           </div>
           <Button asChild>
-            <Link href="#">Masuk</Link>
+            <Link href="/login">Masuk</Link>
           </Button>
         </div>
       </header>
@@ -65,10 +65,10 @@ export default function Home() {
           </p>
           <div className="flex flex-wrap items-center justify-center gap-3">
             <Button asChild size="lg">
-              <Link href="#">Masuk</Link>
+              <Link href="/login">Masuk</Link>
             </Button>
             <Button asChild size="lg" variant="outline">
-              <Link href="#modul">Lihat Modul</Link>
+              <Link href="/dashboard">Coba Dashboard</Link>
             </Button>
           </div>
         </section>

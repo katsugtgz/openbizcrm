@@ -12,6 +12,9 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: ["src/test/setup.ts"],
+    // AUTH_FAKE=1 selects the in-memory session adapter (no WorkOS, no
+    // "server-only"/next-headers graph) when tests import server modules.
+    env: { AUTH_FAKE: "1" },
     include: ["src/**/*.test.{ts,tsx}"],
     exclude: ["node_modules/**", ".next/**", "coverage/**", "vitest.config.ts"],
     coverage: {

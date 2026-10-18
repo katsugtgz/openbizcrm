@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Offline — OpenBizCRM</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #0a0a0a;
+        color: #fafafa;
+        font-family: system-ui, sans-serif;
+        text-align: center;
+      }
+      main { padding: 2rem; max-width: 24rem; }
+      h1 { font-size: 1.5rem; margin: 0 0 0.5rem; }
+      p { color: #a1a1aa; margin: 0 0 1.5rem; line-height: 1.6; }
+      button {
+        background: #fafafa;
+        color: #0a0a0a;
+        border: 0;
+        border-radius: 0.5rem;
+        padding: 0.625rem 1.25rem;
+        font-size: 0.9375rem;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Anda sedang offline</h1>
+      <p>
+        Koneksi internet tidak tersedia. Periksa jaringan Anda, lalu coba muat
+        ulang halaman.
+      </p>
+      <button onclick="location.reload()">Coba Lagi</button>
+    </main>
+  </body>
+</html>
