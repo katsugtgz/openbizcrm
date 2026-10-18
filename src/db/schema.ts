@@ -248,18 +248,32 @@ export const auditLogs = pgTable("audit_logs", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-export const approvalRequests = pgTable("approval_requests", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  requestId: text("request_id").notNull().unique(),
-  organizationId: uuid("organization_id").notNull(),
-  state: jsonb("state").$type<ApprovalRequest>().notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const approvalRequests = pgTable(
+  "approval_requests",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    requestId: text("request_id").notNull(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    state: jsonb("state").$type<ApprovalRequest>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  // Request IDs are unique per organization, not globally: the org must
+  // participate in the conflict invariant (cubic P1 store finding).
+  (t) => [
+    unique("approval_requests_org_request_unique").on(
+      t.organizationId,
+      t.requestId,
+    ),
+  ],
+);
 
 // ---------------------------------------------------------------------------
 // Penggajian (payroll)

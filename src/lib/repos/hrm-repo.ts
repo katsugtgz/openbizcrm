@@ -503,7 +503,7 @@ export async function actLeaveApproval(
   if (!lr || !lr.approvalId) {
     throw new OrgScopeError("NO_MEMBERSHIP", "Leave request tidak ditemukan.");
   }
-  const stored = await getApprovalRequestByRowId(lr.approvalId);
+  const stored = await getApprovalRequestByRowId(orgId, lr.approvalId);
   if (!stored) {
     throw new OrgScopeError(
       "NO_MEMBERSHIP",

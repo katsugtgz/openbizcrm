@@ -103,6 +103,27 @@ describe("approval engine", () => {
     expect(() => approve(req, "nobody")).toThrow(/bukan penyetuju/i);
   });
 
+  it("state is deeply frozen: status/level/events/chain immutable", () => {
+    const chain = oneLevel("u2");
+    const req = createApproval({
+      requestId: "REQ-9",
+      requestedBy: "u1",
+      chain,
+    });
+    // caller cannot mutate the request afterward
+    expect(Object.isFrozen(req)).toBe(true);
+    expect(Object.isFrozen(req.events)).toBe(true);
+    expect(Object.isFrozen(req.chain)).toBe(true);
+    expect(Object.isFrozen(req.chain[0])).toBe(true);
+    // createApproval cloned the caller's chain: the input array is untouched
+    expect(Object.isFrozen(chain)).toBe(false);
+    const after = history(req);
+    expect(Object.isFrozen(after[0])).toBe(true);
+    // status/level reflect the frozen initial state
+    expect(req.status).toBe("pending");
+    expect(req.level).toBe(0);
+  });
+
   it("history is complete and ordered", () => {
     let req = createApproval({
       requestId: "REQ-8",

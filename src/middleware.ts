@@ -15,7 +15,8 @@ function isWorkosConfigured(): boolean {
   return (
     process.env.AUTH_FAKE !== "1" &&
     !!process.env.WORKOS_API_KEY &&
-    !!process.env.WORKOS_CLIENT_ID
+    !!process.env.WORKOS_CLIENT_ID &&
+    !!process.env.WORKOS_COOKIE_PASSWORD
   );
 }
 

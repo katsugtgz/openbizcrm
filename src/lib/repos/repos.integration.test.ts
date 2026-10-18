@@ -2,7 +2,12 @@ import "dotenv/config";
 import { describe, it, expect } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { orgMemberships, organizations, users } from "@/db/schema";
+import {
+  approvalRequests,
+  orgMemberships,
+  organizations,
+  users,
+} from "@/db/schema";
 import { createOrg, getOrgBySlug } from "@/lib/repos/org-repo";
 import { createUser, getUserByEmail, updateUser } from "@/lib/repos/user-repo";
 import {
@@ -18,7 +23,14 @@ import {
   updateBranch,
 } from "@/lib/repos/branch-repo";
 import { listAuditLogs, recordAudit } from "@/lib/repos/audit-repo";
-import { OrgScopeError } from "@/lib/org-scope";
+import { OrgScopeError, UUIDContractError } from "@/lib/org-scope";
+import { ApprovalNotFoundError } from "@/lib/approval/store";
+import { createApproval } from "@/lib/approval";
+import {
+  saveApprovalRequest,
+  getApprovalRequest,
+  getApprovalRequestByRowId,
+} from "@/lib/approval/store";
 
 const itDb = process.env.RUN_DB_TESTS === "1" ? it : it.skip;
 
@@ -124,6 +136,96 @@ describe("repos integration", () => {
     await expect(listAuditLogs(ghost.id, orgId)).rejects.toThrow(OrgScopeError);
     await db.delete(users).where(eq(users.id, ghost.id));
   });
+
+  itDb(
+    "approval store: org-scoped reads/upserts + UUID contract on requireOrgRole",
+    async () => {
+      const owner = await createUser({
+        workosUserId: `it-appr-owner-${suffix}`,
+        email: `it-appr-owner-${suffix}@test.id`,
+      });
+      const otherOwner = await createUser({
+        workosUserId: `it-appr-other-${suffix}`,
+        email: `it-appr-other-${suffix}@test.id`,
+      });
+      const org = await createOrg(
+        { name: "Appr Org", slug: `it-appr-${suffix}` },
+        owner.id,
+      );
+      const otherOrg = await createOrg(
+        { name: "Appr Other", slug: `it-appr-other-${suffix}` },
+        otherOwner.id,
+      );
+
+      // owner saves an approval in its org
+      const req = createApproval({
+        requestId: `APR-${suffix}`,
+        requestedBy: owner.id,
+        chain: [{ approverId: otherOwner.id }],
+      });
+      const saved = await saveApprovalRequest(org.id, req);
+
+      // same requestId saved under the OTHER org is a distinct row
+      const otherSaved = await saveApprovalRequest(otherOrg.id, req);
+      expect(otherSaved.id).not.toBe(saved.id);
+
+      // reads are org-scoped: same requestId resolves per org
+      expect((await getApprovalRequest(org.id, req.requestId))?.requestId).toBe(
+        req.requestId,
+      );
+      const [orgRow] = await db
+        .select({ organizationId: approvalRequests.organizationId })
+        .from(approvalRequests)
+        .where(eq(approvalRequests.id, otherSaved.id));
+      expect(orgRow.organizationId).toBe(otherOrg.id);
+
+      // cross-org row-id lookup is NotFound, not a silent leak
+      await expect(
+        getApprovalRequestByRowId(otherOrg.id, saved.id),
+      ).rejects.toThrow(ApprovalNotFoundError);
+      // correct org resolves fine
+      expect(
+        (await getApprovalRequestByRowId(org.id, saved.id)).requestId,
+      ).toBe(req.requestId);
+
+      // requireOrgRole UUID contract: WorkOS-shaped IDs fail loudly
+      await expect(
+        (async () => {
+          const { requireOrgRole } = await import("@/lib/org-scope");
+          await requireOrgRole("user_01HXYZ", org.id, "member");
+        })(),
+      ).rejects.toThrow(UUIDContractError);
+      await expect(
+        (async () => {
+          const { requireOrgRole } = await import("@/lib/org-scope");
+          await requireOrgRole(owner.id, "org_01HXYZ", "member");
+        })(),
+      ).rejects.toThrow(UUIDContractError);
+      // valid UUIDs still pass through the normal membership path
+      await expect(
+        (async () => {
+          const { requireOrgRole } = await import("@/lib/org-scope");
+          return requireOrgRole(owner.id, org.id, "owner");
+        })(),
+      ).resolves.toMatchObject({ role: "owner" });
+
+      // cleanup
+      await db
+        .delete(approvalRequests)
+        .where(eq(approvalRequests.organizationId, org.id));
+      await db
+        .delete(approvalRequests)
+        .where(eq(approvalRequests.organizationId, otherOrg.id));
+      await db.delete(orgMemberships).where(eq(orgMemberships.orgId, org.id));
+      await db
+        .delete(orgMemberships)
+        .where(eq(orgMemberships.orgId, otherOrg.id));
+      await db.delete(users).where(eq(users.id, owner.id));
+      await db.delete(users).where(eq(users.id, otherOwner.id));
+      await db.delete(organizations).where(eq(organizations.id, org.id));
+      await db.delete(organizations).where(eq(organizations.id, otherOrg.id));
+    },
+  );
 
   itDb("cleanup", async () => {
     if (!orgId) return;

@@ -1,7 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import {
   approvalRequests,
@@ -157,7 +157,12 @@ export async function actLeaveAction(formData: FormData): Promise<void> {
         leaveRequestsTable,
         eq(leaveRequestsTable.approvalId, approvalRequests.id),
       )
-      .where(eq(approvalRequests.id, approvalRowId))
+      .where(
+        and(
+          eq(approvalRequests.id, approvalRowId),
+          eq(approvalRequests.organizationId, orgId),
+        ),
+      )
       .limit(1);
     if (!row) throw new Error("Permintaan tidak ditemukan.");
 

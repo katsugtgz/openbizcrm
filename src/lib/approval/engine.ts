@@ -4,8 +4,8 @@
  */
 
 export interface ApprovalStep {
-  approverId: string;
-  label?: string;
+  readonly approverId: string;
+  readonly label?: string;
 }
 
 export type ApprovalChain = readonly ApprovalStep[];
@@ -13,20 +13,20 @@ export type ApprovalChain = readonly ApprovalStep[];
 export type ApprovalStatus = "pending" | "approved" | "rejected";
 
 export interface ApprovalEvent {
-  type: "requested" | "approved" | "rejected";
-  actorId: string;
-  level: number; // chain index the event applies to (0 for requested)
-  note?: string;
-  at: string; // ISO timestamp
+  readonly type: "requested" | "approved" | "rejected";
+  readonly actorId: string;
+  readonly level: number; // chain index the event applies to (0 for requested)
+  readonly note?: string;
+  readonly at: string; // ISO timestamp
 }
 
 export interface ApprovalRequest {
-  requestId: string;
-  requestedBy: string;
-  chain: ApprovalChain;
-  status: ApprovalStatus;
-  level: number; // current pending chain index
-  events: readonly ApprovalEvent[];
+  readonly requestId: string;
+  readonly requestedBy: string;
+  readonly chain: ApprovalChain;
+  readonly status: ApprovalStatus;
+  readonly level: number; // current pending chain index
+  readonly events: readonly ApprovalEvent[];
 }
 
 export interface ApprovalCurrentState {
@@ -57,21 +57,34 @@ export function createApproval(input: {
       "Pemohon tidak boleh menjadi bagian dari rantai persetujuan.",
     );
   }
-  return {
+  // Clone the caller's chain: later mutation of the caller's array must not
+  // rewrite this request's immutable audit structure (deep freeze).
+  return deepFreeze({
     requestId: input.requestId,
     requestedBy: input.requestedBy,
-    chain: input.chain,
-    status: "pending",
+    chain: input.chain.map((step) => deepFreeze({ ...step })),
+    status: "pending" as ApprovalStatus,
     level: 0,
     events: [
-      {
-        type: "requested",
+      deepFreeze({
+        type: "requested" as const,
         actorId: input.requestedBy,
         level: 0,
         at: input.at ?? now(),
-      },
+      }),
     ],
-  };
+  });
+}
+
+/** Runtime counterpart of the readonly types: freezes recursively. */
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object") {
+    for (const key of Object.keys(value as object)) {
+      deepFreeze((value as Record<string, unknown>)[key]);
+    }
+    Object.freeze(value);
+  }
+  return value;
 }
 
 export function currentState(req: ApprovalRequest): ApprovalCurrentState {
