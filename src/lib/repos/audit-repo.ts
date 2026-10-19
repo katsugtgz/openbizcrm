@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { auditLogs } from "@/db/schema";
-import { requireOrgRole } from "@/lib/org-scope";
+import { auditLogs, orgMemberships } from "@/db/schema";
+import { OrgScopeError, requireOrgRole } from "@/lib/org-scope";
 
 export type AuditLog = typeof auditLogs.$inferSelect;
 
@@ -13,6 +13,25 @@ export async function recordAudit(input: {
   entityId?: string | null;
   metadata?: Record<string, unknown> | null;
 }): Promise<AuditLog> {
+  // The attributed user must actually belong to the org, or any caller could
+  // fabricate cross-tenant / falsely attributed audit history
+  // (cubic P2 audit-repo:16).
+  const [membership] = await db
+    .select({ id: orgMemberships.id })
+    .from(orgMemberships)
+    .where(
+      and(
+        eq(orgMemberships.orgId, input.orgId),
+        eq(orgMemberships.userId, input.userId),
+      ),
+    )
+    .limit(1);
+  if (!membership) {
+    throw new OrgScopeError(
+      "NO_MEMBERSHIP",
+      "Pengguna bukan anggota organisasi ini.",
+    );
+  }
   const [log] = await db
     .insert(auditLogs)
     .values({

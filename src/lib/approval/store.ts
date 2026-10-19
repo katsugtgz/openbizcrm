@@ -2,51 +2,93 @@
  * Thin persistence for approval requests: state serialized to a jsonb column.
  * No logic here — all rules live in the pure engine. Table lives in
  * src/db/schema.ts (single definition — drizzle-kit reads schema.ts).
+ * Every read/write is org-scoped: the organizationId participates in the
+ * lookup and the conflict invariant, so one org cannot read or overwrite
+ * another org's approval state.
  */
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { approvalRequests } from "@/db/schema";
 import type { ApprovalRequest } from "./engine";
 
-/** Upsert by requestId; resolves to the row id (FK target for leave_requests). */
+/** Not found, or found under a different organization (cross-org leak). */
+export class ApprovalNotFoundError extends Error {
+  constructor() {
+    super("Approval request tidak ditemukan.");
+    this.name = "ApprovalNotFoundError";
+  }
+}
+
+/**
+ * Upsert by (requestId, organizationId); resolves to the row id (FK target
+ * for leave_requests). A requestId owned by another org is a conflict-safe
+ * miss here: the where-clause keeps the invariant per-org.
+ */
 export async function saveApprovalRequest(
   organizationId: string,
   req: ApprovalRequest,
 ): Promise<{ id: string }> {
-  await db
-    .insert(approvalRequests)
-    .values({ requestId: req.requestId, organizationId, state: req })
-    .onConflictDoUpdate({
-      target: approvalRequests.requestId,
-      set: { state: req, updatedAt: new Date() },
-    });
-  const [row] = await db
+  const [existing] = await db
     .select({ id: approvalRequests.id })
     .from(approvalRequests)
-    .where(eq(approvalRequests.requestId, req.requestId))
+    .where(
+      and(
+        eq(approvalRequests.requestId, req.requestId),
+        eq(approvalRequests.organizationId, organizationId),
+      ),
+    )
     .limit(1);
-  return row;
+  if (existing) {
+    const [updated] = await db
+      .update(approvalRequests)
+      .set({ state: req })
+      .where(eq(approvalRequests.id, existing.id))
+      .returning();
+    return { id: updated.id };
+  }
+  const [row] = await db
+    .insert(approvalRequests)
+    .values({ requestId: req.requestId, organizationId, state: req })
+    .returning();
+  return { id: row.id };
 }
 
 export async function getApprovalRequest(
+  organizationId: string,
   requestId: string,
 ): Promise<ApprovalRequest | null> {
   const rows = await db
     .select({ state: approvalRequests.state })
     .from(approvalRequests)
-    .where(eq(approvalRequests.requestId, requestId))
+    .where(
+      and(
+        eq(approvalRequests.requestId, requestId),
+        eq(approvalRequests.organizationId, organizationId),
+      ),
+    )
     .limit(1);
   return rows[0]?.state ?? null;
 }
 
-/** Lookup per approval_requests.id (uuid PK), dipakai FK dari leave_requests.approvalId. */
+/**
+ * Lookup per approval_requests.id (uuid PK), dipakai FK dari
+ * leave_requests.approvalId. Org mismatch throws: callers route by
+ * approvalId from form data, so a cross-org id must not resolve.
+ */
 export async function getApprovalRequestByRowId(
+  organizationId: string,
   rowId: string,
-): Promise<ApprovalRequest | null> {
+): Promise<ApprovalRequest> {
   const rows = await db
     .select({ state: approvalRequests.state })
     .from(approvalRequests)
-    .where(eq(approvalRequests.id, rowId))
+    .where(
+      and(
+        eq(approvalRequests.id, rowId),
+        eq(approvalRequests.organizationId, organizationId),
+      ),
+    )
     .limit(1);
-  return rows[0]?.state ?? null;
+  if (!rows[0]) throw new ApprovalNotFoundError();
+  return rows[0].state;
 }

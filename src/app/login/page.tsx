@@ -12,36 +12,16 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { isWorkosConfigured } from "@/lib/auth/config";
 
-/** Mirrors the middleware's configuration check. */
-function isWorkosConfigured(): boolean {
-  return (
-    process.env.AUTH_FAKE !== "1" &&
-    !!process.env.WORKOS_API_KEY &&
-    !!process.env.WORKOS_CLIENT_ID
-  );
-}
+// Single source of truth for WorkOS readiness — shared with src/proxy.ts so
+// the two checks cannot drift (cubic P2 login/page.tsx:21).
 
-/** Dev fixture list — same identities as src/db/seed.ts. */
+/** Dev fixture list — same identities as src/db/seed.ts (server allowlist). */
 const SEED_USERS = [
-  {
-    id: "seed-owner-1",
-    email: "owner@contoh.co.id",
-    name: "Budi Owner",
-    role: "Owner",
-  },
-  {
-    id: "seed-admin-1",
-    email: "admin@contoh.co.id",
-    name: "Sari Admin",
-    role: "Admin",
-  },
-  {
-    id: "seed-member-1",
-    email: "member@contoh.co.id",
-    name: "Andi Member",
-    role: "Member",
-  },
+  { id: "seed-owner-1", name: "Budi Owner", role: "Owner" },
+  { id: "seed-admin-1", name: "Sari Admin", role: "Admin" },
+  { id: "seed-member-1", name: "Andi Member", role: "Member" },
 ] as const;
 
 /** Runtime-only: WorkOS authorization URL is uncached, per-request data. */
@@ -56,8 +36,14 @@ async function WorkosSignIn() {
 
 /** Runtime-only session gate; inside the Suspense hole with the sign-in UI. */
 async function SignInBody() {
-  if (await session.getSession()) redirect("/dashboard");
-  const fakeMode = process.env.AUTH_FAKE === "1";
+  // Only read the session when an adapter is actually selectable; with WorkOS
+  // unconfigured and fake mode off, withAuth() would throw before the
+  // "belum dikonfigurasi" fallback could render.
+  const fakeMode =
+    process.env.AUTH_FAKE === "1" && process.env.NODE_ENV !== "production";
+  if (!fakeMode && isWorkosConfigured()) {
+    if (await session.getSession()) redirect("/dashboard");
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -73,9 +59,9 @@ async function SignInBody() {
         </Suspense>
       ) : !fakeMode ? (
         <p className="text-center text-sm text-muted-foreground">
-          Autentikasi WorkOS belum dikonfigurasi. Isi WORKOS_API_KEY dan
-          WORKOS_CLIENT_ID di .env, atau jalankan mode pengembangan dengan
-          AUTH_FAKE=1.
+          Autentikasi WorkOS belum dikonfigurasi. Isi WORKOS_API_KEY,
+          WORKOS_CLIENT_ID, dan WORKOS_COOKIE_PASSWORD di .env, atau jalankan
+          mode pengembangan dengan AUTH_FAKE=1.
         </p>
       ) : (
         <div className="flex flex-col gap-2">
@@ -85,8 +71,6 @@ async function SignInBody() {
           {SEED_USERS.map((user) => (
             <form key={user.id} action={fakeSignInAction}>
               <input type="hidden" name="id" value={user.id} />
-              <input type="hidden" name="email" value={user.email} />
-              <input type="hidden" name="name" value={user.name} />
               <Button
                 type="submit"
                 variant="outline"

@@ -3,6 +3,49 @@ import { orgMemberships } from "@/db/schema";
 
 export type Role = "owner" | "admin" | "member";
 
+/**
+ * Thrown when WorkOS session IDs (user_xxx / org_xxx) reach the DB guard.
+ * requireOrgRole only matches internal database UUIDs; callers must resolve
+ * external IDs at the auth boundary first.
+ */
+export class UUIDContractError extends Error {
+  constructor(
+    public parameter: "userId" | "orgId",
+    message: string,
+  ) {
+    super(message);
+    this.name = "UUIDContractError";
+  }
+}
+
+// Any hex-hex-variant-4 [89ab] variantUUID shape: gen_random_uuid() emits v4
+// but historical rows and fixtures may carry other hex version nibbles, and
+// WorkOS IDs ("user_…", "org_…") never match this shape — that is the point.
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** Internal-ID contract check (pure): DB UUIDs only, not WorkOS IDs. */
+export function assertInternalId(
+  parameter: "userId" | "orgId",
+  value: string,
+): void {
+  if (UUID_RE.test(value)) return;
+  throw new UUIDContractError(
+    parameter,
+    `WorkOS IDs cannot query the database directly; resolve ${parameter} to the internal UUID first (got: ${value}).`,
+  );
+}
+
+/** Thrown when a targeted row (branch, membership, user, org) does not exist
+ * or belongs to another org. Distinct from OrgScopeError NO_MEMBERSHIP, which
+ * means the CALLER lacks access — NotFoundError means the TARGET is gone. */
+export class NotFoundError extends Error {
+  constructor(message = "Data tidak ditemukan.") {
+    super(message);
+    this.name = "NotFoundError";
+  }
+}
+
 export class OrgScopeError extends Error {
   constructor(
     public code: "NO_MEMBERSHIP" | "INSUFFICIENT_ROLE",
@@ -16,14 +59,14 @@ export class OrgScopeError extends Error {
 const ROLE_RANK: Record<Role, number> = { member: 1, admin: 2, owner: 3 };
 
 /**
- * Pure check: apakah `actual` memenuhi `required` minimal.
+ * Pure check: whether `actual` satisfies the minimum `required` role.
  */
 export function hasRole(actual: Role, required: Role): boolean {
   return ROLE_RANK[actual] >= ROLE_RANK[required];
 }
 
 /**
- * Pure guard: lempar OrgScopeError kalau membership tak memenuhi role minimal.
+ * Pure guard: throw OrgScopeError when the membership lacks the minimum role.
  */
 export function requireRole(
   membership: { role: Role } | null | undefined,
@@ -45,14 +88,19 @@ export function requireRole(
 }
 
 /**
- * Guard berbasis DB: cari membership user di org, lalu requireRole.
- * Melempar OrgScopeError NO_MEMBERSHIP / INSUFFICIENT_ROLE.
+ * DB-backed guard: find the user membership in the org, then requireRole.
+ * Throws OrgScopeError NO_MEMBERSHIP / INSUFFICIENT_ROLE.
  */
 export async function requireOrgRole(
   userId: string,
   orgId: string,
   required: Role,
 ): Promise<{ role: Role }> {
+  // Internal-ID contract: both params must be database UUIDs. Session
+  // values (WorkOS user/org IDs) never match memberships and would
+  // silently return NO_MEMBERSHIP — fail loudly instead.
+  assertInternalId("userId", userId);
+  assertInternalId("orgId", orgId);
   const { db } = await import("@/db");
   const [membership] = await db
     .select({ role: orgMemberships.role })

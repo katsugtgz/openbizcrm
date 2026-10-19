@@ -11,12 +11,39 @@ export type { AuthSession, SessionUser } from "./types";
 
 let adapter: Promise<AuthSession> | null = null;
 
+/**
+ * Adapter selection matrix (pick order matters):
+ * 1. Production (NODE_ENV=production) → AuthKit, always. The fake session is
+ *    hard-disabled regardless of AUTH_FAKE or missing config (impersonation).
+ * 2. AUTH_FAKE=1 → SessionFake (dev/tests without WorkOS).
+ * 3. WorkOS unconfigured (missing API key / client ID / cookie password)
+ *    → SessionFake, so the login page's "belum dikonfigurasi" fallback can
+ *    render instead of AuthKit throwing.
+ * 4. Otherwise → AuthKit (real WorkOS).
+ */
 function pick(): Promise<AuthSession> {
-  adapter ??=
-    process.env.AUTH_FAKE === "1"
-      ? Promise.resolve(SessionFake)
-      : import("./authkit").then(({ AuthKitSession }) => AuthKitSession);
+  adapter ??= allowFake()
+    ? Promise.resolve(SessionFake)
+    : import("./authkit").then(({ AuthKitSession }) => AuthKitSession);
   return adapter;
+}
+
+/**
+ * Fake adapter is ever selectable only outside production: explicit
+ * AUTH_FAKE=1, or WorkOS left unconfigured (so the login page's
+ * "belum dikonfigurasi" guidance renders instead of AuthKit throwing).
+ * Production builds never serve the fake session regardless of env.
+ */
+function allowFake(): boolean {
+  if (process.env.NODE_ENV === "production") return false;
+  return (
+    process.env.AUTH_FAKE === "1" ||
+    !(
+      !!process.env.WORKOS_API_KEY &&
+      !!process.env.WORKOS_CLIENT_ID &&
+      !!process.env.WORKOS_COOKIE_PASSWORD
+    )
+  );
 }
 
 export const session: AuthSession = {

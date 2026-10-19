@@ -1,7 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import {
   approvalRequests,
@@ -72,7 +72,7 @@ export async function submitLeaveAction(formData: FormData): Promise<void> {
     if (days <= 0) throw new Error("Rentang tanggal tidak valid.");
 
     // Rantai approval: satu admin/owner org lain (bukan pemohon).
-    const approver = (await listMembers(orgId))
+    const approver = (await listMembers(user.id, orgId))
       .map((m) => m.user)
       .find((u) => u.id !== user.id);
     if (!approver) {
@@ -157,7 +157,12 @@ export async function actLeaveAction(formData: FormData): Promise<void> {
         leaveRequestsTable,
         eq(leaveRequestsTable.approvalId, approvalRequests.id),
       )
-      .where(eq(approvalRequests.id, approvalRowId))
+      .where(
+        and(
+          eq(approvalRequests.id, approvalRowId),
+          eq(approvalRequests.organizationId, orgId),
+        ),
+      )
       .limit(1);
     if (!row) throw new Error("Permintaan tidak ditemukan.");
 

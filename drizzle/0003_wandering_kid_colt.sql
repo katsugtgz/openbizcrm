@@ -1,0 +1,2 @@
+ALTER TABLE "approval_requests" DROP CONSTRAINT "approval_requests_request_id_unique";--> statement-breakpoint
+ALTER TABLE "approval_requests" ADD CONSTRAINT "approval_requests_org_request_unique" UNIQUE("organization_id","request_id");

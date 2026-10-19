@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, within, fireEvent } from "@testing-library/react";
 import { setFakeUser } from "@/lib/auth/fake";
 
 /**
@@ -9,7 +9,7 @@ import { setFakeUser } from "@/lib/auth/fake";
  */
 
 describe("landing page CTAs", () => {
-  it("links Masuk to /login and dashboard CTA to /dashboard", async () => {
+  it("links Masuk to /login and dashboard CTA to /login (signed-out reachable)", async () => {
     const { default: Home } = await import("@/app/page");
     render(<Home />);
     const links = screen.getAllByRole("link", { name: "Masuk" });
@@ -17,7 +17,7 @@ describe("landing page CTAs", () => {
       expect(link).toHaveAttribute("href", "/login");
     }
     const dashboard = screen.getByRole("link", { name: "Coba Dashboard" });
-    expect(dashboard).toHaveAttribute("href", "/dashboard");
+    expect(dashboard).toHaveAttribute("href", "/login");
   });
 });
 
@@ -85,10 +85,20 @@ describe("app shell", () => {
     // Placeholder hrefs stay inert (#)
     expect(within(nav).getByText("CRM")).toHaveAttribute("href", "#");
 
+    // Org display renders (cubic ui-smoke.test.tsx:59 — asserted, not assumed)
+    expect(screen.getByText("Organisasi")).toBeInTheDocument();
+
     // User menu trigger present with accessible name
-    expect(
-      screen.getByRole("button", { name: /Menu pengguna: Budi Owner/ }),
-    ).toBeInTheDocument();
+    const menuTrigger = screen.getByRole("button", {
+      name: /Menu pengguna: Budi Owner/,
+    });
+    expect(menuTrigger).toBeInTheDocument();
+
+    // Open the menu and assert the Keluar item exists
+    // (cubic ui-smoke.test.tsx:92). fireEvent (no user-event dep): the radix
+    // DropdownMenuTrigger opens on pointerdown.
+    fireEvent.pointerDown(menuTrigger, { button: 0, ctrlKey: false });
+    expect(await screen.findByText("Keluar")).toBeInTheDocument();
     // Auth gate (server layout) covered by e2e — redirect needs a router.
   });
 });

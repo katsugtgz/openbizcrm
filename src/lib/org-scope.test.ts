@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { OrgScopeError, hasRole, requireRole } from "./org-scope";
+import {
+  OrgScopeError,
+  UUIDContractError,
+  assertInternalId,
+  hasRole,
+  requireRole,
+} from "./org-scope";
 
 describe("hasRole", () => {
   it("member berminimalis member", () => {
@@ -53,6 +59,32 @@ describe("requireRole", () => {
   });
 });
 
+describe("internal-UUID contract", () => {
+  const uuid = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
+
+  it("accepts internal DB UUIDs", () => {
+    expect(() => assertInternalId("userId", uuid)).not.toThrow();
+    expect(() => assertInternalId("orgId", uuid.toUpperCase())).not.toThrow();
+  });
+
+  it("rejects WorkOS user/org IDs with UUIDContractError", () => {
+    const e = catchCode(() => assertInternalId("userId", "user_01H5Z3"));
+    expect(e).toBeUndefined(); // not an OrgScopeError
+    expect(() => assertInternalId("userId", "user_01H5Z3")).toThrow(
+      UUIDContractError,
+    );
+    expect(() => assertInternalId("orgId", "org_01H5Z3")).toThrow(
+      UUIDContractError,
+    );
+    try {
+      assertInternalId("orgId", "org_01H5Z3");
+    } catch (err) {
+      expect(err).toBeInstanceOf(UUIDContractError);
+      expect((err as UUIDContractError).parameter).toBe("orgId");
+    }
+  });
+});
+
 function catchCode(fn: () => unknown): string | undefined {
   try {
     fn();
@@ -61,3 +93,6 @@ function catchCode(fn: () => unknown): string | undefined {
   }
   return undefined;
 }
+
+// requireOrgRole UUID-contract is exercised at the DB layer
+// (src/lib/repos/repos.integration.test.ts); here we pin the pure predicate.

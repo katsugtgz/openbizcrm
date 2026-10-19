@@ -50,9 +50,7 @@ export async function runPayrollAction(
 }
 
 /** Ringkasan sebelum run: jumlah karyawan aktif + total bruto/net. */
-export async function previewPayrollAction(
-  formData: FormData,
-): Promise<
+export async function previewPayrollAction(formData: FormData): Promise<
   | {
       ok: true;
       preview: {

@@ -31,6 +31,10 @@ describe("formatIDR", () => {
       /terlalu besar/i,
     );
   });
+
+  it("-MAX_SAFE_INTEGER - 1 => throws (magnitude check is symmetric)", () => {
+    expect(() => formatIDR(-9007199254740992)).toThrow(/terlalu besar/i);
+  });
 });
 
 describe("parseIDRInput", () => {

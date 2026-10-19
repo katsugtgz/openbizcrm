@@ -68,7 +68,7 @@ export default function Home() {
               <Link href="/login">Masuk</Link>
             </Button>
             <Button asChild size="lg" variant="outline">
-              <Link href="/dashboard">Coba Dashboard</Link>
+              <Link href="/login">Coba Dashboard</Link>
             </Button>
           </div>
         </section>
