@@ -26,12 +26,17 @@ export async function closeDeal(
   outcome: "won" | "lost",
 ): Promise<CrmDeal> {
   await requireOrgRole(userId, orgId, "member");
+  if (outcome !== "won" && outcome !== "lost") {
+    throw new Error("Outcome harus 'won' atau 'lost'.");
+  }
   const [deal] = await db
     .select()
     .from(crmDeals)
     .where(and(eq(crmDeals.id, dealId), eq(crmDeals.orgId, orgId)))
     .limit(1);
   if (!deal) throw new NotFoundError("Deal tidak ditemukan.");
+  // Sudah closed: idempoten, jangan timpa outcome lama (cubic P2 service:53).
+  if (deal.status !== "open") return deal;
   const [stage] = await db
     .select()
     .from(crmStages)
@@ -90,8 +95,21 @@ export async function setQuotationStatus(
   const [row] = await db
     .update(crmDeals)
     .set({ quotationStatus: next })
-    .where(and(eq(crmDeals.id, dealId), eq(crmDeals.orgId, orgId)))
+    // WHERE mengunci status tervalidasi: dua transisi konkuren dari status
+    // sama tak bisa duanya berhasil (cubic P2 service:92).
+    .where(
+      and(
+        eq(crmDeals.id, dealId),
+        eq(crmDeals.orgId, orgId),
+        eq(crmDeals.quotationStatus, deal.quotationStatus),
+      ),
+    )
     .returning();
+  if (!row) {
+    throw new Error(
+      `Transisi quotation tidak valid: ${deal.quotationStatus} -> ${next}.`,
+    );
+  }
   await recordAudit({
     orgId,
     userId,

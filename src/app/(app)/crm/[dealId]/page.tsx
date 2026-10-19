@@ -1,15 +1,14 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { eq } from "drizzle-orm";
-import { db } from "@/db";
-import { users as schemaUsers } from "@/db/schema";
 import { session } from "@/lib/auth";
+import { resolveSessionIds } from "@/lib/auth/ids";
 import { getDeal, getCompany, listActivities } from "@/lib/repos/crm-repo";
 import { formatIDR } from "@/lib/money";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ActivityForm, DealActions, QUOT_LABEL } from "./deal-actions";
+import { ActivityForm, DealActions } from "./deal-actions";
+import { QUOT_LABEL } from "@/lib/deals/labels";
 
 export const metadata = { title: "Detail Deal" };
 
@@ -40,16 +39,10 @@ export default async function DealDetailPage({
   const { dealId } = await params;
   const user = await session.getSession();
   if (!user) redirect("/login");
-  const orgId =
-    user.organizationId ??
-    (
-      await db
-        .select({ orgId: schemaUsers.currentOrgId })
-        .from(schemaUsers)
-        .where(eq(schemaUsers.id, user.id))
-        .limit(1)
-    )[0]?.orgId;
-  if (!orgId) redirect("/dashboard");
+  // WorkOS session IDs -> internal UUIDs (cubic P1 dealId:44).
+  const ids = await resolveSessionIds(user);
+  if (!ids) redirect("/dashboard");
+  const { orgId } = ids;
 
   const deal = await getDeal(orgId, dealId);
   if (!deal) notFound();

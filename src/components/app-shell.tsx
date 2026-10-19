@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useTransition } from "react";
 import { signOutAction } from "@/app/actions/sign-out";
 import {
@@ -57,25 +58,32 @@ const NAV_ITEMS = [
 ] as const;
 
 function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
+  const pathname = usePathname();
   return (
     <nav aria-label="Menu utama" className="flex flex-col gap-1">
-      {NAV_ITEMS.map(({ label, href, icon: Icon }) => (
-        <Link
-          key={label}
-          href={href}
-          onClick={onNavigate}
-          className={cn(
-            "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors",
-            "hover:bg-accent hover:text-accent-foreground",
-            "focus-visible:bg-accent focus-visible:text-accent-foreground focus-visible:outline-none",
-            href === "/dashboard" && "bg-accent text-accent-foreground",
-          )}
-          aria-current={href === "/dashboard" ? "page" : undefined}
-        >
-          <Icon className="size-4 shrink-0" aria-hidden="true" />
-          {label}
-        </Link>
-      ))}
+      {NAV_ITEMS.map(({ label, href, icon: Icon }) => {
+        // Aktiv dari pathname, bukan hard-code Dashboard (cubic P3
+        // app-shell:51).
+        const active =
+          href !== "#" && pathname !== null && pathname.startsWith(href);
+        return (
+          <Link
+            key={label}
+            href={href}
+            onClick={onNavigate}
+            className={cn(
+              "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors",
+              "hover:bg-accent hover:text-accent-foreground",
+              "focus-visible:bg-accent focus-visible:text-accent-foreground focus-visible:outline-none",
+              active && "bg-accent text-accent-foreground",
+            )}
+            aria-current={active ? "page" : undefined}
+          >
+            <Icon className="size-4 shrink-0" aria-hidden="true" />
+            {label}
+          </Link>
+        );
+      })}
     </nav>
   );
 }

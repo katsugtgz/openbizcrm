@@ -6,9 +6,9 @@ import { db } from "@/db";
 import {
   approvalRequests,
   leaveRequests as leaveRequestsTable,
-  users as schemaUsers,
 } from "@/db/schema";
 import { session } from "@/lib/auth";
+import { resolveSessionIds } from "@/lib/auth/ids";
 import { requireOrgRole } from "@/lib/org-scope";
 import { saveApprovalRequest } from "@/lib/approval/store";
 import {
@@ -32,17 +32,10 @@ import { recordAudit } from "@/lib/repos/audit-repo";
 async function requireSession() {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  const orgId =
-    user.organizationId ??
-    (
-      await db
-        .select({ orgId: schemaUsers.currentOrgId })
-        .from(schemaUsers)
-        .where(eq(schemaUsers.id, user.id))
-        .limit(1)
-    )[0]?.orgId;
-  if (!orgId) throw new Error("Tidak ada organisasi aktif.");
-  return { user, orgId };
+  // WorkOS session IDs -> internal UUIDs (cubic P1 cuti-actions:36).
+  const ids = await resolveSessionIds(user);
+  if (!ids) throw new Error("Tidak ada organisasi aktif.");
+  return ids;
 }
 
 /**
@@ -50,8 +43,8 @@ async function requireSession() {
  * kecuali user paksa via `type`.
  */
 export async function submitLeaveAction(formData: FormData): Promise<void> {
-  const { user, orgId } = await requireSession();
-  await requireOrgRole(user.id, orgId, "member");
+  const { userId, orgId } = await requireSession();
+  await requireOrgRole(userId, orgId, "member");
 
   const startDate = String(formData.get("startDate") ?? "");
   const endDate = String(formData.get("endDate") ?? "");
@@ -65,16 +58,16 @@ export async function submitLeaveAction(formData: FormData): Promise<void> {
       throw new Error("Tanggal mulai dan selesai wajib diisi.");
     }
 
-    const employee = await getEmployeeByUser(user.id, orgId);
+    const employee = await getEmployeeByUser(userId, orgId);
     if (!employee) throw new Error("Profil karyawan tidak ditemukan.");
 
     const days = computeDuration(startDate, endDate);
     if (days <= 0) throw new Error("Rentang tanggal tidak valid.");
 
     // Rantai approval: satu admin/owner org lain (bukan pemohon).
-    const approver = (await listMembers(user.id, orgId))
+    const approver = (await listMembers(userId, orgId))
       .map((m) => m.user)
-      .find((u) => u.id !== user.id);
+      .find((u) => u.id !== userId);
     if (!approver) {
       throw new Error("Tidak ada approver lain di organisasi ini.");
     }
@@ -93,7 +86,7 @@ export async function submitLeaveAction(formData: FormData): Promise<void> {
     const approval = createLeaveRequest({
       requestId,
       orgId,
-      requesterId: user.id,
+      requesterId: userId,
       type,
       startDate,
       endDate,
@@ -105,7 +98,7 @@ export async function submitLeaveAction(formData: FormData): Promise<void> {
       orgId,
       approval.approval,
     );
-    await createLeave(user.id, orgId, {
+    await createLeave(userId, orgId, {
       employeeId: employee.id,
       type,
       startDate,
@@ -116,7 +109,7 @@ export async function submitLeaveAction(formData: FormData): Promise<void> {
 
     await recordAudit({
       orgId,
-      userId: user.id,
+      userId: userId,
       action: "leave.submit",
       entity: "leave_request",
       entityId: requestId,
@@ -132,8 +125,8 @@ export async function submitLeaveAction(formData: FormData): Promise<void> {
 
 /** Setujui atau tolak permintaan (approver saat ini di rantai). */
 export async function actLeaveAction(formData: FormData): Promise<void> {
-  const { user, orgId } = await requireSession();
-  await requireOrgRole(user.id, orgId, "member");
+  const { userId, orgId } = await requireSession();
+  await requireOrgRole(userId, orgId, "member");
 
   const approvalRowId = String(formData.get("approvalId") ?? "");
   const decision = String(formData.get("decision") ?? "");
@@ -168,8 +161,8 @@ export async function actLeaveAction(formData: FormData): Promise<void> {
 
     const nextApproval =
       decision === "approve"
-        ? approveApproval(row.state, user.id, note)
-        : rejectApproval(row.state, user.id, note);
+        ? approveApproval(row.state, userId, note)
+        : rejectApproval(row.state, userId, note);
 
     await saveApprovalRequest(orgId, nextApproval);
 
@@ -177,9 +170,9 @@ export async function actLeaveAction(formData: FormData): Promise<void> {
     if (nextApproval.status === "approved" && row.employeeId && row.startDate) {
       const year = Number(row.startDate.slice(0, 4));
       const days = computeDuration(row.startDate, row.endDate ?? row.startDate);
-      await getOrCreateBalance(user.id, orgId, row.employeeId, year);
+      await getOrCreateBalance(userId, orgId, row.employeeId, year);
       await debitBalance(
-        user.id,
+        userId,
         orgId,
         row.employeeId,
         year,
@@ -190,7 +183,7 @@ export async function actLeaveAction(formData: FormData): Promise<void> {
 
     await recordAudit({
       orgId,
-      userId: user.id,
+      userId: userId,
       action: `leave.${decision}`,
       entity: "leave_request",
       entityId: row.requestId,

@@ -1,9 +1,9 @@
 import { Suspense } from "react";
+import Link from "next/link";
+import { cn } from "cn";
 import { redirect } from "next/navigation";
-import { eq } from "drizzle-orm";
-import { db } from "@/db";
-import { users as schemaUsers } from "@/db/schema";
 import { session } from "@/lib/auth";
+import { resolveSessionIds } from "@/lib/auth/ids";
 import { requireOrgRole } from "@/lib/org-scope";
 import {
   getOrCreateDefaultPipeline,
@@ -17,7 +17,15 @@ import { NewDealDialog } from "./new-deal-dialog";
 
 export const metadata = { title: "CRM" };
 
-async function Board({ orgId, userId }: { orgId: string; userId: string }) {
+async function Board({
+  orgId,
+  userId,
+  companyId,
+}: {
+  orgId: string;
+  userId: string;
+  companyId?: string;
+}) {
   await requireOrgRole(userId, orgId, "member");
   const companies = await listCompanies(orgId);
   if (companies.length === 0) {
@@ -34,10 +42,14 @@ async function Board({ orgId, userId }: { orgId: string; userId: string }) {
       </Card>
     );
   }
-  // Pipeline default perusahaan pertama (urut nama) sebagai papan utama.
+  // Pipeline perusahaan terpilih; default perusahaan pertama (urut nama).
+  const activeCompanyId =
+    companyId && companies.some((c) => c.id === companyId)
+      ? companyId
+      : companies[0].id;
   const { pipeline, stages } = await getOrCreateDefaultPipeline(
     orgId,
-    companies[0].id,
+    activeCompanyId,
   );
   const deals = await listDeals(orgId, pipeline.id);
   const companyName = new Map(companies.map((c) => [c.id, c.name]));
@@ -47,6 +59,23 @@ async function Board({ orgId, userId }: { orgId: string; userId: string }) {
   }));
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm text-muted-foreground">Perusahaan:</span>
+        {companies.map((c) => (
+          <Link
+            key={c.id}
+            href={c.id === activeCompanyId ? "/crm" : `/crm?company=${c.id}`}
+            className={cn(
+              "rounded-full border px-3 py-1 text-xs transition-colors",
+              c.id === activeCompanyId
+                ? "border-primary bg-primary text-primary-foreground"
+                : "bg-card hover:bg-accent",
+            )}
+          >
+            {c.name}
+          </Link>
+        ))}
+      </div>
       <DealBoard stages={stages} deals={boardDeals} />
       <p className="text-xs text-muted-foreground">
         Seret kartu antar kolom untuk memindahkan tahap. Kolom Close Won hijau,
@@ -73,19 +102,18 @@ function BoardSkeleton() {
   );
 }
 
-export default async function CrmPage() {
+export default async function CrmPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ company?: string }>;
+}) {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  const orgId =
-    user.organizationId ??
-    (
-      await db
-        .select({ orgId: schemaUsers.currentOrgId })
-        .from(schemaUsers)
-        .where(eq(schemaUsers.id, user.id))
-        .limit(1)
-    )[0]?.orgId;
-  if (!orgId) redirect("/dashboard");
+  // WorkOS session IDs -> internal UUIDs (cubic P1 crm-page:40).
+  const ids = await resolveSessionIds(user);
+  if (!ids) redirect("/dashboard");
+  const { userId, orgId } = ids!;
+  const sp = await searchParams;
 
   return (
     <div className="flex flex-col gap-6">
@@ -97,17 +125,24 @@ export default async function CrmPage() {
           </p>
         </div>
         <Suspense fallback={null}>
-          <CompaniesGate orgId={orgId} />
+          <CompaniesGate orgId={orgId} userId={userId} />
         </Suspense>
       </div>
       <Suspense fallback={<BoardSkeleton />}>
-        <Board orgId={orgId} userId={user.id} />
+        <Board orgId={orgId} userId={userId} companyId={sp.company} />
       </Suspense>
     </div>
   );
 }
 
-async function CompaniesGate({ orgId }: { orgId: string }) {
+async function CompaniesGate({
+  orgId,
+  userId,
+}: {
+  orgId: string;
+  userId: string;
+}) {
+  await requireOrgRole(userId, orgId, "member");
   const companies = await listCompanies(orgId);
   return (
     <NewDealDialog

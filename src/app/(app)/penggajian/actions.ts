@@ -2,10 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { eq } from "drizzle-orm";
-import { db } from "@/db";
-import { users as schemaUsers } from "@/db/schema";
 import { session } from "@/lib/auth";
+import { resolveSessionIds } from "@/lib/auth/ids";
 import { runPayroll, PayrollError } from "@/lib/payroll/service";
 import { computePayslip } from "@/lib/payroll/engine";
 import { listEmployees } from "@/lib/repos/hrm-repo";
@@ -14,27 +12,20 @@ import { requireOrgRole } from "@/lib/org-scope";
 async function requireSession() {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  const orgId =
-    user.organizationId ??
-    (
-      await db
-        .select({ orgId: schemaUsers.currentOrgId })
-        .from(schemaUsers)
-        .where(eq(schemaUsers.id, user.id))
-        .limit(1)
-    )[0]?.orgId;
-  if (!orgId) throw new Error("Tidak ada organisasi aktif.");
-  return { user, orgId };
+  // WorkOS session IDs -> internal UUIDs (cubic P1 penggajian-actions:18).
+  const ids = await resolveSessionIds(user);
+  if (!ids) throw new Error("Tidak ada organisasi aktif.");
+  return ids;
 }
 
 export async function runPayrollAction(
   formData: FormData,
 ): Promise<{ ok: true; redirectTo: string } | { ok: false; error: string }> {
-  const { user, orgId } = await requireSession();
+  const { userId, orgId } = await requireSession();
   const year = Number(formData.get("year"));
   const month = Number(formData.get("month"));
   try {
-    await runPayroll(user.id, orgId, { year, month });
+    await runPayroll(userId, orgId, { year, month });
   } catch (error) {
     const message =
       error instanceof PayrollError || error instanceof Error
@@ -63,9 +54,9 @@ export async function previewPayrollAction(formData: FormData): Promise<
     }
   | { ok: false; error: string }
 > {
-  const { user, orgId } = await requireSession();
+  const { userId, orgId } = await requireSession();
   // Preview menampar total gaji seluruh pegawai — admin-only, sama seperti run.
-  await requireOrgRole(user.id, orgId, "admin");
+  await requireOrgRole(userId, orgId, "admin");
   const year = Number(formData.get("year"));
   const month = Number(formData.get("month"));
   try {

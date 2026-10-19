@@ -15,13 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-
-const QUOT_LABEL: Record<string, string> = {
-  draft: "Draft",
-  sent: "Terkirim",
-  accepted: "Diterima",
-  rejected: "Ditolak",
-};
+import { QUOT_LABEL } from "@/lib/deals/labels";
 
 const NEXT_BY_STATUS: Record<string, { value: string; label: string }[]> = {
   draft: [{ value: "sent", label: "Kirim Quotation" }],
@@ -100,8 +94,6 @@ export function DealActions({
     </div>
   );
 }
-
-export { QUOT_LABEL };
 
 export function ActivityForm({ dealId }: { dealId: string }) {
   const [pending, startTransition] = useTransition();

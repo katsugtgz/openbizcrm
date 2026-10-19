@@ -1,6 +1,6 @@
 import { and, asc, count, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { projects, tasks } from "@/db/schema";
+import { crmCompanies, projects, tasks } from "@/db/schema";
 import { NotFoundError, OrgScopeError, requireOrgRole } from "@/lib/org-scope";
 import { recordAudit } from "@/lib/repos/audit-repo";
 
@@ -43,10 +43,13 @@ export async function getProject(
   orgId: string,
   projectId: string,
 ): Promise<Project | null> {
+  // Hanya NotFoundError yang jadi null; error DB lain tetap naik supaya
+  // outage tidak menyamar jadi "proyek tidak ada" (cubic P3 project-repo:48).
   try {
     return await requireProject(orgId, projectId);
-  } catch {
-    return null;
+  } catch (error) {
+    if (error instanceof NotFoundError) return null;
+    throw error;
   }
 }
 
@@ -66,6 +69,16 @@ async function nextProjectCode(orgId: string): Promise<string> {
   return `PRJ-${String((row?.maxSeq ?? 0) + 1).padStart(3, "0")}`;
 }
 
+/** Company wajib milik org yang sama (cubic P2 project-repo:85). */
+async function requireOrgCompany(orgId: string, id: string): Promise<void> {
+  const [row] = await db
+    .select({ id: crmCompanies.id })
+    .from(crmCompanies)
+    .where(and(eq(crmCompanies.id, id), eq(crmCompanies.orgId, orgId)))
+    .limit(1);
+  if (!row) throw new NotFoundError("Perusahaan tidak ditemukan.");
+}
+
 export async function createProject(
   userId: string,
   orgId: string,
@@ -75,17 +88,25 @@ export async function createProject(
   if (!input.name.trim()) {
     throw new OrgScopeError("INSUFFICIENT_ROLE", "Nama proyek wajib diisi.");
   }
-  const code = await nextProjectCode(orgId);
-  const [row] = await db
-    .insert(projects)
-    .values({
-      orgId,
-      code,
-      name: input.name,
-      clientCompanyId: input.clientCompanyId ?? null,
-      status: input.status ?? "planning",
-    })
-    .returning();
+  if (input.clientCompanyId) {
+    await requireOrgCompany(orgId, input.clientCompanyId);
+  }
+  // Gen + insert satu transaksi: kode unik per org, race ditutup oleh
+  // projects_org_code_unique (cubic P2 project-repo:78).
+  const row = await db.transaction(async (tx) => {
+    const code = await nextProjectCode(orgId);
+    const [r] = await tx
+      .insert(projects)
+      .values({
+        orgId,
+        code,
+        name: input.name,
+        clientCompanyId: input.clientCompanyId ?? null,
+        status: input.status ?? "planning",
+      })
+      .returning();
+    return r;
+  });
   await recordAudit({
     orgId,
     userId,
@@ -105,6 +126,10 @@ export async function updateProject(
 ): Promise<Project> {
   await requireOrgRole(userId, orgId, "admin");
   await requireProject(orgId, projectId);
+  // Company harus tetap milik org ini (cubic P2 schema:399).
+  if (input.clientCompanyId) {
+    await requireOrgCompany(orgId, input.clientCompanyId);
+  }
   const [row] = await db
     .update(projects)
     .set(input)

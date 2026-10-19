@@ -299,13 +299,32 @@ export async function createDeal(
 ): Promise<CrmDeal> {
   await requireOrgRole(userId, orgId, "member");
   assertSafeAmount(input.value, "Nilai deal");
-  // stage + company harus milik org yang sama
+  // Pipeline, stage, company, kontak harus milik org yang sama (cubic P1
+  // crm-repo:324) — stage juga harus milik pipeline yang dikirim.
+  const [pipeline] = await db
+    .select({ id: crmPipelines.id })
+    .from(crmPipelines)
+    .where(
+      and(
+        eq(crmPipelines.id, input.pipelineId),
+        eq(crmPipelines.orgId, orgId),
+        eq(crmPipelines.companyId, input.companyId),
+      ),
+    )
+    .limit(1);
+  if (!pipeline) throw new NotFoundError("Pipeline tidak ditemukan.");
   const [stage] = await db
-    .select({ id: crmStages.id })
+    .select({
+      id: crmStages.id,
+      name: crmStages.name,
+      pipelineId: crmStages.pipelineId,
+    })
     .from(crmStages)
     .where(and(eq(crmStages.id, input.stageId), eq(crmStages.orgId, orgId)))
     .limit(1);
-  if (!stage) throw new NotFoundError("Stage tidak ditemukan.");
+  if (!stage || stage.pipelineId !== input.pipelineId) {
+    throw new NotFoundError("Stage tidak ditemukan.");
+  }
   await requireOrgCompany(orgId, input.companyId);
   if (input.contactId) {
     const [contact] = await db
@@ -327,6 +346,10 @@ export async function createDeal(
       contactId: input.contactId ?? null,
       title: input.title,
       value: input.value,
+      // status/closedAt mengikuti stage awal — deal yang dibuat langsung di
+      // Close Won/Lost tidak tertinggal sebagai open (cubic P2 crm-repo:329).
+      status: stageOutcome(stage.name),
+      closedAt: stageOutcome(stage.name) === "open" ? null : new Date(),
     })
     .returning();
   await recordAudit({

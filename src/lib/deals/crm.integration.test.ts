@@ -176,6 +176,109 @@ describe("crm integration", () => {
       await expect(
         deals.closeDeal(ownerB.id, orgB.id, deal.id, "lost"),
       ).rejects.toThrow(NotFoundError);
+      await expect(
+        deals.setQuotationStatus(ownerB.id, orgB.id, deal.id, "sent"),
+      ).rejects.toThrow(NotFoundError);
+      await expect(
+        crm.createActivity(ownerB.id, orgB.id, {
+          dealId: deal.id,
+          type: "note",
+          content: "coba cross-org",
+        }),
+      ).rejects.toThrow(NotFoundError);
     },
   );
+
+  itDb("closeDeal menolak outcome tidak valid & idempoten", async () => {
+    // Org + deal kecil terpisah untuk pin perilaku closeDeal (cubic P2
+    // service:50/53) dan transisi quotation konkuren (cubic P2 service:92).
+    const owner = await (
+      await import("@/lib/repos/user-repo")
+    ).createUser({
+      workosUserId: `it-close-${suffix}`,
+      email: `it-close-${suffix}@test.id`,
+    });
+    createdUserIds.push(owner.id);
+    const org = await (
+      await import("@/lib/repos/org-repo")
+    ).createOrg(
+      { name: "CRM Close Org", slug: `it-close-${suffix}` },
+      owner.id,
+    );
+    createdOrgIds.push(org.id);
+
+    const company = await crm.createCompany(owner.id, org.id, {
+      name: `PT Close ${suffix}`,
+    });
+    const contact = await crm.createContact(owner.id, org.id, {
+      companyId: company.id,
+      name: "Kontak Close",
+    });
+    const { pipeline, stages } = await crm.getOrCreateDefaultPipeline(
+      org.id,
+      company.id,
+    );
+    const deal = await crm.createDeal(owner.id, org.id, {
+      pipelineId: pipeline.id,
+      stageId: stages[0].id,
+      companyId: company.id,
+      contactId: contact.id,
+      title: "Deal Close",
+      value: 1_000_000,
+    });
+
+    // outcome di luar won/lost ditolak sebelum menyentuh DB.
+    await expect(
+      deals.closeDeal(owner.id, org.id, deal.id, "open" as "won"),
+    ).rejects.toThrow(/won|lost/);
+
+    // close pertama menang; close kedua idempoten, tidak menimpa outcome.
+    const won = await deals.closeDeal(owner.id, org.id, deal.id, "won");
+    expect(won.status).toBe("won");
+    const again = await deals.closeDeal(owner.id, org.id, deal.id, "lost");
+    expect(again.status).toBe("won");
+    expect(again.stageId).toBe(won.stageId);
+
+    // Transisi quotation valid lalu double-call sekuensial: panggilan kedua
+    // dari status yang sama harus gagal (guard WHERE quotationStatus).
+    await deals.setQuotationStatus(owner.id, org.id, deal.id, "sent");
+    await expect(
+      deals.setQuotationStatus(owner.id, org.id, deal.id, "sent"),
+    ).rejects.toThrow(/tidak valid/);
+  });
+
+  itDb("createDeal dari stage Close Won langsung -> status won", async () => {
+    // Pin cubic P2 crm-repo:329.
+    const owner = await (
+      await import("@/lib/repos/user-repo")
+    ).createUser({
+      workosUserId: `it-direct-${suffix}`,
+      email: `it-direct-${suffix}@test.id`,
+    });
+    createdUserIds.push(owner.id);
+    const org = await (
+      await import("@/lib/repos/org-repo")
+    ).createOrg(
+      { name: "CRM Direct Org", slug: `it-direct-${suffix}` },
+      owner.id,
+    );
+    createdOrgIds.push(org.id);
+    const company = await crm.createCompany(owner.id, org.id, {
+      name: `PT Direct ${suffix}`,
+    });
+    const { pipeline, stages } = await crm.getOrCreateDefaultPipeline(
+      org.id,
+      company.id,
+    );
+    const closeWon = stages.find((s) => s.name === "Close Won")!;
+    const deal = await crm.createDeal(owner.id, org.id, {
+      pipelineId: pipeline.id,
+      stageId: closeWon.id,
+      companyId: company.id,
+      title: "Deal Langsung Won",
+      value: 2_000_000,
+    });
+    expect(deal.status).toBe("won");
+    expect(deal.closedAt).not.toBeNull();
+  });
 });

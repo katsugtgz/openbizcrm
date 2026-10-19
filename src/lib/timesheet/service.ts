@@ -57,10 +57,18 @@ export async function stopTimer(
   orgId: string,
 ): Promise<Timesheet> {
   await requireOrgRole(userId, orgId, "member");
+  // Scope ke org: timer org lain tidak boleh ter-stop dari org ini
+  // (cubic P1 timesheet:29).
   const [open] = await db
     .select()
     .from(timesheets)
-    .where(and(eq(timesheets.userId, userId), isNull(timesheets.endedAt)))
+    .where(
+      and(
+        eq(timesheets.orgId, orgId),
+        eq(timesheets.userId, userId),
+        isNull(timesheets.endedAt),
+      ),
+    )
     .limit(1);
   if (!open) {
     throw new NotFoundError("Tidak ada timer yang berjalan.");
@@ -100,8 +108,10 @@ export async function listMine(
       and(
         eq(timesheets.orgId, orgId),
         eq(timesheets.userId, userId),
-        gte(timesheets.startedAt, new Date(`${range.from}T00:00:00Z`)),
-        lte(timesheets.startedAt, new Date(`${range.to}T23:59:59.999Z`)),
+        // Batas rentang WIB: 00:00 WIB = 17:00 UTC sebelumnya (cubic P2
+        // ts-page:80 — kerja sebelum 07:00 WIB tidak jatuh ke hari salah).
+        gte(timesheets.startedAt, new Date(`${range.from}T00:00:00+07:00`)),
+        lte(timesheets.startedAt, new Date(`${range.to}T23:59:59.999+07:00`)),
       ),
     )
     .orderBy(desc(timesheets.startedAt));
@@ -115,10 +125,12 @@ export interface ProjectSummary {
 
 /** Rekap menit per task untuk satu proyek (semua user, rentang tanggal). */
 export async function summaryByProject(
+  userId: string,
   orgId: string,
   projectId: string,
   range: TimeRange,
 ): Promise<ProjectSummary> {
+  await requireOrgRole(userId, orgId, "member");
   const rows = await db
     .select({
       taskId: tasks.id,
@@ -130,8 +142,10 @@ export async function summaryByProject(
       and(
         eq(timesheets.taskId, tasks.id),
         eq(timesheets.orgId, tasks.orgId),
-        gte(timesheets.startedAt, new Date(`${range.from}T00:00:00Z`)),
-        lte(timesheets.startedAt, new Date(`${range.to}T23:59:59.999Z`)),
+        // Batas rentang WIB: 00:00 WIB = 17:00 UTC sebelumnya (cubic P2
+        // ts-page:80 — kerja sebelum 07:00 WIB tidak jatuh ke hari salah).
+        gte(timesheets.startedAt, new Date(`${range.from}T00:00:00+07:00`)),
+        lte(timesheets.startedAt, new Date(`${range.to}T23:59:59.999+07:00`)),
       ),
     )
     .where(and(eq(tasks.orgId, orgId), eq(tasks.projectId, projectId)))

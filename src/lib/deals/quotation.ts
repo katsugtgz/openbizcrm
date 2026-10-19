@@ -41,9 +41,27 @@ export function calculateQuotationTotals(
     if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
       throw new MoneyError("Diskon harus di antara 0 dan 100.");
     }
+    // Cubic P2 quotation:44 — quantity aman × harga aman belum berarti hasil
+    // aman. Cek setiap perkalian & akumulasi sebelum dipakai.
     const lineTotal = line.quantity * line.unitPrice;
+    if (!Number.isSafeInteger(lineTotal)) {
+      throw new MoneyError(
+        "Total per baris terlalu besar (> MAX_SAFE_INTEGER).",
+      );
+    }
+    const discountLine = Math.round((lineTotal * pct) / 100);
     subtotal += lineTotal;
-    discountTotal += Math.round((lineTotal * pct) / 100);
+    discountTotal += discountLine;
+    if (!Number.isSafeInteger(subtotal)) {
+      throw new MoneyError("Subtotal terlalu besar (> MAX_SAFE_INTEGER).");
+    }
+    if (!Number.isSafeInteger(discountTotal)) {
+      throw new MoneyError("Total diskon terlalu besar (> MAX_SAFE_INTEGER).");
+    }
   }
-  return { subtotal, discountTotal, total: subtotal - discountTotal };
+  const total = subtotal - discountTotal;
+  if (!Number.isSafeInteger(total)) {
+    throw new MoneyError("Total terlalu besar (> MAX_SAFE_INTEGER).");
+  }
+  return { subtotal, discountTotal, total };
 }

@@ -1,9 +1,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { eq } from "drizzle-orm";
-import { db } from "@/db";
-import { users as schemaUsers } from "@/db/schema";
 import { session } from "@/lib/auth";
+import { resolveSessionIds } from "@/lib/auth/ids";
 import { getEmployee } from "@/lib/repos/hrm-repo";
 import { requireOrgRole } from "@/lib/org-scope";
 import { updateEmployeeAction } from "../../actions";
@@ -20,17 +18,11 @@ export default async function KaryawanEditPage({
   const { id } = await params;
   const user = await session.getSession();
   if (!user) redirect("/login");
-  const orgId =
-    user.organizationId ??
-    (
-      await db
-        .select({ orgId: schemaUsers.currentOrgId })
-        .from(schemaUsers)
-        .where(eq(schemaUsers.id, user.id))
-        .limit(1)
-    )[0]?.orgId;
-  if (!orgId) redirect("/dashboard");
-  await requireOrgRole(user.id, orgId, "admin");
+  // WorkOS session IDs -> internal UUIDs (cubic P1 karyawan-edit:24).
+  const ids = await resolveSessionIds(user);
+  if (!ids) redirect("/dashboard");
+  const { userId, orgId } = ids;
+  await requireOrgRole(userId, orgId, "admin");
   const employee = await getEmployee(orgId, id);
   if (!employee) notFound();
   const sp = await searchParams;

@@ -1,10 +1,8 @@
 import Link from "next/link";
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
-import { eq } from "drizzle-orm";
-import { db } from "@/db";
-import { users as schemaUsers } from "@/db/schema";
 import { session } from "@/lib/auth";
+import { resolveSessionIds } from "@/lib/auth/ids";
 import { requireOrgRole } from "@/lib/org-scope";
 import { listProjects } from "@/lib/repos/project-repo";
 import { listCompanies } from "@/lib/repos/crm-repo";
@@ -38,7 +36,11 @@ async function ProjectTable({
   orgId: string;
   userId: string;
 }) {
-  await requireOrgRole(userId, orgId, "member");
+  const { role } = await requireOrgRole(userId, orgId, "member");
+  // Select status hanya untuk admin: action updateProject butuh admin, jadi
+  // render untuk member hanya memastikan perubahan selalu gagal (cubic P2
+  // proyek-page:87).
+  const isAdmin = role === "admin";
   const [projects, companies] = await Promise.all([
     listProjects(orgId),
     listCompanies(orgId),
@@ -84,7 +86,12 @@ async function ProjectTable({
                       <Badge className={STATUS_BADGE[p.status] ?? ""}>
                         {p.status}
                       </Badge>
-                      <ProjectStatusSelect projectId={p.id} status={p.status} />
+                      {isAdmin && (
+                        <ProjectStatusSelect
+                          projectId={p.id}
+                          status={p.status}
+                        />
+                      )}
                     </div>
                   </TableCell>
                 </TableRow>
@@ -115,16 +122,10 @@ function TableSkeleton() {
 export default async function ProyekPage() {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  const orgId =
-    user.organizationId ??
-    (
-      await db
-        .select({ orgId: schemaUsers.currentOrgId })
-        .from(schemaUsers)
-        .where(eq(schemaUsers.id, user.id))
-        .limit(1)
-    )[0]?.orgId;
-  if (!orgId) redirect("/dashboard");
+  // WorkOS session IDs -> internal UUIDs (cubic P1 proyek-page:109).
+  const ids = await resolveSessionIds(user);
+  if (!ids) redirect("/dashboard");
+  const { userId, orgId } = ids!;
 
   return (
     <div className="flex flex-col gap-6">
@@ -143,18 +144,27 @@ export default async function ProyekPage() {
             Timesheet Saya
           </Link>
           <Suspense fallback={null}>
-            <CompaniesGate orgId={orgId} />
+            <CompaniesGate orgId={orgId} userId={userId} />
           </Suspense>
         </div>
       </div>
       <Suspense fallback={<TableSkeleton />}>
-        <ProjectTable orgId={orgId} userId={user.id} />
+        <ProjectTable orgId={orgId} userId={userId} />
       </Suspense>
     </div>
   );
 }
 
-async function CompaniesGate({ orgId }: { orgId: string }) {
+async function CompaniesGate({
+  orgId,
+  userId,
+}: {
+  orgId: string;
+  userId: string;
+}) {
+  // Membership check: non-member must not read company names through the
+  // create-dialog (cubic P2 proyek-page:158).
+  await requireOrgRole(userId, orgId, "member");
   const companies = await listCompanies(orgId);
   return (
     <NewProjectDialog

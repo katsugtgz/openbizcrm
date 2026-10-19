@@ -71,4 +71,20 @@ describe("quotation totals", () => {
       ]),
     ).toThrow(MoneyError);
   });
+
+  it("safe inputs but unsafe line total throws (cubic P2 quotation:44)", () => {
+    const lines: QuotationLine[] = [
+      { description: "A", quantity: 4096, unitPrice: Number.MAX_SAFE_INTEGER },
+    ];
+    expect(() => calculateQuotationTotals(lines)).toThrow(/Total per baris/);
+  });
+
+  it("accumulated subtotal overflow throws", () => {
+    const unit = 9_000_000_000_000_000; // safe per line, 2 lines overflow
+    const lines: QuotationLine[] = [
+      { description: "A", quantity: 1, unitPrice: unit },
+      { description: "B", quantity: 1, unitPrice: unit },
+    ];
+    expect(() => calculateQuotationTotals(lines)).toThrow(/Subtotal/);
+  });
 });

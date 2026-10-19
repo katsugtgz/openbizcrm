@@ -1,9 +1,7 @@
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
-import { eq } from "drizzle-orm";
-import { db } from "@/db";
-import { users as schemaUsers } from "@/db/schema";
 import { session } from "@/lib/auth";
+import { resolveSessionIds } from "@/lib/auth/ids";
 import { getEmployeeByUser } from "@/lib/leave/repo";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -21,7 +19,9 @@ async function CalendarSection({
 }) {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  const employee = await getEmployeeByUser(user.id, orgId);
+  const ids = await resolveSessionIds(user);
+  if (!ids) redirect("/dashboard");
+  const employee = await getEmployeeByUser(ids.userId, orgId);
   return (
     <MiniCalendar
       orgId={orgId}
@@ -51,12 +51,9 @@ export default async function PresensiPage({
 }) {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  const [row] = await db
-    .select({ orgId: schemaUsers.currentOrgId })
-    .from(schemaUsers)
-    .where(eq(schemaUsers.id, user.id))
-    .limit(1);
-  if (!row?.orgId) redirect("/dashboard");
+  // WorkOS session IDs -> internal UUIDs (cubic P1 presensi-page:24).
+  const ids = await resolveSessionIds(user);
+  if (!ids) redirect("/dashboard");
   const sp = await searchParams;
   const month = /^\d{4}-\d{2}$/.test(sp.m ?? "")
     ? sp.m!
@@ -80,7 +77,7 @@ export default async function PresensiPage({
           </CardContent>
         </Card>
         <Suspense fallback={<CalendarSkeleton />}>
-          <CalendarSection orgId={row.orgId} month={month} />
+          <CalendarSection orgId={ids.orgId} month={month} />
         </Suspense>
       </div>
     </div>

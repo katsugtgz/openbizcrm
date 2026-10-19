@@ -2,10 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { eq } from "drizzle-orm";
-import { db } from "@/db";
-import { users as schemaUsers } from "@/db/schema";
 import { session } from "@/lib/auth";
+import { resolveSessionIds } from "@/lib/auth/ids";
 import {
   createEmployee,
   updateEmployee,
@@ -27,17 +25,10 @@ const TAX_STATUSES = [
 async function requireSession() {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  const orgId =
-    user.organizationId ??
-    (
-      await db
-        .select({ orgId: schemaUsers.currentOrgId })
-        .from(schemaUsers)
-        .where(eq(schemaUsers.id, user.id))
-        .limit(1)
-    )[0]?.orgId;
-  if (!orgId) throw new Error("Tidak ada organisasi aktif.");
-  return { user, orgId };
+  // WorkOS session IDs -> internal UUIDs (cubic P1 karyawan-actions:31).
+  const ids = await resolveSessionIds(user);
+  if (!ids) throw new Error("Tidak ada organisasi aktif.");
+  return ids;
 }
 
 function parseInput(formData: FormData): EmployeeInput {
@@ -70,7 +61,7 @@ function failBack(form: "new" | "edit", message: string, id?: string): never {
 }
 
 export async function createEmployeeAction(formData: FormData): Promise<void> {
-  const { user, orgId } = await requireSession();
+  const { userId, orgId } = await requireSession();
   const input = parseInput(formData);
   try {
     if (!input.employeeNo) throw new Error("Nomor karyawan wajib diisi.");
@@ -78,7 +69,7 @@ export async function createEmployeeAction(formData: FormData): Promise<void> {
     if (!Number.isInteger(input.baseSalary)) {
       throw new Error("Gaji pokok harus angka rupiah bulat.");
     }
-    await createEmployee(user.id, orgId, input);
+    await createEmployee(userId, orgId, input);
   } catch (error) {
     const message =
       error instanceof OrgScopeError || error instanceof Error
@@ -93,7 +84,7 @@ export async function createEmployeeAction(formData: FormData): Promise<void> {
 }
 
 export async function updateEmployeeAction(formData: FormData): Promise<void> {
-  const { user, orgId } = await requireSession();
+  const { userId, orgId } = await requireSession();
   const id = String(formData.get("id") ?? "");
   const input = parseInput(formData);
   try {
@@ -103,7 +94,7 @@ export async function updateEmployeeAction(formData: FormData): Promise<void> {
     if (!Number.isInteger(input.baseSalary)) {
       throw new Error("Gaji pokok harus angka rupiah bulat.");
     }
-    await updateEmployee(user.id, orgId, id, input);
+    await updateEmployee(userId, orgId, id, input);
   } catch (error) {
     const message =
       error instanceof OrgScopeError || error instanceof Error

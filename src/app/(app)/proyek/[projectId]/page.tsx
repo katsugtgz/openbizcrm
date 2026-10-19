@@ -1,10 +1,11 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { Suspense } from "react";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { tasks as tasksTable, users as schemaUsers } from "@/db/schema";
 import { session } from "@/lib/auth";
+import { resolveSessionIds } from "@/lib/auth/ids";
 import { requireOrgRole } from "@/lib/org-scope";
 import { getProject } from "@/lib/repos/project-repo";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -40,7 +41,9 @@ async function TaskSection({
     .select({ task: tasksTable, assigneeName: schemaUsers.name })
     .from(tasksTable)
     .leftJoin(schemaUsers, eq(tasksTable.assigneeId, schemaUsers.id))
-    .where(eq(tasksTable.projectId, projectId))
+    .where(
+      and(eq(tasksTable.projectId, projectId), eq(tasksTable.orgId, orgId)),
+    )
     .orderBy(asc(tasksTable.position));
   const tasks = rows.map((r) => ({ ...r.task, assigneeName: r.assigneeName }));
 
@@ -105,16 +108,11 @@ export default async function ProjectDetailPage({
   const { projectId } = await params;
   const user = await session.getSession();
   if (!user) redirect("/login");
-  const orgId =
-    user.organizationId ??
-    (
-      await db
-        .select({ orgId: schemaUsers.currentOrgId })
-        .from(schemaUsers)
-        .where(eq(schemaUsers.id, user.id))
-        .limit(1)
-    )[0]?.orgId;
-  if (!orgId) redirect("/dashboard");
+  // WorkOS session IDs -> internal UUIDs (cubic P1 projectId:109).
+  const ids = await resolveSessionIds(user);
+  if (!ids) redirect("/dashboard");
+  const { userId, orgId } = ids;
+  await requireOrgRole(userId, orgId, "member");
 
   const project = await getProject(orgId, projectId);
   if (!project) notFound();
@@ -132,7 +130,14 @@ export default async function ProjectDetailPage({
             </Badge>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
-            Kanban, gantt, dan timesheet proyek.
+            Kanban, gantt, dan{" "}
+            <Link
+              className="underline hover:no-underline"
+              href="/proyek/timesheet"
+            >
+              timesheet
+            </Link>{" "}
+            proyek.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -146,7 +151,7 @@ export default async function ProjectDetailPage({
       </div>
 
       <Suspense fallback={<TaskSkeleton />}>
-        <TaskSection orgId={orgId} userId={user.id} projectId={projectId} />
+        <TaskSection orgId={orgId} userId={userId} projectId={projectId} />
       </Suspense>
     </div>
   );

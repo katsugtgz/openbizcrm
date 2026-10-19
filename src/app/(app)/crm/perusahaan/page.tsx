@@ -1,9 +1,7 @@
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
-import { eq } from "drizzle-orm";
-import { db } from "@/db";
-import { users as schemaUsers } from "@/db/schema";
 import { session } from "@/lib/auth";
+import { resolveSessionIds } from "@/lib/auth/ids";
 import { requireOrgRole } from "@/lib/org-scope";
 import { listCompanies, listContacts } from "@/lib/repos/crm-repo";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,6 +25,12 @@ async function Tables({ orgId, userId }: { orgId: string; userId: string }) {
     listContacts(orgId),
   ]);
   const companyName = new Map(companies.map((c) => [c.id, c.name]));
+  // Satu pass, bukan O(companies × contacts) per baris tabel (cubic P3
+  // perusahaan:63).
+  const contactCount = new Map<string, number>();
+  for (const k of contacts) {
+    contactCount.set(k.companyId, (contactCount.get(k.companyId) ?? 0) + 1);
+  }
 
   return (
     <div className="space-y-6">
@@ -60,7 +64,7 @@ async function Tables({ orgId, userId }: { orgId: string; userId: string }) {
                     <TableCell className="font-medium">{c.name}</TableCell>
                     <TableCell>{c.industry ?? "-"}</TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {contacts.filter((k) => k.companyId === c.id).length}
+                      {contactCount.get(c.id) ?? 0}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -127,16 +131,10 @@ function TablesSkeleton() {
 export default async function PerusahaanPage() {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  const orgId =
-    user.organizationId ??
-    (
-      await db
-        .select({ orgId: schemaUsers.currentOrgId })
-        .from(schemaUsers)
-        .where(eq(schemaUsers.id, user.id))
-        .limit(1)
-    )[0]?.orgId;
-  if (!orgId) redirect("/dashboard");
+  // WorkOS session IDs -> internal UUIDs (cubic P1 perusahaan:24).
+  const ids = await resolveSessionIds(user);
+  if (!ids) redirect("/dashboard");
+  const { userId, orgId } = ids!;
 
   return (
     <div className="flex flex-col gap-6">
@@ -149,7 +147,7 @@ export default async function PerusahaanPage() {
         </p>
       </div>
       <Suspense fallback={<TablesSkeleton />}>
-        <Tables orgId={orgId} userId={user.id} />
+        <Tables orgId={orgId} userId={userId} />
       </Suspense>
     </div>
   );
