@@ -10,5 +10,9 @@ export default function AppTemplate({
 }: {
   children: import("react").ReactNode;
 }) {
-  return <div className="animate-in fade-in duration-300">{children}</div>;
+  return (
+    <div className="animate-in fade-in duration-300 motion-reduce:transition-none motion-reduce:animate-none">
+      {children}
+    </div>
+  );
 }

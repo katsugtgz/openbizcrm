@@ -41,7 +41,13 @@ export default function AppLayout({
   children: import("react").ReactNode;
 }) {
   return (
-    <Suspense>
+    <Suspense
+      fallback={
+        <div className="flex min-h-dvh items-center justify-center text-sm text-muted-foreground">
+          Memuat…
+        </div>
+      }
+    >
       <AuthenticatedShell>{children}</AuthenticatedShell>
     </Suspense>
   );

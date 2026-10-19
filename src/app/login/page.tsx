@@ -12,16 +12,10 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { isWorkosConfigured } from "@/lib/auth/config";
 
-/** Mirrors the middleware's configuration check. */
-function isWorkosConfigured(): boolean {
-  return (
-    process.env.AUTH_FAKE !== "1" &&
-    !!process.env.WORKOS_API_KEY &&
-    !!process.env.WORKOS_CLIENT_ID &&
-    !!process.env.WORKOS_COOKIE_PASSWORD
-  );
-}
+// Single source of truth for WorkOS readiness — shared with src/proxy.ts so
+// the two checks cannot drift (cubic P2 login/page.tsx:21).
 
 /** Dev fixture list — same identities as src/db/seed.ts (server allowlist). */
 const SEED_USERS = [

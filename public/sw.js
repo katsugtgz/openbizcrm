@@ -3,7 +3,7 @@
  * network-first for navigations with the offline page as fallback.
  * Version the cache name to invalidate old entries on deploy.
  */
-const CACHE = "openbizcrm-v1";
+const CACHE = "openbizcrm-v2";
 const OFFLINE_URL = "/offline.html";
 
 const PRECACHE = [OFFLINE_URL, "/icon.svg", "/manifest.webmanifest"];
@@ -12,7 +12,18 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
       .open(CACHE)
-      .then((cache) => cache.addAll(PRECACHE))
+      .then(async (cache) => {
+        // Tolerate individual failures so one missing asset cannot block
+        // installation entirely; the runtime cache covers the gap.
+        const results = await Promise.allSettled(
+          PRECACHE.map((url) => cache.add(url)),
+        );
+        for (const result of results) {
+          if (result.status === "rejected") {
+            console.warn("[sw] precache failed:", result.reason);
+          }
+        }
+      })
       .then(() => self.skipWaiting()),
   );
 });
@@ -32,7 +43,10 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const { request } = event;
-  if (request.method !== "GET" || !request.url.startsWith(self.location.origin))
+  if (
+    request.method !== "GET" ||
+    new URL(request.url).origin !== self.location.origin
+  )
     return;
 
   if (request.mode === "navigate") {
@@ -54,7 +68,11 @@ self.addEventListener("fetch", (event) => {
           fetch(request).then((response) => {
             if (response.ok) {
               const copy = response.clone();
-              caches.open(CACHE).then((cache) => cache.put(request, copy));
+              // Detached write → tie to the fetch event lifecycle so the
+              // asset is guaranteed cached after its first fetch.
+              event.waitUntil(
+                caches.open(CACHE).then((cache) => cache.put(request, copy)),
+              );
             }
             return response;
           }),

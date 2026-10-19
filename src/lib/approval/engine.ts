@@ -130,15 +130,19 @@ function act(
     at: now(),
   };
   if (type === "rejected") {
-    return { ...req, status: "rejected", events: [...req.events, event] };
+    return deepFreeze({
+      ...req,
+      status: "rejected" as ApprovalStatus,
+      events: [...req.events, deepFreeze(event)],
+    });
   }
   const last = req.level === req.chain.length - 1;
-  return {
+  return deepFreeze({
     ...req,
-    status: last ? "approved" : "pending",
+    status: last ? ("approved" as ApprovalStatus) : "pending",
     level: last ? req.level : req.level + 1,
-    events: [...req.events, event],
-  };
+    events: [...req.events, deepFreeze(event)],
+  });
 }
 
 export function approve(

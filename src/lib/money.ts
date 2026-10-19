@@ -13,7 +13,7 @@ export function formatIDR(amount: number): string {
   if (!Number.isInteger(amount)) {
     throw new MoneyError("Jumlah harus angka bulat (integer).");
   }
-  if (amount > Number.MAX_SAFE_INTEGER) {
+  if (Math.abs(amount) > Number.MAX_SAFE_INTEGER) {
     throw new MoneyError("Jumlah terlalu besar (> Number.MAX_SAFE_INTEGER).");
   }
   const sign = amount < 0 ? "-" : "";

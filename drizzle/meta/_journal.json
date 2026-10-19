@@ -29,6 +29,27 @@
       "when": 1792354089042,
       "tag": "0003_wandering_kid_colt",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792369301774,
+      "tag": "0004_daffy_kid_colt",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1792370116653,
+      "tag": "0005_clever_kid_colt",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792370863329,
+      "tag": "0006_natural_millenium_guard",
+      "breakpoints": true
     }
   ]
 }

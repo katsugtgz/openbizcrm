@@ -1,28 +1,41 @@
 import "dotenv/config";
-import { describe, it, expect, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq } from "drizzle-orm";
-import { db } from "@/db";
-import {
-  employees,
-  orgMemberships,
-  organizations,
-  payrollRuns,
-  users,
-} from "@/db/schema";
-import { createUser } from "@/lib/repos/user-repo";
-import { createOrg } from "@/lib/repos/org-repo";
-import { createEmployee } from "@/lib/repos/hrm-repo";
-import {
-  PayrollError,
-  runPayroll,
-  exportBankTransfer,
-  getRun,
-} from "./service";
+import { orgMemberships, organizations, payrollRuns, users } from "@/db/schema";
+
+// DB-touching modules load ONLY when RUN_DB_TESTS=1: static top-level
+// @/db / repo / service imports would initialize the database stack even
+// when the suite is skipped (cubic P2 repos.integration.test.ts:4 — same
+// fix applied here).
+type PayrollService = typeof import("./service");
 
 const itDb = process.env.RUN_DB_TESTS === "1" ? it : it.skip;
 
 describe("payroll service integration", () => {
   const suffix = Date.now().toString(36);
+  let db!: Awaited<ReturnType<() => Promise<typeof import("@/db")>>>["db"];
+  let createUser!: (typeof import("@/lib/repos/user-repo"))["createUser"];
+  let createOrg!: (typeof import("@/lib/repos/org-repo"))["createOrg"];
+  let createEmployee!: (typeof import("@/lib/repos/hrm-repo"))["createEmployee"];
+  let PayrollError!: PayrollService["PayrollError"];
+  let runPayroll!: PayrollService["runPayroll"];
+  let exportBankTransfer!: PayrollService["exportBankTransfer"];
+  let getRun!: PayrollService["getRun"];
+
+  beforeAll(async () => {
+    if (process.env.RUN_DB_TESTS !== "1") return;
+    ({ db } = await import("@/db"));
+    ({ createUser } = await import("@/lib/repos/user-repo"));
+    ({ createOrg } = await import("@/lib/repos/org-repo"));
+    ({ createEmployee } = await import("@/lib/repos/hrm-repo"));
+    ({ PayrollError, runPayroll, exportBankTransfer, getRun } =
+      await import("./service"));
+  });
+
+  // Roundtrip may fail midway; track every resource at creation time so
+  // cleanup removes each independently of orgId (cubic P2 :129 pattern).
+  const createdUserIds: string[] = [];
+  const createdOrgIds: string[] = [];
   let orgId = "";
   let adminId = "";
   let memberId = "";
@@ -37,16 +50,19 @@ describe("payroll service integration", () => {
         email: `pay-admin-${suffix}@test.id`,
       });
       adminId = admin.id;
+      createdUserIds.push(admin.id);
       const member = await createUser({
         workosUserId: `pay-member-${suffix}`,
         email: `pay-member-${suffix}@test.id`,
       });
       memberId = member.id;
+      createdUserIds.push(member.id);
       const org = await createOrg(
         { name: "Pay Org", slug: `pay-org-${suffix}` },
         adminId,
       );
       orgId = org.id;
+      createdOrgIds.push(org.id);
       await db
         .insert(orgMemberships)
         .values({ orgId, userId: memberId, role: "member" });
@@ -126,10 +142,12 @@ describe("payroll service integration", () => {
       workosUserId: `pay-other-${suffix}`,
       email: `pay-other-${suffix}@test.id`,
     });
+    createdUserIds.push(other.id);
     const otherOrg = await createOrg(
       { name: "Other Org", slug: `pay-other-${suffix}` },
       other.id,
     );
+    createdOrgIds.push(otherOrg.id);
     // adminId punya run di orgId; org lain tidak melihatnya (NOT_FOUND).
     const runs = await db
       .select()
@@ -141,12 +159,15 @@ describe("payroll service integration", () => {
     );
   });
 
+  // Org deletion cascades memberships/employees/payslips; deletes registered
+  // resources even when the roundtrip fails midway (cubic P2 :129).
   afterAll(async () => {
-    if (orgId) {
-      await db.delete(organizations).where(eq(organizations.id, orgId));
-      await db.delete(users).where(eq(users.id, adminId));
-      await db.delete(users).where(eq(users.id, memberId));
-      await db.delete(employees).where(eq(employees.orgId, orgId));
+    if (process.env.RUN_DB_TESTS !== "1") return;
+    for (const id of createdOrgIds) {
+      await db.delete(organizations).where(eq(organizations.id, id));
+    }
+    for (const id of createdUserIds) {
+      await db.delete(users).where(eq(users.id, id));
     }
   });
 });

@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { users } from "@/db/schema";
+import { NotFoundError } from "@/lib/org-scope";
 
 export type User = typeof users.$inferSelect;
 
@@ -51,5 +52,6 @@ export async function updateUser(
     .set(input)
     .where(eq(users.id, id))
     .returning();
+  if (!user) throw new NotFoundError("Pengguna tidak ditemukan.");
   return user;
 }

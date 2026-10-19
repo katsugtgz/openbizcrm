@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   auditLogs,
@@ -38,85 +38,111 @@ const SEED_BRANCHES = [
   { name: "Cabang Surabaya", address: "Jl. Basuki Rahmat No. 10, Surabaya" },
 ];
 
+/**
+ * Idempotent + concurrency-safe seed. Everything runs inside one transaction
+ * serialized by a session-level advisory lock keyed on the org slug, so two
+ * overlapping invocations cannot race the select-then-insert checks (cubic
+ * P2 seed:33). Conflict-safe upserts (onConflictDoNothing) make re-runs and
+ * stragglers harmless even after the lock is released.
+ */
 async function seed() {
-  // Org
-  let [org] = await db
-    .select()
-    .from(organizations)
-    .where(eq(organizations.slug, ORG_SLUG))
-    .limit(1);
-  if (!org) {
-    [org] = await db
-      .insert(organizations)
-      .values({ name: ORG_NAME, slug: ORG_SLUG })
-      .returning();
-    console.log(`+ org ${ORG_SLUG}`);
-  }
+  await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext('openbizcrm-seed'))`,
+    );
 
-  // Branches (idempotent by name)
-  for (const b of SEED_BRANCHES) {
-    const existing = await db
+    // Org
+    let [org] = await tx
       .select()
-      .from(branches)
-      .where(eq(branches.orgId, org.id));
-    if (!existing.some((row) => row.name === b.name)) {
-      await db.insert(branches).values({ orgId: org.id, ...b });
+      .from(organizations)
+      .where(eq(organizations.slug, ORG_SLUG))
+      .limit(1);
+    if (!org) {
+      [org] = await tx
+        .insert(organizations)
+        .values({ name: ORG_NAME, slug: ORG_SLUG })
+        .onConflictDoNothing()
+        .returning();
+      if (!org) {
+        // Concurrent seed inserted it between lock release risk — re-read.
+        [org] = await tx
+          .select()
+          .from(organizations)
+          .where(eq(organizations.slug, ORG_SLUG))
+          .limit(1);
+      }
+      console.log(`+ org ${ORG_SLUG}`);
+    }
+
+    // Branches — org-scoped unique constraint makes this conflict-safe.
+    for (const b of SEED_BRANCHES) {
+      await tx
+        .insert(branches)
+        .values({ orgId: org.id, ...b })
+        .onConflictDoNothing({
+          target: [branches.orgId, branches.name],
+        });
       console.log(`+ branch ${b.name}`);
     }
-  }
 
-  // Users + memberships (idempotent by workosUserId)
-  for (const u of SEED_USERS) {
-    let [user] = await db
-      .select()
-      .from(users)
-      .where(eq(users.workosUserId, u.workosUserId))
-      .limit(1);
-    if (!user) {
-      [user] = await db
-        .insert(users)
-        .values({
-          workosUserId: u.workosUserId,
-          email: u.email,
-          name: u.name,
-          currentOrgId: org.id,
-        })
-        .returning();
-      console.log(`+ user ${u.workosUserId}`);
-    }
-    const existing = await db
-      .select()
-      .from(orgMemberships)
-      .where(eq(orgMemberships.orgId, org.id));
-    if (!existing.some((m) => m.userId === user.id)) {
-      await db
+    // Users + memberships — workosUserId/email unique make this safe.
+    for (const u of SEED_USERS) {
+      let [user] = await tx
+        .select()
+        .from(users)
+        .where(eq(users.workosUserId, u.workosUserId))
+        .limit(1);
+      if (!user) {
+        [user] = await tx
+          .insert(users)
+          .values({
+            workosUserId: u.workosUserId,
+            email: u.email,
+            name: u.name,
+            currentOrgId: org.id,
+          })
+          .onConflictDoNothing()
+          .returning();
+        if (!user) {
+          [user] = await tx
+            .select()
+            .from(users)
+            .where(eq(users.workosUserId, u.workosUserId))
+            .limit(1);
+        }
+        console.log(`+ user ${u.workosUserId}`);
+      }
+      await tx
         .insert(orgMemberships)
-        .values({ orgId: org.id, userId: user.id, role: u.role });
+        .values({ orgId: org.id, userId: user.id, role: u.role })
+        .onConflictDoNothing({
+          target: [orgMemberships.orgId, orgMemberships.userId],
+        });
       console.log(`+ membership ${u.workosUserId} (${u.role})`);
     }
-  }
 
-  // Audit sample
-  const logs = await db
-    .select()
-    .from(auditLogs)
-    .where(eq(auditLogs.orgId, org.id));
-  if (logs.length === 0) {
-    const [owner] = await db
+    // Audit sample
+    const logs = await tx
       .select()
-      .from(users)
-      .where(eq(users.workosUserId, "seed-owner-1"))
-      .limit(1);
-    await db.insert(auditLogs).values({
-      orgId: org.id,
-      userId: owner.id,
-      action: "seed.sample",
-      entity: "organization",
-      entityId: org.id,
-      metadata: { source: "seed" },
-    });
-    console.log("+ audit sample");
-  }
+      .from(auditLogs)
+      .where(eq(auditLogs.orgId, org.id));
+    if (logs.length === 0) {
+      const [owner] = await tx
+        .select()
+        .from(users)
+        .where(eq(users.workosUserId, "seed-owner-1"))
+        .limit(1);
+      await tx.insert(auditLogs).values({
+        orgId: org.id,
+        userId: owner.id,
+        action: "seed.sample",
+        entity: "organization",
+        entityId: org.id,
+        metadata: { source: "seed" },
+      });
+      console.log("+ audit sample");
+    }
+  });
 
   console.log("Seed selesai (idempotent).");
 }

@@ -36,6 +36,16 @@ export function assertInternalId(
   );
 }
 
+/** Thrown when a targeted row (branch, membership, user, org) does not exist
+ * or belongs to another org. Distinct from OrgScopeError NO_MEMBERSHIP, which
+ * means the CALLER lacks access — NotFoundError means the TARGET is gone. */
+export class NotFoundError extends Error {
+  constructor(message = "Data tidak ditemukan.") {
+    super(message);
+    this.name = "NotFoundError";
+  }
+}
+
 export class OrgScopeError extends Error {
   constructor(
     public code: "NO_MEMBERSHIP" | "INSUFFICIENT_ROLE",

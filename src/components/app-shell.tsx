@@ -19,7 +19,6 @@ import {
 } from "lucide-react";
 import { cn } from "cn";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -123,12 +122,9 @@ function UserMenu({ user }: { user: ShellUser }) {
           </span>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
-        <DropdownMenuItem asChild>
-          <span className="flex w-full items-center justify-between">
-            <span>Peran</span>
-            <Badge variant="secondary">Anggota</Badge>
-          </span>
-        </DropdownMenuItem>
+        {/* ponytail: role row removed — the session carries no membership
+            role (internal DB UUID contract, cubic app-shell.tsx:128); render
+            it again once ShellUser can receive a resolved role. */}
         <DropdownMenuSeparator />
         <DropdownMenuItem
           disabled={pending}

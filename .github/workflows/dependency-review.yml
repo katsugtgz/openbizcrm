@@ -24,15 +24,35 @@ jobs:
           code=$(curl -s -o /dev/null -w '%{http_code}' \
             -H "Authorization: Bearer ${{ github.token }}" \
             https://api.github.com/repos/${{ github.repository }}/dependency-graph/sbom)
-          echo "enabled=$([ "$code" = "200" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "SBOM endpoint HTTP $code"
+          case "$code" in
+            200)
+              echo "enabled=true" >> "$GITHUB_OUTPUT" ;;
+            # GitHub returns 403 with "Code space disabled" when the repo's
+            # dependency graph is off — the only skip-worthy response. Any
+            # other status (401, 404, 5xx, timeout) is an unexpected failure
+            # and must fail the job rather than silently skip review
+            # (cubic P1 dependency-review.yml:27).
+            403)
+              if curl -s -H "Authorization: Bearer ${{ github.token }}" \
+                https://api.github.com/repos/${{ github.repository }}/dependency-graph/sbom \
+                | grep -qi 'Code space disabled\|dependency graph.*disabled'; then
+                echo "enabled=false" >> "$GITHUB_OUTPUT"
+              else
+                echo "::error::SBOM endpoint returned 403 for an unexpected reason (HTTP body does not indicate a disabled dependency graph)."
+                exit 1
+              fi ;;
+            *)
+              echo "::error::SBOM endpoint returned HTTP $code; refusing to skip dependency review on an unexpected status."
+              exit 1 ;;
+          esac
 
       - name: Dependency review
         if: steps.depgraph.outputs.enabled == 'true'
         uses: actions/dependency-review-action@v4
 
       - name: Dependency review skipped (repo setting)
-        if: steps.depgraph.outputs.enabled != 'true'
+        if: steps.depgraph.outputs.enabled == 'false'
         run: |
           echo "::warning::Dependency graph is disabled for this repository, so dependency review cannot run."
           echo "Enable it: Settings -> Code security -> Dependency graph, then re-run this check."

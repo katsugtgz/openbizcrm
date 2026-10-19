@@ -8,6 +8,7 @@ import {
   date,
   jsonb,
   unique,
+  index,
 } from "drizzle-orm/pg-core";
 import type { ApprovalRequest } from "@/lib/approval";
 import type { Payslip as PayslipBreakdown } from "@/lib/payroll/engine";
@@ -21,22 +22,36 @@ export const organizations = pgTable("organizations", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-export const branches = pgTable("branches", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  orgId: uuid("org_id")
-    .notNull()
-    .references(() => organizations.id, { onDelete: "cascade" }),
-  name: text("name").notNull(),
-  address: text("address"),
-});
+export const branches = pgTable(
+  "branches",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    address: text("address"),
+  },
+  // Branch names are unique per organization — seed's idempotency check reads
+  // this constraint instead of racing a select-then-insert (cubic P2 seed:33).
+  // The (org_id, name) unique index also backs org-scoped branch lists
+  // (filter org_id, order name — cubic P2 0000:13); no separate index needed.
+  (t) => [unique("branches_org_name_unique").on(t.orgId, t.name)],
+);
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   workosUserId: text("workos_user_id").unique(),
-  email: text("email").notNull(),
+  // Email resolves identity (getUserByEmail); duplicates would let an
+  // arbitrary account be picked (cubic P2 user-repo:27).
+  email: text("email").notNull().unique(),
   name: text("name"),
   avatarUrl: text("avatar_url"),
-  currentOrgId: uuid("current_org_id").references(() => organizations.id),
+  // SET NULL: deleting an org clears stale current-org selections instead of
+  // rejecting the delete (cubic P2 0000:51).
+  currentOrgId: uuid("current_org_id").references(() => organizations.id, {
+    onDelete: "set null",
+  }),
 });
 
 export const orgMemberships = pgTable(
@@ -235,18 +250,25 @@ export const leaveBalances = pgTable(
   ],
 );
 
-export const auditLogs = pgTable("audit_logs", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  orgId: uuid("org_id").references(() => organizations.id, {
-    onDelete: "cascade",
-  }),
-  userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
-  action: text("action").notNull(),
-  entity: text("entity"),
-  entityId: text("entity_id"),
-  metadata: jsonb("metadata"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+export const auditLogs = pgTable(
+  "audit_logs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id").references(() => organizations.id, {
+      onDelete: "cascade",
+    }),
+    userId: uuid("user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    action: text("action").notNull(),
+    entity: text("entity"),
+    entityId: text("entity_id"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  // Org-scoped history filters org_id and sorts created_at (cubic P2 0000:2).
+  (t) => [index("audit_logs_org_created_idx").on(t.orgId, t.createdAt)],
+);
 
 export const approvalRequests = pgTable(
   "approval_requests",

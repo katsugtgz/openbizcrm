@@ -124,6 +124,28 @@ describe("approval engine", () => {
     expect(req.level).toBe(0);
   });
 
+  it("act() result is deeply frozen: approve/reject state cannot be rewritten", () => {
+    let req = createApproval({
+      requestId: "REQ-13",
+      requestedBy: "u1",
+      chain: twoLevel("u2", "u3"),
+    });
+    req = approve(req, "u2");
+    // spread in act() must not drop the freeze: status/level/events writable
+    // would let a caller flip status back to pending and re-act
+    expect(Object.isFrozen(req)).toBe(true);
+    expect(Object.isFrozen(req.events)).toBe(true);
+    expect(Object.isFrozen(req.events[1])).toBe(true);
+    expect(() => {
+      "use strict";
+      // biome-ignore lint: intentional mutation probe
+      (req as { status: string }).status = "pending";
+    }).toThrow();
+    req = reject(req, "u3", "ditolak");
+    expect(Object.isFrozen(req)).toBe(true);
+    expect(Object.isFrozen(req.events[2])).toBe(true);
+  });
+
   it("history is complete and ordered", () => {
     let req = createApproval({
       requestId: "REQ-8",
@@ -164,6 +186,25 @@ describe("approval engine", () => {
     req = reject(req, "u2", "gak jadi");
     expect(req.status).toBe("rejected");
     expect(history(req)).toHaveLength(2);
+  });
+
+  // Cubic P3 approval.test.ts:55: the rejection test must verify the terminal
+  // history event itself (type/actor/level/note), not just the status flag —
+  // corrupted audit history while status looks terminal would slip through.
+  it("reject records a complete terminal history event", () => {
+    let req = createApproval({
+      requestId: "REQ-14",
+      requestedBy: "u1",
+      chain: twoLevel("u2", "u3"),
+    });
+    req = approve(req, "u2");
+    req = reject(req, "u3", "tidak setuju");
+    const events = history(req);
+    const last = events[events.length - 1];
+    expect(last.type).toBe("rejected");
+    expect(last.actorId).toBe("u3");
+    expect(last.level).toBe(1);
+    expect(last.note).toBe("tidak setuju");
   });
 
   it("requester in chain throws (would be stuck pending forever)", () => {

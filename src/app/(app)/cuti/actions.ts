@@ -72,7 +72,7 @@ export async function submitLeaveAction(formData: FormData): Promise<void> {
     if (days <= 0) throw new Error("Rentang tanggal tidak valid.");
 
     // Rantai approval: satu admin/owner org lain (bukan pemohon).
-    const approver = (await listMembers(orgId))
+    const approver = (await listMembers(user.id, orgId))
       .map((m) => m.user)
       .find((u) => u.id !== user.id);
     if (!approver) {
