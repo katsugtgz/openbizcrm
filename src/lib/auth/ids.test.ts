@@ -24,7 +24,12 @@ describe("resolveSessionIds", () => {
     expect(resolved).toBeNull();
   });
 
-  it("resolves fake-session ids (seed-owner-1) to internal UUIDs", async () => {
+  // The next two resolve against seeded rows, so they need the database
+  // (RUN_DB_TESTS=1): CI runs without it and the resolver correctly
+  // returns null for unknown users there.
+  const itDb = process.env.RUN_DB_TESTS === "1" ? it : it.skip;
+
+  itDb("resolves fake-session ids (seed-owner-1) to internal UUIDs", async () => {
     const resolved = await resolveSessionIds({
       id: "seed-owner-1",
       email: "owner@contoh.co.id",
@@ -39,7 +44,7 @@ describe("resolveSessionIds", () => {
     );
   });
 
-  it("resolves WorkOS org id to the internal org UUID", async () => {
+  itDb("resolves WorkOS org id to the internal org UUID", async () => {
     const resolved = await resolveSessionIds({
       id: "seed-owner-1",
       email: "owner@contoh.co.id",
