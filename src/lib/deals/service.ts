@@ -35,8 +35,32 @@ export async function closeDeal(
     .where(and(eq(crmDeals.id, dealId), eq(crmDeals.orgId, orgId)))
     .limit(1);
   if (!deal) throw new NotFoundError("Deal tidak ditemukan.");
-  // Sudah closed: idempoten, jangan timpa outcome lama (cubic P2 service:53).
-  if (deal.status !== "open") return deal;
+  // Sudah closed: outcome sama = idempoten; outcome lain = konflik, lempar
+  // (UI tidak boleh melaporkan outcome yang tidak pernah diterapkan).
+  if (deal.status !== "open") {
+    // Pre-read bisa basi saat moveDeal konkuren mengubah deal closed —
+    // revalidasi kondisional dengan WHERE status='outcome' sebelum
+    // dilaporkan sudah diterapkan (cubic P2 service:41).
+    if (deal.status === outcome) {
+      const [fresh] = await db
+        .select()
+        .from(crmDeals)
+        .where(
+          and(
+            eq(crmDeals.id, dealId),
+            eq(crmDeals.orgId, orgId),
+            eq(crmDeals.status, outcome),
+          ),
+        )
+        .limit(1);
+      if (fresh) return fresh;
+      // Basinya: deal berpindah sejak pre-read — lanjut ke close berikutnya.
+    } else {
+      throw new Error(
+        `Deal sudah ${deal.status}; tidak bisa ditutup sebagai ${outcome}.`,
+      );
+    }
+  }
   const [stage] = await db
     .select()
     .from(crmStages)
@@ -56,8 +80,44 @@ export async function closeDeal(
   const [row] = await db
     .update(crmDeals)
     .set({ stageId: stage.id, status: outcome, closedAt: now })
-    .where(and(eq(crmDeals.id, dealId), eq(crmDeals.orgId, orgId)))
+    // WHERE status='open': dua close konkuren — hanya satu menulis; yang
+    // kalah lihat returning kosong dan ulang read untuk keputusan idempoten/
+    // konflik (cubic P2 service:39, race-safe).
+    .where(
+      and(
+        eq(crmDeals.id, dealId),
+        eq(crmDeals.orgId, orgId),
+        eq(crmDeals.status, "open"),
+      ),
+    )
     .returning();
+  if (!row) {
+    // Kalah race: deal sudah closed oleh request lain. Outcome sama =
+    // idempoten (re-read kondisional, deal bisa terhapus sejak pre-read);
+    // outcome lain = konflik; deal hilang = NotFoundError type service
+    // terjaga (cubic P2 service:88).
+    const [current] = await db
+      .select()
+      .from(crmDeals)
+      .where(
+        and(
+          eq(crmDeals.id, dealId),
+          eq(crmDeals.orgId, orgId),
+          eq(crmDeals.status, outcome),
+        ),
+      )
+      .limit(1);
+    if (current) return current;
+    const [any] = await db
+      .select({ status: crmDeals.status })
+      .from(crmDeals)
+      .where(and(eq(crmDeals.id, dealId), eq(crmDeals.orgId, orgId)))
+      .limit(1);
+    if (!any) throw new NotFoundError("Deal tidak ditemukan.");
+    throw new Error(
+      `Deal sudah ${any.status}; tidak bisa ditutup sebagai ${outcome}.`,
+    );
+  }
   await recordAudit({
     orgId,
     userId,

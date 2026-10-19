@@ -25,26 +25,26 @@ jobs:
             -H "Authorization: Bearer ${{ github.token }}" \
             https://api.github.com/repos/${{ github.repository }}/dependency-graph/sbom)
           echo "SBOM endpoint HTTP $code"
+          body=""
+          if [ "$code" != "200" ]; then
+            body=$(curl -s -H "Authorization: Bearer ${{ github.token }}" \
+              https://api.github.com/repos/${{ github.repository }}/dependency-graph/sbom)
+          fi
           case "$code" in
             200)
               echo "enabled=true" >> "$GITHUB_OUTPUT" ;;
-            # Dependency graph disabled manifests as 403 with a "disabled"
-            # body, or as a plain 404 (endpoint does not exist for the
-            # repo). Both are the one skip-worthy condition. Anything else
-            # (401, 5xx, timeout) is an unexpected failure and must fail
-            # the job rather than silently skip review
-            # (cubic P1 dependency-review.yml:27).
-            403)
-              if curl -s -H "Authorization: Bearer ${{ github.token }}" \
-                https://api.github.com/repos/${{ github.repository }}/dependency-graph/sbom \
-                | grep -qi 'Code space disabled\|dependency graph.*disabled\|Not Found'; then
+            # Dependency graph disabled manifests as 403/404 whose body says
+            # the graph is disabled ("Not Found" for a repo with no graph).
+            # Only those explicit body messages may skip review; anything
+            # else (401, 5xx, timeout, unexpected body) is an error and must
+            # fail the job rather than silently skip review.
+            403|404)
+              if echo "$body" | grep -qi 'Code space disabled\|dependency graph.*disabled\|Not Found'; then
                 echo "enabled=false" >> "$GITHUB_OUTPUT"
               else
-                echo "::error::SBOM endpoint returned 403 for an unexpected reason (HTTP body does not indicate a disabled dependency graph)."
+                echo "::error::SBOM endpoint returned $code for an unexpected reason (HTTP body does not indicate a disabled dependency graph)."
                 exit 1
               fi ;;
-            404)
-              echo "enabled=false" >> "$GITHUB_OUTPUT" ;;
             *)
               echo "::error::SBOM endpoint returned HTTP $code; refusing to skip dependency review on an unexpected status."
               exit 1 ;;

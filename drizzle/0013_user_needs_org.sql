@@ -1,0 +1,1 @@
+ALTER TABLE "users" ADD COLUMN "needs_org" boolean DEFAULT false NOT NULL;

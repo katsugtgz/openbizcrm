@@ -2,14 +2,19 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, isNull, max } from "drizzle-orm";
 import { db } from "@/db";
-import { tasks as tasksTable, taskTemplates, timesheets } from "@/db/schema";
+import {
+  projects,
+  tasks as tasksTable,
+  taskTemplates,
+  timesheets,
+} from "@/db/schema";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
 import { requireOrgRole } from "@/lib/org-scope";
 import { jakartaDateISO } from "@/lib/attendance/rules";
-import { assertProjectInOrg } from "@/lib/tasks/service";
+import { assertProjectInOrg, TASK_TITLE_MAX } from "@/lib/tasks/service";
 import { recordAudit } from "@/lib/repos/audit-repo";
 import {
   createProject,
@@ -219,6 +224,10 @@ export async function createTemplateAction(
     : "medium";
   try {
     if (!name) throw new Error("Nama template wajib diisi.");
+    // Nama jadi title task daily — ikut batas b-tree index (cubic P2 0012:3),
+    // sama dengan TASK_TITLE_MAX di task service.
+    if (name.length > TASK_TITLE_MAX)
+      throw new Error(`Nama template maksimal ${TASK_TITLE_MAX} karakter.`);
     // createProject membutuhkan role admin; template dibatasi admin juga.
     await requireOrgRole(userId, orgId, "admin");
     await db.insert(taskTemplates).values({ orgId, name, priority });
@@ -268,9 +277,9 @@ export async function generateTodayAction(
     const today = jakartaDateISO(new Date());
     await requireOrgRole(userId, orgId, "member");
     await assertProjectInOrg(orgId, projectId);
-    // Atomic check-and-create: unique (org, project, title, dueDate) +
-    // onConflictDoNothing menutup duplikat template & request konkuren
-    // (cubic P2 proyek-actions:279). Pre-read hanya optimasi counter.
+    // Atomic check-and-create: partial unique index (org, project,
+    // dailyForDate, title) WHERE source='daily' + onConflictDoNothing menutup
+    // duplikat template & request konkuren. Pre-read hanya optimasi counter.
     const existing = await db
       .select({ title: tasksTable.title })
       .from(tasksTable)
@@ -278,45 +287,74 @@ export async function generateTodayAction(
         and(
           eq(tasksTable.orgId, orgId),
           eq(tasksTable.projectId, projectId),
-          eq(tasksTable.dueDate, today),
+          eq(tasksTable.source, "daily"),
+          eq(tasksTable.dailyForDate, today),
         ),
       );
     const existingTitles = new Set(existing.map((r) => r.title));
 
+    // Posisi kolom "todo" dialokasikan berurutan, bukan 0 semua —
+    // posisi 0 berganda bikin urutan kanban tidak stabil
+    // (cubic P2 proyek-actions:298). Max-read TANPA filter dueDate: posisi
+    // kanban dialokasikan lintas seluruh kolom status, bukan hanya task hari
+    // ini (cubic P2 proyek-actions:299). Race-safety (cubic P2
+    // proyek-actions:318): FOR UPDATE baris project + max-read + insert
+    // dalam satu transaksi, seperti createTask.
+    let nextPos = -1;
     let created = 0;
-    for (const t of templates) {
-      if (existingTitles.has(t.name)) continue;
-      const [row] = await db
-        .insert(tasksTable)
-        .values({
-          orgId,
-          projectId,
-          title: t.name,
-          description: t.description,
-          priority: t.priority,
-          dueDate: today,
-          position: 0,
-        })
-        .onConflictDoNothing({
-          target: [
-            tasksTable.orgId,
-            tasksTable.projectId,
-            tasksTable.title,
-            tasksTable.dueDate,
-          ],
-        })
-        .returning();
-      if (row) {
-        created++;
-        await recordAudit({
-          orgId,
-          userId,
-          action: "task.create",
-          entity: "task",
-          entityId: row.id,
-          metadata: { projectId, title: row.title, daily: true },
-        });
+    const createdRows: { id: string; title: string }[] = [];
+    await db.transaction(async (tx) => {
+      await tx
+        .select({ id: projects.id })
+        .from(projects)
+        .where(and(eq(projects.id, projectId), eq(projects.orgId, orgId)))
+        .for("update");
+      const [{ maxPos }] = await tx
+        .select({ maxPos: max(tasksTable.position) })
+        .from(tasksTable)
+        .where(
+          and(
+            eq(tasksTable.orgId, orgId),
+            eq(tasksTable.projectId, projectId),
+            eq(tasksTable.status, "todo"),
+          ),
+        );
+      nextPos = (maxPos ?? -1) + 1;
+      for (const t of templates) {
+        if (existingTitles.has(t.name)) continue;
+        const [row] = await tx
+          .insert(tasksTable)
+          .values({
+            orgId,
+            projectId,
+            title: t.name,
+            description: t.description,
+            priority: t.priority,
+            dueDate: today,
+            source: "daily",
+            dailyForDate: today,
+            position: nextPos,
+          })
+          // onConflictDoNothing({ target }) tak bisa menyebut partial index —
+          // tanpa target = DO NOTHING untuk semua constraint/index.
+          .onConflictDoNothing()
+          .returning();
+        if (row) {
+          created++;
+          nextPos++;
+          createdRows.push({ id: row.id, title: row.title });
+        }
       }
+    });
+    for (const row of createdRows) {
+      await recordAudit({
+        orgId,
+        userId,
+        action: "task.create",
+        entity: "task",
+        entityId: row.id,
+        metadata: { projectId, title: row.title, daily: true },
+      });
     }
     revalidatePath(`/proyek/${projectId}`);
     return { ok: true, created };

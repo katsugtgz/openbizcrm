@@ -1,4 +1,5 @@
 <!-- cubic:review-summary:start -->
+
 **48 issues found** across 55 files
 <!-- cubic:review-summary:end -->
 
@@ -266,8 +267,8 @@ P2: Closing the dialog via Cancel, X, or outside click leaves the newly controll
 
 <!-- cubic:review-post:ai_pr_review_github_delivery_fcbb53dc950f732989415be1bf9bd0bfdd904fa439ca91dfc52c7522b50e7af8:bb761f5515fe1f0d6c212170e5d322eb9244127c:31a5b52c-950a-5812-b4bd-dc97c9df5386 -->
 
-
 <!-- cubic:review-summary:start -->
+
 **2 issues found across 1 file (changes from recent commits).**
 <!-- cubic:review-summary:end -->
 
@@ -297,6 +298,7 @@ P2: A 404 from the SBOM endpoint can also mean the repo or token is not accessib
 
 === cubic-dev-ai[bot] [COMMENTED] 2026-10-19T05:34:29Z ===
 <!-- cubic:review-summary:start -->
+
 **1 issue found across 1 file (changes from recent commits).**
 <!-- cubic:review-summary:end -->
 
@@ -320,3 +322,94 @@ P3: This comment gives the wrong cause. `current_org_id` has existed since the i
 <sub>Reply with feedback, questions, or to request a fix.<br /><br />[View guided diff](https://www.cubic.dev/pr/katsugtgz/openbizcrm/pull/6?utm_source=github&utm_medium=review_footer) | [Turn on auto-fix](https://www.cubic.dev/action/auto-fix/pr/katsugtgz/openbizcrm/6?returnTo=https%3A%2F%2Fgithub.com%2Fkatsugtgz%2Fopenbizcrm%2Fpull%2F6) | [Re-trigger cubic](https://www.cubic.dev/action/re-review/pr/katsugtgz/openbizcrm/6/ai_pr_review_github_delivery_143c7b0b2f3ea06d2f0e4629f5de511d201c5448b6678a10480a808d464eed18?returnTo=https%3A%2F%2Fgithub.com%2Fkatsugtgz%2Fopenbizcrm%2Fpull%2F6)</sub>
 
 <!-- cubic:review-post:ai_pr_review_github_delivery_143c7b0b2f3ea06d2f0e4629f5de511d201c5448b6678a10480a808d464eed18:3f298a2cceb423b69703d692074365133e16c2a6:6cb834d4-1231-557f-a7f1-98472cf31d46 -->
+
+## Resolution status (PR #7)
+
+All 51 cubic findings for PR #6 audited (48 + 2 dependency-review + 1 seed
+comment). Status per finding:
+
+### Batch 1 — first cubic review (48 findings)
+
+| #   | Location                                                      | Status  | Notes                                                                                                                                                     |
+| --- | ------------------------------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | karyawan/page.tsx:121 (P3 comment cites external ID)          | FIXED   | Comment now describes behavior ("WorkOS session IDs -> internal UUIDs"), no finding ID.                                                                   |
+| 2   | karyawan/page.tsx:124 (no membership check)                   | FIXED   | `requireOrgRole(ids.userId, ids.orgId, "member")` present; resolver also guarantees membership.                                                           |
+| 3   | proyek/harian/page.tsx:144 (double guard)                     | FIXED   | Guard only at page boundary; `TemplateSection` receives orgId/userId without re-checking.                                                                 |
+| 4   | tasks/service.integration.test.ts:40 (user cleanup)           | FIXED   | `createdUserIds` tracked and deleted after orgs in `afterAll`.                                                                                            |
+| 5   | timesheet/service.integration.test.ts:146 (UTC/WIB year)      | FIXED   | Year derived via `Intl.DateTimeFormat` with `timeZone: "Asia/Jakarta"`.                                                                                   |
+| 6   | project-repo.ts:73 (duplicate requireOrgCompany)              | FIXED   | Helper exported from crm-repo.ts; project-repo imports it.                                                                                                |
+| 7   | project-repo.ts:96 (non-atomic code allocation)               | FIXED   | `pg_advisory_xact_lock` per org inside the transaction; unique(orgId, code) backstop.                                                                     |
+| 8   | drizzle/0009 (workos_org_id no backfill)                      | FIXED   | Seed backfills NULL mapping; `resolveSessionIds` auto-provisions org+membership on first AuthKit login.                                                   |
+| 9   | timer-banner.tsx:65 (redundant refresh)                       | FIXED   | `router.refresh()` kept only on the error branch.                                                                                                         |
+| 10  | penggajian/[runId]/page.tsx:43 (throws on null)               | FIXED   | Redirects to /dashboard per the ids.ts contract.                                                                                                          |
+| 11  | proyek/page.tsx:43 (isAdmin strict equality)                  | FIXED   | Uses `hasRole(role, "admin")` hierarchy — owner included.                                                                                                 |
+| 12  | proyek/page.tsx:167 (member sees Proyek Baru)                 | FIXED   | Button section gated on `hasRole(role, "admin")`; company fetch skipped for members.                                                                      |
+| 13  | cuti/actions.ts:70 (approver ignores roles)                   | FIXED   | Approver filtered on `hasRole(m.membership.role, "admin")`, self excluded.                                                                                |
+| 14  | api/penggajian/.../export.csv (500 on null ids)               | FIXED   | Returns 403 "Akses ditolak."                                                                                                                              |
+| 15  | drizzle/0010 (constraint blocks manual tasks)                 | FIXED   | `source` enum + `daily_for_date` discriminator; unique index partial on `source='daily'` (migration 0012).                                                |
+| 16  | drizzle/0010 (pre-existing duplicates break migration)        | FIXED   | Daily-only partial index; pre-existing duplicates can only be manual-task pairs, which the partial index ignores. No reconcile needed.                    |
+| 17  | drizzle/0010 (unbounded text in B-tree)                       | FIXED   | `TASK_TITLE_MAX = 2000` enforced in createTask/updateTask (both throw a friendly message before insert).                                                  |
+| 18  | penggajian/actions.ts:59 (requireOrgRole outside try)         | FIXED   | Moved inside try; OrgScopeError surfaces as `{ ok: false, error }`.                                                                                       |
+| 19  | proyek/[projectId]/page.tsx:115 (TaskSection duplicate guard) | FIXED   | `TaskSection` has no `requireOrgRole`; page-level guard is the only check.                                                                                |
+| 20  | karyawan/actions.ts:28 (comment cites review)                 | FIXED   | Comment describes the resolution step, no finding reference.                                                                                              |
+| 21  | karyawan/actions.ts:30 (message wrong for unprovisioned)      | FIXED   | Message covers both cases: "Organisasi aktif tidak ditemukan atau akun belum terdaftar."                                                                  |
+| 22  | crm/perusahaan/page.tsx:28 (Indonesian comment)               | FIXED   | Comment now English; no review ID.                                                                                                                        |
+| 23  | crm/page.tsx:67 (color-only active chip)                      | FIXED   | `aria-current={c.id === activeCompanyId ? "true" : undefined}`.                                                                                           |
+| 24  | crm/[dealId]/page.tsx:45 (no membership check)                | FIXED   | Destructures userId, calls `requireOrgRole(userId, orgId, "member")` before reads.                                                                        |
+| 25  | ids.test.ts:56 (doesn't prove organizationId resolved)        | FIXED   | Added DB case: known user + unknown org id expects null (resolver must not ignore session org).                                                           |
+| 26  | timesheet/service.ts:67 (stopTimer org-scoped)                | FIXED   | Open timer looked up by userId only; cross-org open timer rejected with a clear message.                                                                  |
+| 27  | crm.integration.test.ts:244 (sequential race test)            | FIXED   | `Promise.allSettled` of both transitions; asserts exactly one fulfills, then idempotency + conflict on the winner.                                        |
+| 28  | ids.ts:34 (no per-request cache)                              | FIXED   | Provisioning path added instead; the double-call page (presensi) passes the resolved userId down. Claim retired rather than memoized.                     |
+| 29  | ids.ts:37 (no provisioning path)                              | FIXED   | First AuthKit login provisions user + org + membership in one transaction; failures resolve null.                                                         |
+| 30  | ids.ts:53 (org id without membership)                         | FIXED   | Resolver requires the local `orgMemberships` row before returning orgId.                                                                                  |
+| 31  | penggajian/page.tsx:124 (throws on null)                      | FIXED   | Redirects to /dashboard.                                                                                                                                  |
+| 32  | deals/service.ts:39 (silent conflicting close)                | FIXED   | Conflicting outcome throws "Deal sudah X; tidak bisa ditutup sebagai Y."; same outcome stays idempotent.                                                  |
+| 33  | deals/service.ts:39 (race on close)                           | FIXED   | Update predicate includes `status='open'`; empty `returning()` re-reads and decides idempotent vs conflict.                                               |
+| 34  | quotation.ts:52 (discount overflow)                           | FIXED   | Divides before multiplying: `Math.round((lineTotal / 100) * pct)`.                                                                                        |
+| 35  | presensi/page.tsx:22 (CalendarSection re-resolves)            | FIXED   | Page resolves once and passes `ids.userId` into `CalendarSection`.                                                                                        |
+| 36  | proyek/timesheet/page.tsx:223 (Date.parse overflow)           | FIXED   | Normalized ISO date must equal the input, else falls back to today.                                                                                       |
+| 37  | crm-repo.ts:302 (cross-company contact)                       | FIXED   | Contact check includes `eq(crmContacts.companyId, input.companyId)`.                                                                                      |
+| 38  | seed.ts:78 (seed rerun no workos backfill)                    | FIXED   | Seed updates the org row when `workos_org_id` is NULL.                                                                                                    |
+| 39  | seed.ts:294 (stage position collision)                        | FIXED   | Missing stages insert at the first free position after the highest existing stage position.                                                               |
+| 40  | tasks/service.ts:61 (32-ancestor cap)                         | FIXED   | Walks until cursor null with a visited-set, no depth cap.                                                                                                 |
+| 41  | tasks/service.ts:257 (reorder race)                           | FIXED   | `SELECT ... FOR UPDATE` on the project row inside the transaction; column reads under the same tx.                                                        |
+| 42  | gantt.tsx:63 (colEnd one short)                               | FIXED   | `+ 1` added for inclusive week count; start-week-due tasks render nonzero width.                                                                          |
+| 43  | task-board.tsx:154 (invisible buttons take clicks)            | FIXED   | `pointer-events-none` default; restored on `group-hover` and `focus-within`.                                                                              |
+| 44  | task-board.tsx:206 (Escape leaves overlay)                    | FIXED   | `onDragCancel={onDragCancel}` on `DndContext` clears `activeId`.                                                                                          |
+| 45  | task-board.tsx:262 (empty finding — cubic artifact)           | WONTFIX | Violation body was empty in the original review; nothing to fix.                                                                                          |
+| 46  | drizzle/0011 (ACCESS EXCLUSIVE lock on int4->bigint)          | WONTFIX | Table is seed-sized; rewriting as multi-migration expand/contract is overhead a small CRM table does not need. Run in a low-traffic window in production. |
+| 47  | proyek/actions.ts:298 (daily gen position 0 ties)             | FIXED   | Max position of the target status read first, incremented per inserted template.                                                                          |
+| 48  | crm/new-deal-dialog.tsx:99 (stale state on close)             | FIXED   | `onOpenChange` resets title/value on any close (Cancel, X, outside click).                                                                                |
+
+### Batch 2 — dependency-review.yml (2 findings)
+
+| #   | Location                                               | Status | Notes                                                                                       |
+| --- | ------------------------------------------------------ | ------ | ------------------------------------------------------------------------------------------- |
+| 49  | dependency-review.yml:40 ("Not Found" widens 403 skip) | FIXED  | 403 body match limited to disabled-graph texts; `Not Found` removed.                        |
+| 50  | dependency-review.yml:46 (404 skips review green)      | FIXED  | 404 body inspected: only an explicit disabled-graph message skips; other 404s fail the job. |
+
+### Batch 3 — seed comment (1 finding)
+
+| #   | Location                             | Status | Notes                                                                                                            |
+| --- | ------------------------------------ | ------ | ---------------------------------------------------------------------------------------------------------------- |
+| 51  | seed.ts:130 (wrong cause in comment) | FIXED  | Comment now attributes NULL `current_org_id` to rows created elsewhere before the seed, not to a missing column. |
+
+### Batch 4 — PR-7 cubic review additions (9 findings, 2 assigned here)
+
+| #   | Location                                                                                            | Status  | Notes                                                                                         |
+| --- | --------------------------------------------------------------------------------------------------- | ------- | --------------------------------------------------------------------------------------------- |
+| 52  | docs/cubic-pr6-findings.md:399 (totals undercount)                                                  | FIXED   | FIXED count corrected to 49 (48 rows + #50) and PR-7 additions tracked in Batch 4.            |
+| 53  | src/app/(app)/crm/new-deal-dialog.tsx:68                                                            | FIXED   | `companyId` reset on any close via `onOpenChange` (and on successful submit).                 |
+| 54  | src/app/(app)/proyek/timesheet/page.tsx:225                                                         | FIXED   | Parsed date validated before `toISOString()`; invalid month falls back to today.              |
+| 55  | docs/cubic-pr2-findings.md:1 (unrelated PR #2 doc)                                                  | WONTFIX | Retained intentionally as historical PR #2 documentation, labeled as such.                    |
+| 56  | src/lib/timesheet/service.integration.test.ts:153                                                   | FIXED   | (other agent) Year derived from `stopped.startedAt`.                                          |
+| 57  | src/lib/deals/quotation.ts:55 + quotation.test.ts:91                                                | FIXED   | (other agent) Bounded percentage factor computed first; test uses 66.67% at MAX_SAFE_INTEGER. |
+| 58  | src/lib/tasks/service.integration.test.ts:140                                                       | FIXED   | (other agent) `t0` updated with `parentId: deepChild.id`.                                     |
+| 59  | src/lib/auth/ids.test.ts:156/198                                                                    | FIXED   | (other agent) Cleanup registered immediately; seeded-org reuse asserted.                      |
+| 60  | (0012/0013, ids.ts:128, deals/service, tasks/service:262, actions:299/318, seed:326, schema.ts:449) | FIXED   | (other agents) Covered by migrations 0013/0014 + service fixes.                               |
+
+### Totals
+
+- FIXED: 53 (rows 1–48, 49–51, plus PR-7 additions)
+- WONTFIX: 3 (empty cubic artifact; 0011 lock-window advisory; historical PR #2 doc retained)
+- NOT-FIXED: 0

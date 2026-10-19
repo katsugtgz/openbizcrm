@@ -1,8 +1,10 @@
 import {
+  check,
   pgTable,
   pgEnum,
   uuid,
   bigint,
+  boolean,
   text,
   timestamp,
   integer,
@@ -18,6 +20,9 @@ import type { ApprovalRequest } from "@/lib/approval";
 import type { Payslip as PayslipBreakdown } from "@/lib/payroll/engine";
 
 export const roleEnum = pgEnum("role", ["owner", "admin", "member"]);
+
+/** tasks.source: dibuat manual atau digenerate harian dari template. */
+export const taskSourceEnum = pgEnum("task_source", ["manual", "daily"]);
 
 export const organizations = pgTable("organizations", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -60,6 +65,11 @@ export const users = pgTable("users", {
   currentOrgId: uuid("current_org_id").references(() => organizations.id, {
     onDelete: "set null",
   }),
+  // User-only provisioning marker (cubic P1 ids:128): true when the user row
+  // was provisioned from a session WITHOUT a WorkOS org id, so a later
+  // session that carries one retries org provisioning instead of being
+  // permanently gated by the missing membership.
+  needsOrg: boolean("needs_org").default(false).notNull(),
 });
 
 export const orgMemberships = pgTable(
@@ -438,19 +448,29 @@ export const tasks = pgTable(
     /** Urutan kanban dalam kolom status; renumber saat reorder. */
     position: integer("position").notNull().default(0),
     dueDate: date("due_date"),
+    // Discriminator idempotensi harian: 'daily' task digenerate template,
+    // 'manual' dibuat user — hanya 'daily' yang masuk unique partial index
+    // (cubic P2 0010:1).
+    source: taskSourceEnum("source").notNull().default("manual"),
+    /** Tanggal generate (WIB) untuk task source='daily'; null untuk manual. */
+    dailyForDate: date("daily_for_date"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   // Kanban: fetch kolom per proyek terurut posisi (cubic P2 0000:2).
   (t) => [
     index("tasks_project_status_pos_idx").on(t.projectId, t.status, t.position),
-    // Daily generation idempotency: satu judul task per proyek per hari —
-    // generateTodayAction check-and-create jadi atomic di level DB
-    // (cubic P2 proyek-actions:279). dueDate NULL (task non-harian) bebas.
-    unique("tasks_org_project_title_due_unique").on(
-      t.orgId,
-      t.projectId,
-      t.title,
-      t.dueDate,
+    // Daily generation idempotency: satu judul per proyek per hari — hanya
+    // baris source='daily' (cubic P2 0010:1). Partial unique index manual:
+    // Drizzle tak punya `.where()` untuk `unique()` constraint table-level.
+    uniqueIndex("tasks_org_project_daily_title_unique")
+      .on(t.orgId, t.projectId, t.dailyForDate, t.title)
+      .where(sql`source = 'daily'`),
+    // cubic schema.ts:449 — PostgreSQL menganggap NULL berbeda-beda di unique
+    // index, jadi daily tanpa tanggal bisa lolos idempotensi. Backstop CHECK:
+    // setiap task harian wajib punya daily_for_date.
+    check(
+      "tasks_daily_date_required",
+      sql`source <> 'daily' OR daily_for_date IS NOT NULL`,
     ),
   ],
 );

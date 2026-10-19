@@ -85,6 +85,34 @@
       "when": 1792384998376,
       "tag": "0011_naive_ogun",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1792408102475,
+      "tag": "0012_needy_winter_soldier",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1792414370721,
+      "tag": "0013_user_needs_org",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1792418832067,
+      "tag": "0014_daily-date-required",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1792500000000,
+      "tag": "0015_daily-date-repair",
+      "breakpoints": true
     }
   ]
 }

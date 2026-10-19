@@ -65,6 +65,7 @@ async function Board({
           <Link
             key={c.id}
             href={c.id === activeCompanyId ? "/crm" : `/crm?company=${c.id}`}
+            aria-current={c.id === activeCompanyId ? "true" : undefined}
             className={cn(
               "rounded-full border px-3 py-1 text-xs transition-colors",
               c.id === activeCompanyId
@@ -109,7 +110,7 @@ export default async function CrmPage({
 }) {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  // WorkOS session IDs -> internal UUIDs (cubic P1 crm-page:40).
+  // WorkOS session IDs -> internal UUIDs before the org-scoped reads.
   const ids = await resolveSessionIds(user);
   if (!ids) redirect("/dashboard");
   const { userId, orgId } = ids!;

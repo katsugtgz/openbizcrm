@@ -48,3 +48,6 @@ pr2-*.md
 pr2-*.json
 
 .vitest/
+
+# scratch
+test-out.txt

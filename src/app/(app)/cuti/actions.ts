@@ -9,7 +9,7 @@ import {
 } from "@/db/schema";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
-import { requireOrgRole } from "@/lib/org-scope";
+import { hasRole, requireOrgRole } from "@/lib/org-scope";
 import { saveApprovalRequest } from "@/lib/approval/store";
 import {
   approve as approveApproval,
@@ -32,7 +32,7 @@ import { recordAudit } from "@/lib/repos/audit-repo";
 async function requireSession() {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  // WorkOS session IDs -> internal UUIDs (cubic P1 cuti-actions:36).
+  // WorkOS session IDs -> internal UUIDs before the org-scoped guards.
   const ids = await resolveSessionIds(user);
   if (!ids) throw new Error("Tidak ada organisasi aktif.");
   return ids;
@@ -64,10 +64,13 @@ export async function submitLeaveAction(formData: FormData): Promise<void> {
     const days = computeDuration(startDate, endDate);
     if (days <= 0) throw new Error("Rentang tanggal tidak valid.");
 
-    // Rantai approval: satu admin/owner org lain (bukan pemohon).
+    // Rantai approval: satu admin/owner org lain (bukan pemohon) — filter
+    // per membership.role, bukan sekadar "anggota org manapun".
     const approver = (await listMembers(userId, orgId))
-      .map((m) => m.user)
-      .find((u) => u.id !== userId);
+      .filter(
+        (m) => hasRole(m.membership.role, "admin") && m.user.id !== userId,
+      )
+      .map((m) => m.user)[0];
     if (!approver) {
       throw new Error("Tidak ada approver lain di organisasi ini.");
     }

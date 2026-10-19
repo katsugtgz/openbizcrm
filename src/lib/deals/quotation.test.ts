@@ -87,4 +87,72 @@ describe("quotation totals", () => {
     ];
     expect(() => calculateQuotationTotals(lines)).toThrow(/Subtotal/);
   });
+
+  it("100% discount near MAX_SAFE_INTEGER stays exact (cubic P2 quotation:52)", () => {
+    // lineTotal aman; (lineTotal * pct) versi lama overflow di tengah.
+    const near = Number.MAX_SAFE_INTEGER;
+    expect(
+      calculateQuotationTotals([
+        {
+          description: "A",
+          quantity: 1,
+          unitPrice: near,
+          discountPercent: 100,
+        },
+      ]),
+    ).toEqual({ subtotal: near, discountTotal: near, total: 0 });
+  });
+
+  it("100% discount on MAX_SAFE_INTEGER - 1 loses no rupiah (cubic P2 quotation:55)", () => {
+    // Faktor persen dibatasi (pct/100) dulu: 100% = factor 1 exact. Bentuk
+    // lama (lineTotal/100)*pct membulatkan 1 rupiah LEBIH besar → total -1.
+    const near = Number.MAX_SAFE_INTEGER - 1;
+    expect(
+      calculateQuotationTotals([
+        {
+          description: "A",
+          quantity: 1,
+          unitPrice: near,
+          discountPercent: 100,
+        },
+      ]),
+    ).toEqual({ subtotal: near, discountTotal: near, total: 0 });
+  });
+
+  it("3.28% at MAX_SAFE_INTEGER discriminates old vs new ordering (cubic P2 quotation.test:91)", () => {
+    // Bentuk lama (lineTotal/100)*pct dan baru lineTotal*(pct/100) harus
+    // menghasilkan rupiah BERBEDA di kombinasi ini — test gagal melawan
+    // implementasi lama, lolos melawan yang baru. (66.67% TIDAK
+    // membedakan: kedua bentuk menghasilkan rupiah sama; 3.28% beda 1.)
+    const M = Number.MAX_SAFE_INTEGER;
+    expect(
+      calculateQuotationTotals([
+        { description: "A", quantity: 1, unitPrice: M, discountPercent: 3.28 },
+      ]),
+    ).toEqual({
+      subtotal: M,
+      discountTotal: 295_436_135_555_504,
+      total: M - 295_436_135_555_504,
+    });
+  });
+
+  it("50% discount on MAX_SAFE_INTEGER - 1 rounds exactly (cubic P2 quotation:55)", () => {
+    // near = 4503599627370495 ganjil; exact floor = ...494.75 → 495 (round).
+    // Bentuk lama menghasilkan ...496 (1 lebih) karena (x/100)*50 tak exact.
+    const near = Number.MAX_SAFE_INTEGER - 1;
+    expect(
+      calculateQuotationTotals([
+        {
+          description: "A",
+          quantity: 1,
+          unitPrice: near,
+          discountPercent: 50,
+        },
+      ]),
+    ).toEqual({
+      subtotal: near,
+      discountTotal: 4_503_599_627_370_495,
+      total: near - 4_503_599_627_370_495,
+    });
+  });
 });

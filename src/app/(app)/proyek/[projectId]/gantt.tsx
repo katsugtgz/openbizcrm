@@ -59,8 +59,10 @@ export function GanttChart({ tasks }: { tasks: GanttTask[] }) {
       const s = parseDay(dateOnly(t.createdAt));
       const e = parseDay(t.dueDate);
       const colStart = weekStarts.filter((w) => w <= s).length;
-      // `<=`: due di minggu itu tetap menghitung minggunya (bukan `w < e`).
-      const colEnd = weekStarts.filter((w) => w <= e).length;
+      // `<=` + 1: kolom = jumlah minggu yang tersentuh (inklusif minggu due);
+      // tanpa +1 bar due di minggu start-nya sendiri jadi nol lebar
+      // (cubic P2 gantt:63).
+      const colEnd = weekStarts.filter((w) => w <= e).length + 1;
       const start = Math.min(Math.max(colStart, 1), totalWeeks);
       const end = Math.min(Math.max(colEnd, start), totalWeeks + 1);
       return { task: t, start, span: end - start };

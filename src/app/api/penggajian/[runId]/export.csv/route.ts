@@ -11,9 +11,12 @@ export async function GET(
   const { runId } = await params;
   const user = await session.getSession();
   if (!user) redirect("/login");
-  // WorkOS session IDs -> internal UUIDs (cubic P1).
+  // WorkOS session IDs -> internal UUIDs; unresolvable user/org = akses
+  // ditolak (403), bukan server error.
   const ids = await resolveSessionIds(user);
-  if (!ids) throw new Error("Tidak ada organisasi aktif.");
+  if (!ids) {
+    return new Response("Akses ditolak.", { status: 403 });
+  }
   const { userId, orgId } = ids;
 
   const csv = await exportBankTransfer(userId, orgId, runId);

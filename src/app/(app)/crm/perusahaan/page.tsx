@@ -25,8 +25,7 @@ async function Tables({ orgId, userId }: { orgId: string; userId: string }) {
     listContacts(orgId),
   ]);
   const companyName = new Map(companies.map((c) => [c.id, c.name]));
-  // Satu pass, bukan O(companies × contacts) per baris tabel (cubic P3
-  // perusahaan:63).
+  // Count contacts in one pass instead of scanning the list per table row.
   const contactCount = new Map<string, number>();
   for (const k of contacts) {
     contactCount.set(k.companyId, (contactCount.get(k.companyId) ?? 0) + 1);
@@ -131,7 +130,7 @@ function TablesSkeleton() {
 export default async function PerusahaanPage() {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  // WorkOS session IDs -> internal UUIDs (cubic P1 perusahaan:24).
+  // WorkOS session IDs -> internal UUIDs before the org-scoped reads.
   const ids = await resolveSessionIds(user);
   if (!ids) redirect("/dashboard");
   const { userId, orgId } = ids!;

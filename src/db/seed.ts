@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   auditLogs,
@@ -56,8 +56,8 @@ const SEED_BRANCHES = [
 /**
  * Idempotent + concurrency-safe seed. Everything runs inside one transaction
  * serialized by a session-level advisory lock keyed on the org slug, so two
- * overlapping invocations cannot race the select-then-insert checks (cubic
- * P2 seed:33). Conflict-safe upserts (onConflictDoNothing) make re-runs and
+ * overlapping invocations cannot race the select-then-insert checks.
+ * Conflict-safe upserts (onConflictDoNothing) make re-runs and
  * stragglers harmless even after the lock is released.
  */
 async function seed() {
@@ -87,6 +87,36 @@ async function seed() {
           .limit(1);
       }
       console.log(`+ org ${ORG_SLUG}`);
+    }
+    // Orgs created before migration 0009 (or by createOrg) have workos_org_id
+    // NULL, which makes resolveSessionIds reject the seeded AuthKit session.
+    // Backfill the mapping when missing.
+    if (!org.workosOrgId) {
+      // cubic P2 seed:97 — workos_org_id unik. UPDATE buta bisa abort seluruh
+      // seed kalau org lain sudah memegang ORG_WORKOS_ID. Cek pemilik id
+      // dulu: bebas → backfill normal; dibawa org lain → pakai sufiks
+      // deterministik, jangan mencuri / jangan gagal.
+      const [owner] = await tx
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(eq(organizations.workosOrgId, ORG_WORKOS_ID))
+        .limit(1);
+      const target = owner ? `${ORG_WORKOS_ID}-alt` : ORG_WORKOS_ID;
+      await tx
+        .update(organizations)
+        .set({ workosOrgId: target })
+        .where(
+          and(
+            eq(organizations.slug, ORG_SLUG),
+            isNull(organizations.workosOrgId),
+          ),
+        );
+      org.workosOrgId = target;
+      console.log(
+        owner
+          ? `~ workos_org_id bentrok (org lain); ${ORG_SLUG} pakai ${target}`
+          : `~ backfilled workos_org_id on org ${ORG_SLUG}`,
+      );
     }
 
     // Branches — org-scoped unique constraint makes this conflict-safe.
@@ -127,8 +157,9 @@ async function seed() {
         }
         console.log(`+ user ${u.workosUserId}`);
       }
-      // Users created before currentOrgId existed (or by older seed runs)
-      // may have it NULL — backfill so session-id resolution works.
+      // Rows created elsewhere before the seed ran (createUser accepts a
+      // null currentOrgId) may have it NULL — backfill so session-id
+      // resolution works. The column itself has always existed.
       if (!user.currentOrgId) {
         await tx
           .update(users)
@@ -295,25 +326,32 @@ async function seed() {
       .orderBy(crmStages.position);
     // Guard per nama stage, bukan sekadar "ada beberapa stage": pipeline
     // parsial (mis. tanpa Close Won) membuat stage.name crash saat seeding
-    // deal (cubic P2 seed:283).
+    // deal.
     const stageNames = new Set(stageRows.map((s) => s.name));
     const missingStages = DEFAULT_STAGE_NAMES.filter(
       (name) => !stageNames.has(name),
     );
     if (missingStages.length > 0) {
+      // Masukkan di urutan kosong SETELAH posisi tertinggi yang sudah ada —
+      // posisi kanonik bisa diduduki stage lain pada pipeline parsial, dan
+      // onConflictDoNothing akan diam-diam membuang stage itu sehingga
+      // stageByName.get(name) crash saat seeding deal. Insert konflik-aman
+      // (cubic P2 seed:326): getOrCreateDefaultPipeline konkuren bisa
+      // mengisi pipeline kosong setelah read ini; DO NOTHING + re-read
+      // supaya seed tidak rollback, bukan insert telanjang yang bisa gagal
+      // unik (pipeline, position).
+      const nextPos = (stageRows.at(-1)?.position ?? -1) + 1;
       await tx
         .insert(crmStages)
         .values(
-          DEFAULT_STAGE_NAMES.map((name, position) => ({
+          missingStages.map((name, i) => ({
             orgId: org.id,
             pipelineId: pipeline.id,
             name,
-            position,
+            position: nextPos + i,
           })),
         )
-        .onConflictDoNothing({
-          target: [crmStages.pipelineId, crmStages.position],
-        });
+        .onConflictDoNothing();
       console.log(`+ crm stages (${missingStages.length} kurang)`);
     }
     const stages = await tx
@@ -455,9 +493,8 @@ async function seed() {
     }
 
     // 10 tasks across statuses (idempotent: judul dicek per proyek — judul
-    // sama di proyek lain tidak boleh men-skip seed PRJ-001, cubic P2
-    // seed:442; unique (org,project,title,dueDate) hanya berlaku saat
-    // dueDate terisi).
+    // sama di proyek lain tidak boleh men-skip seed PRJ-001; unique
+    // (org,project,title,dueDate) hanya berlaku saat dueDate terisi).
     const existingTasks = await tx
       .select()
       .from(tasks)
