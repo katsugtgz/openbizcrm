@@ -357,3 +357,16 @@ Full pass over all 60 findings. Gates: `bun install` ok; prettier/lint (0 errors
 **60/60 resolved: 59 FIXED, 1 WONTFIX (budget/service.ts:1 — dead-service finding; wiring a new UI page is a feature, not a review fix; tracked as follow-up).**
 
 This round's deltas: markOverdue dueDate guard + test (invoicing/service.ts, service.integration.test.ts), journal-line amount-cap CHECK + migration 0019 (src/db/schema.ts, drizzle/0019_bouncy_xorn.sql), budget overflow test adjusted to per-line caps.
+
+
+## Resolution status (round 2)
+
+| # | Lokasi | Prio | Status | Bukti |
+|---|---|---|---|---|
+| 1 | docs duplikat entri | P3 | **FIXED** | Catatan konsolidasi ditambahkan: entri lokasi sama = satu akar masalah, ditandai duplikat. |
+| 2 | new-invoice-dialog:54 (unitPrice Number vs parseIDRInput) | P2 | **FIXED** | Guard dialog pakai parseIDRInput === null (digit-only, sama dengan server). |
+| 3 | new-invoice-dialog:59 (total overflow crash formatIDR) | P2 | **FIXED** | Number.isSafeInteger(subtotal+tax) check -> ok=false, tampil invalid bukan crash. |
+| 4 | new-invoice-dialog:100 (taxPct tidak direset) | P2 | **FIXED** | resetDraft() reset taxPct ke 0. |
+| 5 | new-invoice-dialog:113 (close tidak reset draft) | P2 | **FIXED** | onOpenChange(false) -> resetDraft() (Batal/X/Escape). |
+
+**Total: 5/5 FIXED.**

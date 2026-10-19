@@ -5,7 +5,7 @@ import { useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { computeLineTotals, floorTax } from "@/lib/invoicing/totals";
-import { formatIDR } from "@/lib/money";
+import { formatIDR, parseIDRInput } from "@/lib/money";
 import { jakartaDateISO } from "@/lib/attendance/rules";
 import { Button } from "@/components/ui/button";
 import {
@@ -51,7 +51,10 @@ export function NewInvoiceDialog({
     let subtotal = 0;
     let ok = items.length > 0;
     for (const it of items) {
-      if (!it.description.trim() || !it.unitPrice) {
+      // digit-only sama dengan server (cubic r2: "1e3"/spasi lolos
+      // Number() tapi ditolak parseIDRInput — jangan tampilkan total
+      // yang pasti gagal submit)
+      if (!it.description.trim() || parseIDRInput(it.unitPrice) === null) {
         ok = false;
         continue;
       }
@@ -67,6 +70,9 @@ export function NewInvoiceDialog({
     }
     try {
       const taxAmount = floorTax(subtotal, Number(taxPct || "0"));
+      // cubic r2: total melebihi MAX_SAFE → formatIDR melempar; tampilkan
+      // sebagai invalid, bukan crash
+      if (!Number.isSafeInteger(subtotal + taxAmount)) ok = false;
       return { subtotal, taxAmount, total: subtotal + taxAmount, ok };
     } catch {
       return { subtotal, taxAmount: 0, total: subtotal, ok: false };
@@ -77,6 +83,12 @@ export function NewInvoiceDialog({
     setItems((prev) =>
       prev.map((it, j) => (j === i ? { ...it, ...patch } : it)),
     );
+  }
+
+  function resetDraft() {
+    setItems([{ ...EMPTY }]);
+    setCompanyId("");
+    setTaxPct("0");
   }
 
   function submit(e: React.FormEvent<HTMLFormElement>) {
@@ -96,8 +108,7 @@ export function NewInvoiceDialog({
       const result = await createInvoiceAction(formData);
       if (result.ok) {
         setOpen(false);
-        setItems([{ ...EMPTY }]);
-        setCompanyId("");
+        resetDraft();
         toast.success("Faktur draft dibuat.");
         if (result.redirectTo) router.push(result.redirectTo);
       } else {
@@ -110,7 +121,15 @@ export function NewInvoiceDialog({
   const in30 = jakartaDateISO(new Date(Date.now() + 30 * 86_400_000));
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        // cubic r2: Batal/X/Escape harus bersihkan draft juga —
+        // buka ulang tidak boleh menampilkan faktur lama
+        if (!next) resetDraft();
+      }}
+    >
       <DialogTrigger asChild>
         <Button>Faktur Baru</Button>
       </DialogTrigger>
