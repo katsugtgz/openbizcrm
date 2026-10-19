@@ -127,6 +127,15 @@ async function seed() {
         }
         console.log(`+ user ${u.workosUserId}`);
       }
+      // Users created before currentOrgId existed (or by older seed runs)
+      // may have it NULL — backfill so session-id resolution works.
+      if (!user.currentOrgId) {
+        await tx
+          .update(users)
+          .set({ currentOrgId: org.id })
+          .where(eq(users.id, user.id));
+        user.currentOrgId = org.id;
+      }
       await tx
         .insert(orgMemberships)
         .values({ orgId: org.id, userId: user.id, role: u.role })
