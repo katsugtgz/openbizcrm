@@ -59,22 +59,30 @@ async function assertNotDescendant(
   taskId: string,
   parentId: string,
 ): Promise<void> {
-  const visited = new Set<string>();
-  let cursor: string | null = parentId;
-  while (cursor && !visited.has(cursor)) {
-    if (cursor === taskId) {
-      throw new OrgScopeError(
-        "NO_MEMBERSHIP",
-        "Parent task tidak boleh merupakan turunan dari task ini.",
-      );
-    }
-    visited.add(cursor);
-    const [row] = await db
-      .select({ parentId: tasks.parentId })
-      .from(tasks)
-      .where(and(eq(tasks.id, cursor), eq(tasks.orgId, orgId)))
-      .limit(1);
-    cursor = row?.parentId ?? null;
+  // Recursive CTE (cubic r5 P2): satu query, tanpa N round-trip —
+  // keturunan parentId yang menyentuh taskId = cycle.
+  const ancestors = await db.execute(sql`
+    WITH RECURSIVE chain AS (
+      SELECT t.id, t.parent_id
+      FROM tasks t
+      WHERE t.id = ${parentId} AND t.org_id = ${orgId}
+      UNION ALL
+      SELECT t.id, t.parent_id
+      FROM tasks t
+      JOIN chain c ON t.id = c.parent_id
+      WHERE t.org_id = ${orgId}
+    )
+    SELECT 1 AS hit FROM chain WHERE id = ${taskId} LIMIT 1
+  `);
+  const hits =
+    Array.isArray(ancestors) === false && "rows" in ancestors
+      ? ancestors.rows
+      : (ancestors as unknown as Record<string, unknown>[]);
+  if (hits.length > 0) {
+    throw new OrgScopeError(
+      "NO_MEMBERSHIP",
+      "Parent task tidak boleh merupakan turunan dari task ini.",
+    );
   }
 }
 
@@ -197,13 +205,13 @@ export async function updateTask(
   let row: Task;
   if (input.parentId !== undefined && input.parentId !== null) {
     const parentId: string = input.parentId;
-    const lockA = BigInt("0x" + taskId.replace(/-/g, "").slice(0, 15));
-    const lockB = BigInt("0x" + parentId.replace(/-/g, "").slice(0, 15));
-    const SHIFT = BigInt(64);
-    const lockKey =
-      lockA < lockB ? (lockA << SHIFT) | lockB : (lockB << SHIFT) | lockA;
+    // 64-bit key via hashtext (cubic r5 P1: a 128-bit concatenated key
+    // exceeds bigint range — every parent assignment failed at the lock).
+    // hashtext is order-independent; canonical pair = sorted ids joined.
+    const [a, b] = [taskId, parentId].sort();
+    const lockKey = `${a}|${b}`;
     row = await db.transaction(async (tx) => {
-      await tx.execute(sql`SELECT pg_advisory_xact_lock(${lockKey})`);
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
       await assertParent(orgId, task.projectId, parentId);
       await assertNotDescendant(orgId, taskId, parentId);
       const [updated] = await tx

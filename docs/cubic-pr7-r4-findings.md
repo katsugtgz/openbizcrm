@@ -1,4 +1,5 @@
 <!-- cubic:review-summary:start -->
+
 **1 existing issue remains and 4 new issues found** across 50 files
 <!-- cubic:review-summary:end -->
 
@@ -37,3 +38,14 @@ P2: `assertNotDescendant` is not atomic with `updateTask`, so concurrent parent 
 <sub>**Requires human review**: Auto-approval blocked because this review re-detected 1 unresolved issue already reported by Cubic.<br /><br />[View guided diff](https://www.cubic.dev/pr/katsugtgz/openbizcrm/pull/7?utm_source=github&utm_medium=review_footer) | [Turn on auto-fix](https://www.cubic.dev/action/auto-fix/pr/katsugtgz/openbizcrm/7?returnTo=https%3A%2F%2Fgithub.com%2Fkatsugtgz%2Fopenbizcrm%2Fpull%2F7) | [Re-trigger cubic](https://www.cubic.dev/action/re-review/pr/katsugtgz/openbizcrm/7/ai_pr_review_1792426412728_13d8490c-c063-47ef-90e6-8f3d867e2a13?returnTo=https%3A%2F%2Fgithub.com%2Fkatsugtgz%2Fopenbizcrm%2Fpull%2F7)</sub>
 
 <!-- cubic:review-post:ai_pr_review_1792426412728_13d8490c-c063-47ef-90e6-8f3d867e2a13:ac825264c87de444df3868c050dac3ea3adf9931:988ef8c6-db80-5736-bc64-b68a09c1ce21 -->
+
+## Resolution status (round 5)
+
+| #   | Lokasi                                             | Prio | Status    | Bukti                                                              |
+| --- | -------------------------------------------------- | ---- | --------- | ------------------------------------------------------------------ |
+| 1   | tasks/service.ts:64 (cycle walk unbounded queries) | P2   | **FIXED** | Diganti recursive CTE tunggal (1 query); test 40-deep tetap green. |
+| 2   | tasks/service.ts:200 (lock key > bigint)           | P1   | **FIXED** | Key = hashtext(sorted "a                                           | b") 64-bit; live-proof query jalan; seluruh suite green. |
+| 3   | test-out.txt committed                             | P3   | **FIXED** | File dihapus dari repo + .gitignore.                               |
+| 4   | cubic-pr7-r4-findings.md tanpa resolution          | P3   | **FIXED** | Tabel disposisi ini.                                               |
+
+**Total: 4/4 FIXED.**
