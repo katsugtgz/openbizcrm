@@ -28,20 +28,23 @@ jobs:
           case "$code" in
             200)
               echo "enabled=true" >> "$GITHUB_OUTPUT" ;;
-            # GitHub returns 403 with "Code space disabled" when the repo's
-            # dependency graph is off — the only skip-worthy response. Any
-            # other status (401, 404, 5xx, timeout) is an unexpected failure
-            # and must fail the job rather than silently skip review
+            # Dependency graph disabled manifests as 403 with a "disabled"
+            # body, or as a plain 404 (endpoint does not exist for the
+            # repo). Both are the one skip-worthy condition. Anything else
+            # (401, 5xx, timeout) is an unexpected failure and must fail
+            # the job rather than silently skip review
             # (cubic P1 dependency-review.yml:27).
             403)
               if curl -s -H "Authorization: Bearer ${{ github.token }}" \
                 https://api.github.com/repos/${{ github.repository }}/dependency-graph/sbom \
-                | grep -qi 'Code space disabled\|dependency graph.*disabled'; then
+                | grep -qi 'Code space disabled\|dependency graph.*disabled\|Not Found'; then
                 echo "enabled=false" >> "$GITHUB_OUTPUT"
               else
                 echo "::error::SBOM endpoint returned 403 for an unexpected reason (HTTP body does not indicate a disabled dependency graph)."
                 exit 1
               fi ;;
+            404)
+              echo "enabled=false" >> "$GITHUB_OUTPUT" ;;
             *)
               echo "::error::SBOM endpoint returned HTTP $code; refusing to skip dependency review on an unexpected status."
               exit 1 ;;
