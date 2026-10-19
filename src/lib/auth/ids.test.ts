@@ -153,6 +153,9 @@ describe("resolveSessionIds integration (seeded DB)", () => {
           .where(eq(users.workosUserId, workosUserId))
           .limit(1);
         expect(dbUser.name).toBe("Provi Sion");
+        // Register cleanup ids SEBELUM assertion berikutnya: assertion
+        // gagal tidak boleh meninggalkan baris user/org di DB bersama
+        // (cubic P2 ids-test:156).
         createdUserIds.push(dbUser.id);
         const [dbOrg] = await db
           .select()
@@ -179,6 +182,110 @@ describe("resolveSessionIds integration (seeded DB)", () => {
         expect(second).toEqual(first);
       } finally {
         // Test rows: membership/user cascade; org delete cascades too.
+        // Fallback by WorkOS id menutup path assertion gagal sebelum
+        // push cleanup (cubic P2 ids-test:156).
+        await db
+          .delete(users)
+          .where(inArray(users.workosUserId, [workosUserId]));
+        await db
+          .delete(organizations)
+          .where(
+            inArray(organizations.workosOrgId, [workosOrgId, workosUserId]),
+          );
+        await db.delete(users).where(inArray(users.id, createdUserIds));
+        await db
+          .delete(organizations)
+          .where(inArray(organizations.id, createdOrgIds));
+        process.env.AUTH_FAKE = prevFake;
+        process.env.WORKOS_API_KEY = prevKey;
+        process.env.WORKOS_CLIENT_ID = prevCid;
+        process.env.WORKOS_COOKIE_PASSWORD = prevPwd;
+      }
+    },
+  );
+
+  itDb(
+    "user-only provisioning completes on a later org session (two-phase)",
+    async () => {
+      // Pin cubic P1 ids:128 — login pertama TANPA org membuat user dengan
+      // needs_org=true dan resolve null; login kedua DENGAN org melengkapi
+      // provisioning (membership + currentOrgId) alih-alih gagal permanen.
+      const ids = await import("./ids");
+      const { db } = await import("@/db");
+      const { users, organizations, orgMemberships } =
+        await import("@/db/schema");
+      const { eq, and, inArray } = await import("drizzle-orm");
+      const workosUserId = `test_prov_twophase_${Date.now()}`;
+      const workosOrgId = `test_prov_org2_${Date.now()}`;
+      const createdUserIds: string[] = [];
+      const createdOrgIds: string[] = [];
+      const prevFake = process.env.AUTH_FAKE;
+      const prevKey = process.env.WORKOS_API_KEY;
+      const prevCid = process.env.WORKOS_CLIENT_ID;
+      const prevPwd = process.env.WORKOS_COOKIE_PASSWORD;
+      process.env.AUTH_FAKE = "";
+      process.env.WORKOS_API_KEY = "test";
+      process.env.WORKOS_CLIENT_ID = "test";
+      process.env.WORKOS_COOKIE_PASSWORD = "x".repeat(32);
+      try {
+        // Fase 1: session tanpa org -> user dibuat, resolve null.
+        const noOrg = await ids.resolveSessionIds({
+          id: workosUserId,
+          email: `twophase-${Date.now()}@contoh.co.id`,
+          sessionId: "authkit-session",
+        });
+        expect(noOrg).toBeNull();
+        const [dbUser] = await db
+          .select()
+          .from(users)
+          .where(eq(users.workosUserId, workosUserId))
+          .limit(1);
+        createdUserIds.push(dbUser.id);
+        expect(dbUser.needsOrg).toBe(true);
+        expect(dbUser.currentOrgId).toBeNull();
+
+        // Fase 2: session membawa org -> provisioning dilengkapi.
+        const withOrg = await ids.resolveSessionIds({
+          id: workosUserId,
+          email: dbUser.email,
+          sessionId: "authkit-session",
+          organizationId: workosOrgId,
+        });
+        expect(withOrg).not.toBeNull();
+        const [dbOrg] = await db
+          .select()
+          .from(organizations)
+          .where(eq(organizations.workosOrgId, workosOrgId))
+          .limit(1);
+        createdOrgIds.push(dbOrg.id);
+        expect(withOrg).toEqual({ userId: dbUser.id, orgId: dbOrg.id });
+        const [after] = await db
+          .select()
+          .from(users)
+          .where(eq(users.id, dbUser.id))
+          .limit(1);
+        expect(after.needsOrg).toBe(false);
+        expect(after.currentOrgId).toBe(dbOrg.id);
+        const [membership] = await db
+          .select()
+          .from(orgMemberships)
+          .where(
+            and(
+              eq(orgMemberships.userId, dbUser.id),
+              eq(orgMemberships.orgId, dbOrg.id),
+            ),
+          )
+          .limit(1);
+        expect(membership).toMatchObject({ role: "member" });
+      } finally {
+        await db
+          .delete(users)
+          .where(inArray(users.workosUserId, [workosUserId]));
+        await db
+          .delete(organizations)
+          .where(
+            inArray(organizations.workosOrgId, [workosOrgId, workosUserId]),
+          );
         await db.delete(users).where(inArray(users.id, createdUserIds));
         await db
           .delete(organizations)
@@ -197,7 +304,8 @@ describe("resolveSessionIds integration (seeded DB)", () => {
       // New user, existing WorkOS org id (seed org): membership added, no
       // duplicate org row.
       const { db } = await import("@/db");
-      const { users, orgMemberships } = await import("@/db/schema");
+      const { users, organizations, orgMemberships } =
+        await import("@/db/schema");
       const { eq, and, inArray } = await import("drizzle-orm");
       const workosUserId = `test_prov_user2_${Date.now()}`;
       const prevFake = process.env.AUTH_FAKE;
@@ -223,6 +331,16 @@ describe("resolveSessionIds integration (seeded DB)", () => {
           .where(and(eq(orgMemberships.userId, resolved!.userId)))
           .limit(1);
         expect(membership).toMatchObject({ role: "member" });
+        // No duplicate org: row seeded tunggal, dan membership menunjuk
+        // org ITU (bukan baris duplikat) — tanpa ini klaim "no duplicate"
+        // tidak terverifikasi (cubic P3 ids-test:198).
+        const orgRows = await db
+          .select()
+          .from(organizations)
+          .where(eq(organizations.workosOrgId, "org_contoh-sejahtera"));
+        expect(orgRows).toHaveLength(1);
+        const seedOrg = orgRows[0];
+        expect(membership!.orgId).toBe(seedOrg.id);
       } finally {
         await db
           .delete(users)

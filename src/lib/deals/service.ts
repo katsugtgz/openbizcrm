@@ -38,10 +38,28 @@ export async function closeDeal(
   // Sudah closed: outcome sama = idempoten; outcome lain = konflik, lempar
   // (UI tidak boleh melaporkan outcome yang tidak pernah diterapkan).
   if (deal.status !== "open") {
-    if (deal.status === outcome) return deal;
-    throw new Error(
-      `Deal sudah ${deal.status}; tidak bisa ditutup sebagai ${outcome}.`,
-    );
+    // Pre-read bisa basi saat moveDeal konkuren mengubah deal closed —
+    // revalidasi kondisional dengan WHERE status='outcome' sebelum
+    // dilaporkan sudah diterapkan (cubic P2 service:41).
+    if (deal.status === outcome) {
+      const [fresh] = await db
+        .select()
+        .from(crmDeals)
+        .where(
+          and(
+            eq(crmDeals.id, dealId),
+            eq(crmDeals.orgId, orgId),
+            eq(crmDeals.status, outcome),
+          ),
+        )
+        .limit(1);
+      if (fresh) return fresh;
+      // Basinya: deal berpindah sejak pre-read — lanjut ke close berikutnya.
+    } else {
+      throw new Error(
+        `Deal sudah ${deal.status}; tidak bisa ditutup sebagai ${outcome}.`,
+      );
+    }
   }
   const [stage] = await db
     .select()
@@ -75,17 +93,29 @@ export async function closeDeal(
     .returning();
   if (!row) {
     // Kalah race: deal sudah closed oleh request lain. Outcome sama =
-    // idempoten; outcome lain = konflik.
+    // idempoten (re-read kondisional, deal bisa terhapus sejak pre-read);
+    // outcome lain = konflik; deal hilang = NotFoundError type service
+    // terjaga (cubic P2 service:88).
     const [current] = await db
       .select()
       .from(crmDeals)
+      .where(
+        and(
+          eq(crmDeals.id, dealId),
+          eq(crmDeals.orgId, orgId),
+          eq(crmDeals.status, outcome),
+        ),
+      )
+      .limit(1);
+    if (current) return current;
+    const [any] = await db
+      .select({ status: crmDeals.status })
+      .from(crmDeals)
       .where(and(eq(crmDeals.id, dealId), eq(crmDeals.orgId, orgId)))
       .limit(1);
-    if (current && current.status === outcome) return current;
+    if (!any) throw new NotFoundError("Deal tidak ditemukan.");
     throw new Error(
-      current
-        ? `Deal sudah ${current.status}; tidak bisa ditutup sebagai ${outcome}.`
-        : "Deal tidak ditemukan.",
+      `Deal sudah ${any.status}; tidak bisa ditutup sebagai ${outcome}.`,
     );
   }
   await recordAudit({

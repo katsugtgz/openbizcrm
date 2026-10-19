@@ -130,15 +130,13 @@ describe("tasks reorder integration", () => {
       });
       expect(deepChild.parentId).toBe(tail.id);
 
-      // Cycle via update: mid punya parent deepChild; jadikan deepChild
-      // anak mid => mid -> deepChild -> mid (cycle).
-      const mid = await taskSvc.createTask(user.id, org.id, project.id, {
-        title: "mid",
-        parentId: deepChild.id,
-      });
+      // Cycle via update: jadikan t0 anak deepChild => t0 -> t1 -> … -> t39
+      // -> deepChild -> t0. Update t0 harus jalan seluruh rantai >= 40
+      // sebelum menemukan cycle — guard lama mentok cap 32 dan lolos diam
+      // (cubic P2 tasks-test:140).
       await expect(
-        taskSvc.updateTask(user.id, org.id, deepChild.id, {
-          parentId: mid.id,
+        taskSvc.updateTask(user.id, org.id, t0.id, {
+          parentId: deepChild.id,
         }),
       ).rejects.toThrow(/turunan/);
     },

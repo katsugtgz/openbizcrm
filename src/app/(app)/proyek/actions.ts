@@ -4,7 +4,12 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { and, asc, eq, isNull, max } from "drizzle-orm";
 import { db } from "@/db";
-import { tasks as tasksTable, taskTemplates, timesheets } from "@/db/schema";
+import {
+  projects,
+  tasks as tasksTable,
+  taskTemplates,
+  timesheets,
+} from "@/db/schema";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
 import { requireOrgRole } from "@/lib/org-scope";
@@ -286,53 +291,66 @@ export async function generateTodayAction(
 
     // Posisi kolom "todo" dialokasikan berurutan, bukan 0 semua —
     // posisi 0 berganda bikin urutan kanban tidak stabil
-    // (cubic P2 proyek-actions:298). onConflictDoNothing bisa skip insert,
-    // jadi counter jalan hanya saat row benar-benar tercipta.
-    const [{ maxPos }] = await db
-      .select({ maxPos: max(tasksTable.position) })
-      .from(tasksTable)
-      .where(
-        and(
-          eq(tasksTable.orgId, orgId),
-          eq(tasksTable.projectId, projectId),
-          eq(tasksTable.status, "todo"),
-          eq(tasksTable.dueDate, today),
-        ),
-      );
-    let nextPos = (maxPos ?? -1) + 1;
-
+    // (cubic P2 proyek-actions:298). Max-read TANPA filter dueDate: posisi
+    // kanban dialokasikan lintas seluruh kolom status, bukan hanya task hari
+    // ini (cubic P2 proyek-actions:299). Race-safety (cubic P2
+    // proyek-actions:318): FOR UPDATE baris project + max-read + insert
+    // dalam satu transaksi, seperti createTask.
+    let nextPos = -1;
     let created = 0;
-    for (const t of templates) {
-      if (existingTitles.has(t.name)) continue;
-      const [row] = await db
-        .insert(tasksTable)
-        .values({
-          orgId,
-          projectId,
-          title: t.name,
-          description: t.description,
-          priority: t.priority,
-          dueDate: today,
-          source: "daily",
-          dailyForDate: today,
-          position: nextPos,
-        })
-        // onConflictDoNothing({ target }) tak bisa menyebut partial index —
-        // tanpa target = DO NOTHING untuk semua constraint/index.
-        .onConflictDoNothing()
-        .returning();
-      if (row) {
-        created++;
-        nextPos++;
-        await recordAudit({
-          orgId,
-          userId,
-          action: "task.create",
-          entity: "task",
-          entityId: row.id,
-          metadata: { projectId, title: row.title, daily: true },
-        });
+    const createdRows: { id: string; title: string }[] = [];
+    await db.transaction(async (tx) => {
+      await tx
+        .select({ id: projects.id })
+        .from(projects)
+        .where(and(eq(projects.id, projectId), eq(projects.orgId, orgId)))
+        .for("update");
+      const [{ maxPos }] = await tx
+        .select({ maxPos: max(tasksTable.position) })
+        .from(tasksTable)
+        .where(
+          and(
+            eq(tasksTable.orgId, orgId),
+            eq(tasksTable.projectId, projectId),
+            eq(tasksTable.status, "todo"),
+          ),
+        );
+      nextPos = (maxPos ?? -1) + 1;
+      for (const t of templates) {
+        if (existingTitles.has(t.name)) continue;
+        const [row] = await tx
+          .insert(tasksTable)
+          .values({
+            orgId,
+            projectId,
+            title: t.name,
+            description: t.description,
+            priority: t.priority,
+            dueDate: today,
+            source: "daily",
+            dailyForDate: today,
+            position: nextPos,
+          })
+          // onConflictDoNothing({ target }) tak bisa menyebut partial index —
+          // tanpa target = DO NOTHING untuk semua constraint/index.
+          .onConflictDoNothing()
+          .returning();
+        if (row) {
+          created++;
+          nextPos++;
+          createdRows.push({ id: row.id, title: row.title });
+        }
       }
+    });
+    for (const row of createdRows) {
+      await recordAudit({
+        orgId,
+        userId,
+        action: "task.create",
+        entity: "task",
+        entityId: row.id,
+        metadata: { projectId, title: row.title, daily: true },
+      });
     }
     revalidatePath(`/proyek/${projectId}`);
     return { ok: true, created };

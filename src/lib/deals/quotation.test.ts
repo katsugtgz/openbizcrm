@@ -102,4 +102,40 @@ describe("quotation totals", () => {
       ]),
     ).toEqual({ subtotal: near, discountTotal: near, total: 0 });
   });
+
+  it("100% discount on MAX_SAFE_INTEGER - 1 loses no rupiah (cubic P2 quotation:55)", () => {
+    // Faktor persen dibatasi (pct/100) dulu: 100% = factor 1 exact. Bentuk
+    // lama (lineTotal/100)*pct membulatkan 1 rupiah LEBIH besar → total -1.
+    const near = Number.MAX_SAFE_INTEGER - 1;
+    expect(
+      calculateQuotationTotals([
+        {
+          description: "A",
+          quantity: 1,
+          unitPrice: near,
+          discountPercent: 100,
+        },
+      ]),
+    ).toEqual({ subtotal: near, discountTotal: near, total: 0 });
+  });
+
+  it("50% discount on MAX_SAFE_INTEGER - 1 rounds exactly (cubic P2 quotation:55)", () => {
+    // near = 4503599627370495 ganjil; exact floor = ...494.75 → 495 (round).
+    // Bentuk lama menghasilkan ...496 (1 lebih) karena (x/100)*50 tak exact.
+    const near = Number.MAX_SAFE_INTEGER - 1;
+    expect(
+      calculateQuotationTotals([
+        {
+          description: "A",
+          quantity: 1,
+          unitPrice: near,
+          discountPercent: 50,
+        },
+      ]),
+    ).toEqual({
+      subtotal: near,
+      discountTotal: 4_503_599_627_370_495,
+      total: near - 4_503_599_627_370_495,
+    });
+  });
 });

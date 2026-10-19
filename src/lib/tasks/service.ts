@@ -261,6 +261,18 @@ export async function reorderTask(
       .where(and(eq(projects.id, task.projectId), eq(projects.orgId, orgId)))
       .for("update");
 
+    // Snapshot pre-lock bisa basi: reorder queued lain sudah memindahkan
+    // task. Re-read di dalam lock supaya branch status pakai posisi terkini
+    // (cubic P2 tasks:262) — task hilang = request basi, tolak eksplisit.
+    const [current] = await tx
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.id, taskId), eq(tasks.orgId, orgId)))
+      .limit(1);
+    if (!current) {
+      throw new Error("Permintaan reorder basi; task sudah tidak ada.");
+    }
+
     const readColumn = (status: TaskStatus) =>
       tx
         .select({ id: tasks.id, position: tasks.position })
@@ -268,13 +280,13 @@ export async function reorderTask(
         .where(
           and(
             eq(tasks.orgId, orgId),
-            eq(tasks.projectId, task.projectId),
+            eq(tasks.projectId, current.projectId),
             eq(tasks.status, status),
           ),
         )
         .orderBy(asc(tasks.position));
 
-    if (task.status === toStatus) {
+    if (current.status === toStatus) {
       // WITHIN: kolom tujuan = kolom asal (task masih di dalamnya).
       const col = await readColumn(toStatus);
       const { updates } = moveAndRenumber(col, taskId, toIndex);
@@ -282,7 +294,7 @@ export async function reorderTask(
     } else {
       // BETWEEN: renumber KEDUA kolom (cubic P2 tasks:209) dan persist
       // position kolom tujuan termasuk task yang dipindah (cubic P1 tasks:222).
-      const source = await readColumn(task.status);
+      const source = await readColumn(current.status);
       const sourceRest = source.filter((t) => t.id !== taskId);
       const sourceUpdates = sourceRest
         .map((t, i) => ({ id: t.id, position: i }))
@@ -292,7 +304,7 @@ export async function reorderTask(
       const index = Math.min(Math.max(toIndex, 0), target.length);
       const inserted = [
         ...target.slice(0, index),
-        { id: taskId, position: task.position },
+        { id: taskId, position: current.position },
         ...target.slice(index),
       ];
       const { updates } = moveAndRenumber(inserted, taskId, index);
@@ -312,6 +324,8 @@ export async function reorderTask(
     entity: "task",
     entityId: taskId,
     metadata: { from: task.status, to: toStatus, toIndex },
+    // task.status = pre-lock snapshot untuk audit only; logika di atas pakai
+    // `current` (re-read in-lock, cubic P2 tasks:262).
   });
 }
 

@@ -49,10 +49,12 @@ export function calculateQuotationTotals(
         "Total per baris terlalu besar (> MAX_SAFE_INTEGER).",
       );
     }
-    // Bagi persen dulu: lineTotal/100*pct tak pernah melebihi lineTotal,
-    // jadi 100% diskon dekat MAX_SAFE_INTEGER tetap aman (cubic P2
-    // quotation:52). (lineTotal * pct) / 100 bisa overflow di tengah.
-    const discountLine = Math.round((lineTotal / 100) * pct);
+    // cubic P2 quotation:55 — faktor persen dibatasi dulu: pct/100 <= 1
+    // (exact 1 saat pct=100), jadi hasil tak pernah melebihi lineTotal dan
+    // 100% di dekat MAX_SAFE_INTEGER tetap exact. Bentuk lama
+    // (lineTotal/100)*pct kehilangan 1 rupiah di boundary (pct=50 @ MAX-1,
+    // pct=100 @ MAX-1 → total negatif).
+    const discountLine = Math.round(lineTotal * (pct / 100));
     subtotal += lineTotal;
     discountTotal += discountLine;
     if (!Number.isSafeInteger(subtotal)) {

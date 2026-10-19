@@ -321,16 +321,23 @@ async function seed() {
       // Masukkan di urutan kosong SETELAH posisi tertinggi yang sudah ada —
       // posisi kanonik bisa diduduki stage lain pada pipeline parsial, dan
       // onConflictDoNothing akan diam-diam membuang stage itu sehingga
-      // stageByName.get(name) crash saat seeding deal.
+      // stageByName.get(name) crash saat seeding deal. Insert konflik-aman
+      // (cubic P2 seed:326): getOrCreateDefaultPipeline konkuren bisa
+      // mengisi pipeline kosong setelah read ini; DO NOTHING + re-read
+      // supaya seed tidak rollback, bukan insert telanjang yang bisa gagal
+      // unik (pipeline, position).
       const nextPos = (stageRows.at(-1)?.position ?? -1) + 1;
-      await tx.insert(crmStages).values(
-        missingStages.map((name, i) => ({
-          orgId: org.id,
-          pipelineId: pipeline.id,
-          name,
-          position: nextPos + i,
-        })),
-      );
+      await tx
+        .insert(crmStages)
+        .values(
+          missingStages.map((name, i) => ({
+            orgId: org.id,
+            pipelineId: pipeline.id,
+            name,
+            position: nextPos + i,
+          })),
+        )
+        .onConflictDoNothing();
       console.log(`+ crm stages (${missingStages.length} kurang)`);
     }
     const stages = await tx

@@ -59,7 +59,15 @@ async function provision(
         [user.firstName, user.lastName].filter(Boolean).join(" ") || null;
       let [dbUser] = await tx
         .insert(users)
-        .values({ workosUserId: user.id, email: user.email, name })
+        .values({
+          workosUserId: user.id,
+          email: user.email,
+          name,
+          // Session tanpa org: tandai user-only supaya login BERIKUTNYA yang
+          // membawa organizationId bisa melengkapi provisioning (cubic P1
+          // ids:128 — gate permanen).
+          needsOrg: !user.organizationId,
+        })
         .onConflictDoNothing()
         .returning();
       if (!dbUser) {
@@ -102,6 +110,12 @@ async function provision(
             .onConflictDoNothing({
               target: [orgMemberships.orgId, orgMemberships.userId],
             });
+          // Org lengkap (insert baru atau retry dua-fase): bersihkan penanda
+          // user-only, retry tidak perlu lagi.
+          await tx
+            .update(users)
+            .set({ needsOrg: false })
+            .where(eq(users.id, dbUser.id));
           if (!dbUser.currentOrgId) {
             await tx
               .update(users)
@@ -131,6 +145,16 @@ export async function resolveSessionIds(
     return { userId: provisioned.userId, orgId: provisioned.orgId };
   }
   if (!dbUser) return null;
+
+  // User-only provisioning retry (cubic P1 ids:128): user dibuat oleh sesi
+  // tanpa org (needs_org=true). Login berikut yang membawa organizationId
+  // melengkapi provisioning — bukan gagal permanen di cek membership.
+  if (dbUser.needsOrg && user.organizationId) {
+    const provisioned = await provision(user);
+    if (provisioned?.orgId) {
+      return { userId: provisioned.userId, orgId: provisioned.orgId };
+    }
+  }
 
   let orgId: string | null = null;
   if (user.organizationId) {

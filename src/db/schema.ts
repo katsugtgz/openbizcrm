@@ -1,8 +1,10 @@
 import {
+  check,
   pgTable,
   pgEnum,
   uuid,
   bigint,
+  boolean,
   text,
   timestamp,
   integer,
@@ -63,6 +65,11 @@ export const users = pgTable("users", {
   currentOrgId: uuid("current_org_id").references(() => organizations.id, {
     onDelete: "set null",
   }),
+  // User-only provisioning marker (cubic P1 ids:128): true when the user row
+  // was provisioned from a session WITHOUT a WorkOS org id, so a later
+  // session that carries one retries org provisioning instead of being
+  // permanently gated by the missing membership.
+  needsOrg: boolean("needs_org").default(false).notNull(),
 });
 
 export const orgMemberships = pgTable(
@@ -458,6 +465,13 @@ export const tasks = pgTable(
     uniqueIndex("tasks_org_project_daily_title_unique")
       .on(t.orgId, t.projectId, t.dailyForDate, t.title)
       .where(sql`source = 'daily'`),
+    // cubic schema.ts:449 — PostgreSQL menganggap NULL berbeda-beda di unique
+    // index, jadi daily tanpa tanggal bisa lolos idempotensi. Backstop CHECK:
+    // setiap task harian wajib punya daily_for_date.
+    check(
+      "tasks_daily_date_required",
+      sql`source <> 'daily' OR daily_for_date IS NOT NULL`,
+    ),
   ],
 );
 
