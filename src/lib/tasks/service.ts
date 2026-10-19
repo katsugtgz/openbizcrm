@@ -34,6 +34,7 @@ async function assertParent(
   orgId: string,
   projectId: string,
   parentId: string,
+  exec: Tx | typeof db = db,
 ): Promise<void> {
   const [parent] = await db
     .select()
@@ -58,10 +59,11 @@ async function assertNotDescendant(
   orgId: string,
   taskId: string,
   parentId: string,
+  exec: Tx | typeof db = db,
 ): Promise<void> {
   // Recursive CTE (cubic r5 P2): satu query, tanpa N round-trip —
   // keturunan parentId yang menyentuh taskId = cycle.
-  const ancestors = await db.execute(sql`
+  const ancestors = await exec.execute(sql`
     WITH RECURSIVE chain AS (
       SELECT t.id, t.parent_id
       FROM tasks t
@@ -212,8 +214,8 @@ export async function updateTask(
     const lockKey = `${a}|${b}`;
     row = await db.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`);
-      await assertParent(orgId, task.projectId, parentId);
-      await assertNotDescendant(orgId, taskId, parentId);
+      await assertParent(orgId, task.projectId, parentId, tx);
+      await assertNotDescendant(orgId, taskId, parentId, tx);
       const [updated] = await tx
         .update(tasks)
         .set(input)
