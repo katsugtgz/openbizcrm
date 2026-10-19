@@ -3,7 +3,7 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
-import { requireOrgRole } from "@/lib/org-scope";
+import { hasRole, requireOrgRole } from "@/lib/org-scope";
 import { listProjects } from "@/lib/repos/project-repo";
 import { listCompanies } from "@/lib/repos/crm-repo";
 import { Badge } from "@/components/ui/badge";
@@ -37,10 +37,9 @@ async function ProjectTable({
   userId: string;
 }) {
   const { role } = await requireOrgRole(userId, orgId, "member");
-  // Select status hanya untuk admin: action updateProject butuh admin, jadi
-  // render untuk member hanya memastikan perubahan selalu gagal (cubic P2
-  // proyek-page:87).
-  const isAdmin = role === "admin";
+  // Select status untuk admin DAN owner — updateProject menerima keduanya
+  // (hierarki role, bukan equality).
+  const isAdmin = hasRole(role, "admin");
   const [projects, companies] = await Promise.all([
     listProjects(orgId),
     listCompanies(orgId),
@@ -122,7 +121,7 @@ function TableSkeleton() {
 export default async function ProyekPage() {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  // WorkOS session IDs -> internal UUIDs (cubic P1 proyek-page:109).
+  // WorkOS session IDs -> internal UUIDs before the org-scoped reads.
   const ids = await resolveSessionIds(user);
   if (!ids) redirect("/dashboard");
   const { userId, orgId } = ids!;
@@ -162,9 +161,10 @@ async function CompaniesGate({
   orgId: string;
   userId: string;
 }) {
-  // Membership check: non-member must not read company names through the
-  // create-dialog (cubic P2 proyek-page:158).
-  await requireOrgRole(userId, orgId, "member");
+  // Tombol "Proyek Baru" admin/owner saja: createProject menolak member,
+  // jadi member tidak boleh melihat dialog (dan perusahaan tidak di-fetch).
+  const { role } = await requireOrgRole(userId, orgId, "member");
+  if (!hasRole(role, "admin")) return null;
   const companies = await listCompanies(orgId);
   return (
     <NewProjectDialog

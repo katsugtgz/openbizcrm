@@ -151,7 +151,9 @@ function Column({
             {/* Tetap di layout, muncul saat hover ATAU fokus keyboard —
                 hidden membuat tombol tak bisa di-tab (cubic P2
                 task-board:134). */}
-            <div className="absolute right-1 top-1 flex gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover/card:opacity-100">
+            {/* pointer-events-none default: opacity-0 saja masih menangkap
+                klik kartu (cubic P3 task-board:154). */}
+            <div className="pointer-events-none absolute right-1 top-1 flex gap-1 opacity-0 transition-opacity group-hover/card:pointer-events-auto group-hover/card:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100">
               <button
                 type="button"
                 onClick={(e) => {
@@ -225,6 +227,11 @@ export function TaskBoard({
     setActiveId(String(e.active.id));
   }
 
+  // Escape saat drag: overlay harus ikut hilang (cubic P2 task-board:206).
+  function onDragCancel() {
+    setActiveId(null);
+  }
+
   function onDragEnd(e: DragEndEvent) {
     setActiveId(null);
     const taskId = String(e.active.id);
@@ -274,6 +281,7 @@ export function TaskBoard({
       sensors={sensors}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
+      onDragCancel={onDragCancel}
     >
       <div
         className="flex gap-3 overflow-x-auto pb-2"

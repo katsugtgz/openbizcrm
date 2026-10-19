@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, isNull, max } from "drizzle-orm";
 import { db } from "@/db";
 import { tasks as tasksTable, taskTemplates, timesheets } from "@/db/schema";
 import { session } from "@/lib/auth";
@@ -268,9 +268,9 @@ export async function generateTodayAction(
     const today = jakartaDateISO(new Date());
     await requireOrgRole(userId, orgId, "member");
     await assertProjectInOrg(orgId, projectId);
-    // Atomic check-and-create: unique (org, project, title, dueDate) +
-    // onConflictDoNothing menutup duplikat template & request konkuren
-    // (cubic P2 proyek-actions:279). Pre-read hanya optimasi counter.
+    // Atomic check-and-create: partial unique index (org, project,
+    // dailyForDate, title) WHERE source='daily' + onConflictDoNothing menutup
+    // duplikat template & request konkuren. Pre-read hanya optimasi counter.
     const existing = await db
       .select({ title: tasksTable.title })
       .from(tasksTable)
@@ -278,10 +278,28 @@ export async function generateTodayAction(
         and(
           eq(tasksTable.orgId, orgId),
           eq(tasksTable.projectId, projectId),
-          eq(tasksTable.dueDate, today),
+          eq(tasksTable.source, "daily"),
+          eq(tasksTable.dailyForDate, today),
         ),
       );
     const existingTitles = new Set(existing.map((r) => r.title));
+
+    // Posisi kolom "todo" dialokasikan berurutan, bukan 0 semua —
+    // posisi 0 berganda bikin urutan kanban tidak stabil
+    // (cubic P2 proyek-actions:298). onConflictDoNothing bisa skip insert,
+    // jadi counter jalan hanya saat row benar-benar tercipta.
+    const [{ maxPos }] = await db
+      .select({ maxPos: max(tasksTable.position) })
+      .from(tasksTable)
+      .where(
+        and(
+          eq(tasksTable.orgId, orgId),
+          eq(tasksTable.projectId, projectId),
+          eq(tasksTable.status, "todo"),
+          eq(tasksTable.dueDate, today),
+        ),
+      );
+    let nextPos = (maxPos ?? -1) + 1;
 
     let created = 0;
     for (const t of templates) {
@@ -295,19 +313,17 @@ export async function generateTodayAction(
           description: t.description,
           priority: t.priority,
           dueDate: today,
-          position: 0,
+          source: "daily",
+          dailyForDate: today,
+          position: nextPos,
         })
-        .onConflictDoNothing({
-          target: [
-            tasksTable.orgId,
-            tasksTable.projectId,
-            tasksTable.title,
-            tasksTable.dueDate,
-          ],
-        })
+        // onConflictDoNothing({ target }) tak bisa menyebut partial index —
+        // tanpa target = DO NOTHING untuk semua constraint/index.
+        .onConflictDoNothing()
         .returning();
       if (row) {
         created++;
+        nextPos++;
         await recordAudit({
           orgId,
           userId,

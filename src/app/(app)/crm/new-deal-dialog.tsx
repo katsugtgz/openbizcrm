@@ -58,8 +58,19 @@ export function NewDealDialog({
     });
   }
 
+  // Reset saat ditutup dengan cara mana pun (Cancel, X, klik luar), bukan
+  // hanya setelah submit sukses — data deal yang terbengkalai tidak boleh
+  // muncul lagi saat dialog dibuka ulang.
+  function handleOpenChange(next: boolean) {
+    setOpen(next);
+    if (!next) {
+      setTitle("");
+      setValue("");
+    }
+  }
+
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         <Button>Deal Baru</Button>
       </DialogTrigger>

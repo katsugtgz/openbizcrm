@@ -25,9 +25,15 @@ const TAX_STATUSES = [
 async function requireSession() {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  // WorkOS session IDs -> internal UUIDs (cubic P1 karyawan-actions:31).
+  // WorkOS session IDs -> internal UUIDs before the org-scoped guards.
   const ids = await resolveSessionIds(user);
-  if (!ids) throw new Error("Tidak ada organisasi aktif.");
+  if (!ids) {
+    // Null mencakup user tanpa org ATAU user belum terprovision — pesan
+    // harus menutup kedua kasus.
+    throw new Error(
+      "Organisasi aktif tidak ditemukan atau akun belum terdaftar.",
+    );
+  }
   return ids;
 }
 

@@ -50,21 +50,25 @@ async function assertParent(
 
 /**
  * Cycle guard (cubic P2 tasks:129): parentId tidak boleh turunan dari task.
- * Jalan naik rantai parent dari kandidat; kalau ketemu task => cycle.
+ * Jalan naik rantai parent dari kandidat sampai habis (tanpa batas depth);
+ * kalau ketemu task => cycle. visited-Set menahan infinite loop kalau data
+ * lama sudah membentuk cycle.
  */
 async function assertNotDescendant(
   orgId: string,
   taskId: string,
   parentId: string,
 ): Promise<void> {
+  const visited = new Set<string>();
   let cursor: string | null = parentId;
-  for (let depth = 0; depth < 32 && cursor; depth++) {
+  while (cursor && !visited.has(cursor)) {
     if (cursor === taskId) {
       throw new OrgScopeError(
         "NO_MEMBERSHIP",
         "Parent task tidak boleh merupakan turunan dari task ini.",
       );
     }
+    visited.add(cursor);
     const [row] = await db
       .select({ parentId: tasks.parentId })
       .from(tasks)
@@ -73,6 +77,14 @@ async function assertNotDescendant(
     cursor = row?.parentId ?? null;
   }
 }
+
+/**
+ * Batas judul (cubic P2 0010:3): title masuk unique index b-tree
+ * (org, project, daily_for_date, title) — judul >2K karakter bisa menabrak
+ * limit ukuran entri b-tree PostgreSQL dan bikin insert gagal dengan error
+ * mentah. Dipotong di boundary service, bukan UI.
+ */
+export const TASK_TITLE_MAX = 2000;
 
 export interface TaskInput {
   title: string;
@@ -94,6 +106,12 @@ export async function createTask(
   await requireProject(orgId, projectId);
   if (!input.title.trim()) {
     throw new OrgScopeError("INSUFFICIENT_ROLE", "Judul task wajib diisi.");
+  }
+  if (input.title.length > TASK_TITLE_MAX) {
+    throw new OrgScopeError(
+      "INSUFFICIENT_ROLE",
+      `Judul task maksimal ${TASK_TITLE_MAX} karakter.`,
+    );
   }
   if (input.parentId) {
     await assertParent(orgId, projectId, input.parentId);
@@ -155,6 +173,12 @@ export async function updateTask(
   if (input.title !== undefined && !input.title.trim()) {
     throw new OrgScopeError("INSUFFICIENT_ROLE", "Judul task wajib diisi.");
   }
+  if (input.title !== undefined && input.title.length > TASK_TITLE_MAX) {
+    throw new OrgScopeError(
+      "INSUFFICIENT_ROLE",
+      `Judul task maksimal ${TASK_TITLE_MAX} karakter.`,
+    );
+  }
   if (input.parentId) {
     if (input.parentId === taskId) {
       throw new OrgScopeError(
@@ -213,28 +237,11 @@ export async function listTasks(
     .orderBy(asc(tasks.position));
 }
 
-/** Satu kolom kanban (id + position, urut position). */
-async function column(
-  orgId: string,
-  projectId: string,
-  status: TaskStatus,
-): Promise<{ id: string; position: number }[]> {
-  return db
-    .select({ id: tasks.id, position: tasks.position })
-    .from(tasks)
-    .where(
-      and(
-        eq(tasks.orgId, orgId),
-        eq(tasks.projectId, projectId),
-        eq(tasks.status, status),
-      ),
-    )
-    .orderBy(asc(tasks.position));
-}
-
 /**
  * Kanban reorder: pindahkan task ke status & index tujuan, renumber kolom
  * asal + tujuan. Urutan relatif item lain dijaga (moveAndRenumber, TDD).
+ * Lock row project FOR UPDATE sebelum baca kolom mana pun — snapshot kolom
+ * konkuren jadi serial, tidak ada duplicate position (cubic P2 tasks:257).
  */
 export async function reorderTask(
   userId: string,
@@ -246,42 +253,42 @@ export async function reorderTask(
   await requireOrgRole(userId, orgId, "member");
   const task = await requireTask(orgId, taskId);
 
-  if (task.status === toStatus) {
-    // WITHIN: kolom tujuan = kolom asal (task masih di dalamnya).
-    const col = await column(orgId, task.projectId, toStatus);
-    const { updates } = moveAndRenumber(col, taskId, toIndex);
-    await db.transaction((tx) => persistPositions(tx, orgId, updates));
-  } else {
-    // BETWEEN: renumber KEDUA kolom (cubic P2 tasks:209) dan persist
-    // position kolom tujuan termasuk task yang dipindah (cubic P1 tasks:222).
-    await db.transaction(async (tx) => {
-      const source = await tx
+  await db.transaction(async (tx) => {
+    // Serialisasi reorder dalam satu project.
+    await tx
+      .select({ id: projects.id })
+      .from(projects)
+      .where(and(eq(projects.id, task.projectId), eq(projects.orgId, orgId)))
+      .for("update");
+
+    const readColumn = (status: TaskStatus) =>
+      tx
         .select({ id: tasks.id, position: tasks.position })
         .from(tasks)
         .where(
           and(
             eq(tasks.orgId, orgId),
             eq(tasks.projectId, task.projectId),
-            eq(tasks.status, task.status),
+            eq(tasks.status, status),
           ),
         )
         .orderBy(asc(tasks.position));
+
+    if (task.status === toStatus) {
+      // WITHIN: kolom tujuan = kolom asal (task masih di dalamnya).
+      const col = await readColumn(toStatus);
+      const { updates } = moveAndRenumber(col, taskId, toIndex);
+      await persistPositions(tx, orgId, updates);
+    } else {
+      // BETWEEN: renumber KEDUA kolom (cubic P2 tasks:209) dan persist
+      // position kolom tujuan termasuk task yang dipindah (cubic P1 tasks:222).
+      const source = await readColumn(task.status);
       const sourceRest = source.filter((t) => t.id !== taskId);
       const sourceUpdates = sourceRest
         .map((t, i) => ({ id: t.id, position: i }))
         .filter((u, i) => u.position !== sourceRest[i].position);
 
-      const target = await tx
-        .select({ id: tasks.id, position: tasks.position })
-        .from(tasks)
-        .where(
-          and(
-            eq(tasks.orgId, orgId),
-            eq(tasks.projectId, task.projectId),
-            eq(tasks.status, toStatus),
-          ),
-        )
-        .orderBy(asc(tasks.position));
+      const target = await readColumn(toStatus);
       const index = Math.min(Math.max(toIndex, 0), target.length);
       const inserted = [
         ...target.slice(0, index),
@@ -294,8 +301,8 @@ export async function reorderTask(
         .set({ status: toStatus, position: index })
         .where(and(eq(tasks.id, taskId), eq(tasks.orgId, orgId)));
       await persistPositions(tx, orgId, [...sourceUpdates, ...updates]);
-    });
-  }
+    }
+  });
 
   // Audit untuk kedua jalur (cubic P2 tasks:210).
   await recordAudit({

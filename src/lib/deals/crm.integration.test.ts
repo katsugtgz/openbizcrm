@@ -232,12 +232,30 @@ describe("crm integration", () => {
       deals.closeDeal(owner.id, org.id, deal.id, "open" as "won"),
     ).rejects.toThrow(/won|lost/);
 
-    // close pertama menang; close kedua idempoten, tidak menimpa outcome.
-    const won = await deals.closeDeal(owner.id, org.id, deal.id, "won");
-    expect(won.status).toBe("won");
-    const again = await deals.closeDeal(owner.id, org.id, deal.id, "lost");
-    expect(again.status).toBe("won");
-    expect(again.stageId).toBe(won.stageId);
+    // Close konkuren won+lost (Promise.allSettled — promise rejection tidak
+    // melempar): tepat satu menang, deal status = outcome pemenang. Uji race
+    // protection sungguhan, bukan versi sekuensial yang selalu lolos
+    // (cubic P2 crm.integration:244).
+    const results = await Promise.allSettled([
+      deals.closeDeal(owner.id, org.id, deal.id, "won"),
+      deals.closeDeal(owner.id, org.id, deal.id, "lost"),
+    ]);
+    const ok = results.filter((r) => r.status === "fulfilled");
+    expect(ok).toHaveLength(1);
+    const winnerStatus = (ok[0] as PromiseFulfilledResult<{ status: string }>)
+      .value.status;
+    // Close ulang outcome sama = idempoten; outcome lain = konflik.
+    const again = await deals.closeDeal(
+      owner.id,
+      org.id,
+      deal.id,
+      winnerStatus as "won",
+    );
+    expect(again.status).toBe(winnerStatus);
+    const other = winnerStatus === "won" ? "lost" : "won";
+    await expect(
+      deals.closeDeal(owner.id, org.id, deal.id, other as "won"),
+    ).rejects.toThrow(new RegExp(`sudah ${winnerStatus}`));
 
     // Transisi quotation valid lalu double-call sekuensial: panggilan kedua
     // dari status yang sama harus gagal (guard WHERE quotationStatus).
@@ -280,5 +298,48 @@ describe("crm integration", () => {
     });
     expect(deal.status).toBe("won");
     expect(deal.closedAt).not.toBeNull();
+  });
+
+  itDb("createDeal menolak kontak dari company lain (org sama)", async () => {
+    // Pin cubic P2 crm-repo:302 — kontak harus milik company deal, bukan
+    // sekadar org yang sama.
+    const owner = await (
+      await import("@/lib/repos/user-repo")
+    ).createUser({
+      workosUserId: `it-xcontact-${suffix}`,
+      email: `it-xcontact-${suffix}@test.id`,
+    });
+    createdUserIds.push(owner.id);
+    const org = await (
+      await import("@/lib/repos/org-repo")
+    ).createOrg(
+      { name: "CRM Cross Org", slug: `it-xcontact-${suffix}` },
+      owner.id,
+    );
+    createdOrgIds.push(org.id);
+    const companyA = await crm.createCompany(owner.id, org.id, {
+      name: `PT XA ${suffix}`,
+    });
+    const companyB = await crm.createCompany(owner.id, org.id, {
+      name: `PT XB ${suffix}`,
+    });
+    const contactB = await crm.createContact(owner.id, org.id, {
+      companyId: companyB.id,
+      name: "Kontak B",
+    });
+    const { pipeline, stages } = await crm.getOrCreateDefaultPipeline(
+      org.id,
+      companyA.id,
+    );
+    await expect(
+      crm.createDeal(owner.id, org.id, {
+        pipelineId: pipeline.id,
+        stageId: stages[0].id,
+        companyId: companyA.id,
+        contactId: contactB.id,
+        title: "Deal Kontak Silang",
+        value: 1,
+      }),
+    ).rejects.toThrow(/Kontak tidak ditemukan/);
   });
 });

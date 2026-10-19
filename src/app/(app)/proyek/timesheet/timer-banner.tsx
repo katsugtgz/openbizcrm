@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { stopTimerAction } from "@/app/(app)/proyek/actions";
 
 /** Jam:menit:detik berjalan sejak startedAt; mulai null supaya SSR ==
- * hydration (cubic P2 timer-banner:10). */
+ * hydration (clock hanya di client). */
 function useElapsed(startedAtMs: number): string | null {
   const [now, setNow] = useState<number | null>(null);
   useEffect(() => {
@@ -62,8 +62,9 @@ function RunningTimer({
     startTransition(async () => {
       const result = await stopTimerAction();
       if (result.ok) {
+        // stopTimerAction sudah revalidatePath; refresh hanya di error
+        // untuk mengosongkan banner usang.
         toast.success("Timer dihentikan.");
-        router.refresh();
       } else {
         toast.error(result.error ?? "Gagal menghentikan timer.");
         router.refresh();

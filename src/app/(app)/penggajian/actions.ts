@@ -55,11 +55,12 @@ export async function previewPayrollAction(formData: FormData): Promise<
   | { ok: false; error: string }
 > {
   const { userId, orgId } = await requireSession();
-  // Preview menampar total gaji seluruh pegawai — admin-only, sama seperti run.
-  await requireOrgRole(userId, orgId, "admin");
   const year = Number(formData.get("year"));
   const month = Number(formData.get("month"));
   try {
+    // Preview menampar total gaji seluruh pegawai — admin-only, sama seperti
+    // run; di dalam try agar OrgScopeError tercatat sebagai { ok:false }.
+    await requireOrgRole(userId, orgId, "admin");
     if (
       month < 1 ||
       month > 12 ||

@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq, asc, and } from "drizzle-orm";
-import { organizations, tasks as tasksTable } from "@/db/schema";
+import { organizations, tasks as tasksTable, users } from "@/db/schema";
 import type { TaskStatus } from "@/lib/tasks/service";
 
 // Integration: RUN_DB_TESTS=1 + live DB. Pin cubic P1 tasks:222 —
@@ -12,6 +12,7 @@ const itDb = process.env.RUN_DB_TESTS === "1" ? it : it.skip;
 describe("tasks reorder integration", () => {
   const suffix = Date.now().toString(36);
   const createdOrgIds: string[] = [];
+  const createdUserIds: string[] = [];
   let db!: Awaited<ReturnType<() => Promise<typeof import("@/db")>>>["db"];
   let taskSvc!: typeof import("@/lib/tasks/service");
   let projectRepo!: typeof import("@/lib/repos/project-repo");
@@ -32,6 +33,10 @@ describe("tasks reorder integration", () => {
     for (const id of createdOrgIds) {
       await db.delete(organizations).where(eq(organizations.id, id));
     }
+    // User dihapus setelah org — FK memberships/projects menunjuk user.
+    for (const id of createdUserIds) {
+      await db.delete(users).where(eq(users.id, id));
+    }
   });
 
   itDb(
@@ -41,6 +46,7 @@ describe("tasks reorder integration", () => {
         workosUserId: `it-reorder-${suffix}`,
         email: `it-reorder-${suffix}@test.id`,
       });
+      createdUserIds.push(user.id);
       const org = await orgRepo.createOrg(
         { name: "Reorder Org", slug: `it-reorder-${suffix}` },
         user.id,
@@ -84,6 +90,57 @@ describe("tasks reorder integration", () => {
       ]);
       // Kolom asal renumber 0..n-1 tanpa gap.
       expect(await col("todo")).toEqual([{ id: b.id, position: 0 }]);
+    },
+  );
+
+  itDb(
+    "cycle guard: 40-level chain rejected, tapi chain bebas lewat tanpa cap",
+    async () => {
+      const user = await userRepo.createUser({
+        workosUserId: `it-cycle-${suffix}`,
+        email: `it-cycle-${suffix}@test.id`,
+      });
+      createdUserIds.push(user.id);
+      const org = await orgRepo.createOrg(
+        { name: "Cycle Org", slug: `it-cycle-${suffix}` },
+        user.id,
+      );
+      createdOrgIds.push(org.id);
+      const project = await projectRepo.createProject(user.id, org.id, {
+        name: "Cycle Project",
+      });
+
+      // Rantai 40 level: t0 <- t1 <- ... <- t39. Melampaui cap 32 lama —
+      // guard lama berhenti diam-diam setelah 32 ancestor.
+      const t0 = await taskSvc.createTask(user.id, org.id, project.id, {
+        title: "t0",
+      });
+      let tail = t0;
+      for (let i = 1; i < 40; i++) {
+        tail = await taskSvc.createTask(user.id, org.id, project.id, {
+          title: `t${i}`,
+          parentId: tail.id,
+        });
+      }
+
+      // Anak di bawah rantai >= 40 tetap lolos (guard tidak mentok cap).
+      const deepChild = await taskSvc.createTask(user.id, org.id, project.id, {
+        title: "deep-child",
+        parentId: tail.id,
+      });
+      expect(deepChild.parentId).toBe(tail.id);
+
+      // Cycle via update: mid punya parent deepChild; jadikan deepChild
+      // anak mid => mid -> deepChild -> mid (cycle).
+      const mid = await taskSvc.createTask(user.id, org.id, project.id, {
+        title: "mid",
+        parentId: deepChild.id,
+      });
+      await expect(
+        taskSvc.updateTask(user.id, org.id, deepChild.id, {
+          parentId: mid.id,
+        }),
+      ).rejects.toThrow(/turunan/);
     },
   );
 });

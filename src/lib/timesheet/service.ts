@@ -51,27 +51,29 @@ export async function startTimer(
 
 /**
  * Stop timer terbuka user; hitung menit (bulat ke bawah, min 0).
+ * Lookup by userId SAJA: timer bersifat global-singleton per user, jadi
+ * timer org lain tetap harus terlihat — kalau tidak, user terkunci
+ * (tidak bisa stop dari org ini, start juga diblok guard global).
+ * (cubic P1 timesheet:67)
  */
 export async function stopTimer(
   userId: string,
   orgId: string,
 ): Promise<Timesheet> {
   await requireOrgRole(userId, orgId, "member");
-  // Scope ke org: timer org lain tidak boleh ter-stop dari org ini
-  // (cubic P1 timesheet:29).
   const [open] = await db
     .select()
     .from(timesheets)
-    .where(
-      and(
-        eq(timesheets.orgId, orgId),
-        eq(timesheets.userId, userId),
-        isNull(timesheets.endedAt),
-      ),
-    )
+    .where(and(eq(timesheets.userId, userId), isNull(timesheets.endedAt)))
     .limit(1);
   if (!open) {
     throw new NotFoundError("Tidak ada timer yang berjalan.");
+  }
+  if (open.orgId !== orgId) {
+    throw new OrgScopeError(
+      "INSUFFICIENT_ROLE",
+      "Timer masih berjalan di organisasi lain. Hentikan dari organisasi tersebut.",
+    );
   }
   const endedAt = new Date();
   const minutes = Math.max(

@@ -54,7 +54,7 @@ async function TimesheetView({
     .slice(0, 10);
 
   const [rows, openTimerRows] = await Promise.all([
-    // listMine range WIB-aware (cubic P2 ts-page:80).
+    // listMine memfilter tanggal WIB, bukan UTC.
     listMine(userId, orgId, { from, to }),
     db
       .select({
@@ -208,19 +208,22 @@ export default async function TimesheetPage({
 }) {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  // WorkOS session IDs -> internal UUIDs (cubic P1 timesheet:197).
+  // WorkOS session IDs -> internal UUIDs, resolved once for the whole page.
   const ids = await resolveSessionIds(user);
   if (!ids) redirect("/dashboard");
   const { userId, orgId } = ids;
 
   const sp = await searchParams;
-  // WIB kalender, bukan UTC (cubic P2 timesheet:80).
+  // WIB kalender, bukan UTC.
   const today = jakartaDateISO(new Date());
-  // Regex meloloskan "2024-13-01" -> mondayOf melempar RangeError; validasi
-  // parse dulu, fallback ke hari ini (cubic P2 timesheet:209).
+  // Regex meloloskan "2024-13-01"; Date.parse menerima overflow
+  // ("2024-02-31" jadi 2 Maret) — normalisasi harus persis sama dengan input,
+  // kalau tidak fallback ke hari ini.
   const weekParam = /^\d{4}-\d{2}-\d{2}$/.test(sp.week ?? "") ? sp.week! : null;
   const weekStart = mondayOf(
-    weekParam && !Number.isNaN(Date.parse(`${weekParam}T00:00:00Z`))
+    weekParam &&
+      new Date(`${weekParam}T00:00:00Z`).toISOString().slice(0, 10) ===
+        weekParam
       ? weekParam
       : today,
   );

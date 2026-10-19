@@ -117,7 +117,11 @@ export async function updateCompany(
   return row;
 }
 
-async function requireOrgCompany(orgId: string, id: string): Promise<void> {
+/** Company wajib milik org ini; dipakai lintas repos (deal, proyek). */
+export async function requireOrgCompany(
+  orgId: string,
+  id: string,
+): Promise<void> {
   const [row] = await db
     .select({ id: crmCompanies.id })
     .from(crmCompanies)
@@ -331,7 +335,13 @@ export async function createDeal(
       .select({ id: crmContacts.id })
       .from(crmContacts)
       .where(
-        and(eq(crmContacts.id, input.contactId), eq(crmContacts.orgId, orgId)),
+        and(
+          eq(crmContacts.id, input.contactId),
+          eq(crmContacts.orgId, orgId),
+          // Kontak harus milik company deal — bukan sekadar org yang sama
+          // (cubic P2 crm-repo:302).
+          eq(crmContacts.companyId, input.companyId),
+        ),
       )
       .limit(1);
     if (!contact) throw new NotFoundError("Kontak tidak ditemukan.");

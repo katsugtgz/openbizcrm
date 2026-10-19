@@ -12,16 +12,14 @@ export const metadata = { title: "Presensi" };
 
 async function CalendarSection({
   orgId,
+  userId,
   month,
 }: {
   orgId: string;
+  userId: string;
   month: string;
 }) {
-  const user = await session.getSession();
-  if (!user) redirect("/login");
-  const ids = await resolveSessionIds(user);
-  if (!ids) redirect("/dashboard");
-  const employee = await getEmployeeByUser(ids.userId, orgId);
+  const employee = await getEmployeeByUser(userId, orgId);
   return (
     <MiniCalendar
       orgId={orgId}
@@ -51,7 +49,8 @@ export default async function PresensiPage({
 }) {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  // WorkOS session IDs -> internal UUIDs (cubic P1 presensi-page:24).
+  // WorkOS session IDs -> internal UUIDs, resolved once for the whole page
+  // (userId juga dilempar ke CalendarSection, tidak di-resolve ulang).
   const ids = await resolveSessionIds(user);
   if (!ids) redirect("/dashboard");
   const sp = await searchParams;
@@ -77,7 +76,11 @@ export default async function PresensiPage({
           </CardContent>
         </Card>
         <Suspense fallback={<CalendarSkeleton />}>
-          <CalendarSection orgId={ids.orgId} month={month} />
+          <CalendarSection
+            orgId={ids.orgId}
+            userId={ids.userId}
+            month={month}
+          />
         </Suspense>
       </div>
     </div>

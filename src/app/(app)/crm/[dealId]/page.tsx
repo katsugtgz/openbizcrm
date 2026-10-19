@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
+import { requireOrgRole } from "@/lib/org-scope";
 import { getDeal, getCompany, listActivities } from "@/lib/repos/crm-repo";
 import { formatIDR } from "@/lib/money";
 import { Badge } from "@/components/ui/badge";
@@ -39,10 +40,12 @@ export default async function DealDetailPage({
   const { dealId } = await params;
   const user = await session.getSession();
   if (!user) redirect("/login");
-  // WorkOS session IDs -> internal UUIDs (cubic P1 dealId:44).
+  // WorkOS session IDs -> internal UUIDs before the org-scoped reads.
   const ids = await resolveSessionIds(user);
   if (!ids) redirect("/dashboard");
-  const { orgId } = ids;
+  const { userId, orgId } = ids;
+  // Membership guard sebelum membaca deal/company/activities.
+  await requireOrgRole(userId, orgId, "member");
 
   const deal = await getDeal(orgId, dealId);
   if (!deal) notFound();

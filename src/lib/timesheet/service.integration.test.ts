@@ -143,7 +143,15 @@ describe("projects/tasks/timesheet integration", () => {
         tsSvc.startTimer(otherOwner.id, otherOrg.id, t1.id),
       ).rejects.toThrow(/Task tidak ditemukan/);
 
-      const year = new Date().getUTCFullYear();
+      // Tahun WIB (listMine filter pakai tanggal WIB): di sekitar pergantian
+      // tahun UTC vs WIB bisa beda 1 — derivasi harus dari waktu Jakarta
+      // (cubic P2 ts-test:146).
+      const year = Number(
+        new Intl.DateTimeFormat("en-CA", {
+          timeZone: "Asia/Jakarta",
+          year: "numeric",
+        }).format(new Date()),
+      );
       const rows = await tsSvc.listMine(owner.id, org.id, {
         from: `${year}-01-01`,
         to: `${year}-12-31`,

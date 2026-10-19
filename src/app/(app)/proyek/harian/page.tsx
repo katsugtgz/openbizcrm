@@ -40,14 +40,7 @@ const PRIORITY_LABEL: Record<string, string> = {
   urgent: "Urgent",
 };
 
-async function TemplateSection({
-  orgId,
-  userId,
-}: {
-  orgId: string;
-  userId: string;
-}) {
-  await requireOrgRole(userId, orgId, "admin");
+async function TemplateSection({ orgId }: { orgId: string; userId: string }) {
   const [templates, projects] = await Promise.all([
     db
       .select()
@@ -136,8 +129,8 @@ function SectionSkeleton() {
 export default async function TugasHarianPage() {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  // WorkOS session IDs -> internal UUIDs (cubic P1 harian:139). Guard runs
-  // at the page boundary, not inside the streamed child (cubic P2 harian:49).
+  // WorkOS session IDs -> internal UUIDs; the admin guard runs once here at
+  // the page boundary, so the streamed TemplateSection needs no check.
   const ids = await resolveSessionIds(user);
   if (!ids) redirect("/dashboard");
   const { userId, orgId } = ids!;

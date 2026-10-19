@@ -29,14 +29,12 @@ const STATUS_BADGE: Record<string, string> = {
 
 async function TaskSection({
   orgId,
-  userId,
   projectId,
 }: {
   orgId: string;
   userId: string;
   projectId: string;
 }) {
-  await requireOrgRole(userId, orgId, "member");
   const rows = await db
     .select({ task: tasksTable, assigneeName: schemaUsers.name })
     .from(tasksTable)
@@ -108,7 +106,7 @@ export default async function ProjectDetailPage({
   const { projectId } = await params;
   const user = await session.getSession();
   if (!user) redirect("/login");
-  // WorkOS session IDs -> internal UUIDs (cubic P1 projectId:109).
+  // WorkOS session IDs -> internal UUIDs before the org-scoped reads.
   const ids = await resolveSessionIds(user);
   if (!ids) redirect("/dashboard");
   const { userId, orgId } = ids;

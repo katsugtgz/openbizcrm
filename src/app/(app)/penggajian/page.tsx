@@ -119,9 +119,10 @@ export default async function PenggajianPage({
 }) {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  // WorkOS session IDs -> internal UUIDs (cubic P1).
+  // WorkOS session IDs -> internal UUIDs; null juga berarti user belum
+  // terprovision, jadi redirect sesuai kontrak pages di ids.ts.
   const ids = await resolveSessionIds(user);
-  if (!ids) throw new Error("Tidak ada organisasi aktif.");
+  if (!ids) redirect("/dashboard");
   const { userId, orgId } = ids;
   await requireOrgRole(userId, orgId, "member");
   const sp = await searchParams;

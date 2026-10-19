@@ -87,4 +87,19 @@ describe("quotation totals", () => {
     ];
     expect(() => calculateQuotationTotals(lines)).toThrow(/Subtotal/);
   });
+
+  it("100% discount near MAX_SAFE_INTEGER stays exact (cubic P2 quotation:52)", () => {
+    // lineTotal aman; (lineTotal * pct) versi lama overflow di tengah.
+    const near = Number.MAX_SAFE_INTEGER;
+    expect(
+      calculateQuotationTotals([
+        {
+          description: "A",
+          quantity: 1,
+          unitPrice: near,
+          discountPercent: 100,
+        },
+      ]),
+    ).toEqual({ subtotal: near, discountTotal: near, total: 0 });
+  });
 });

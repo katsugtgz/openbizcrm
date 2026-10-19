@@ -46,6 +46,15 @@ function allowFake(): boolean {
   );
 }
 
+/**
+ * Whether the fake adapter is (or would be) selected. resolveSessionIds uses
+ * this to keep auto-provisioning AuthKit-only: fake mode resolves strictly
+ * from seeded rows.
+ */
+export function fakeSessionActive(): boolean {
+  return allowFake();
+}
+
 export const session: AuthSession = {
   getSession: () => pick().then((a) => a.getSession()),
   signOut: () => pick().then((a) => a.signOut()),

@@ -1,7 +1,8 @@
 import { and, asc, count, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { crmCompanies, projects, tasks } from "@/db/schema";
+import { projects, tasks } from "@/db/schema";
 import { NotFoundError, OrgScopeError, requireOrgRole } from "@/lib/org-scope";
+import { requireOrgCompany } from "@/lib/repos/crm-repo";
 import { recordAudit } from "@/lib/repos/audit-repo";
 
 export type Project = typeof projects.$inferSelect;
@@ -54,11 +55,14 @@ export async function getProject(
 }
 
 /**
- * Auto-gen code "PRJ-001" per org: max numeric suffix + 1, dijual bersama
- * transaction + unique(orgId, code) backstop untuk race.
+ * Auto-gen code "PRJ-001" per org: max numeric suffix + 1, dibaca lewat
+ * client transaksi sehingga konsisten dengan insert di tx yang sama.
  */
-async function nextProjectCode(orgId: string): Promise<string> {
-  const [row] = await db
+async function nextProjectCode(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  orgId: string,
+): Promise<string> {
+  const [row] = await tx
     .select({
       maxSeq: sql<number>`coalesce(max((regexp_replace(${projects.code}, '^PRJ-', ''))::int), 0)`,
     })
@@ -67,16 +71,6 @@ async function nextProjectCode(orgId: string): Promise<string> {
       and(eq(projects.orgId, orgId), sql`${projects.code} ~ '^PRJ-[0-9]+$'`),
     );
   return `PRJ-${String((row?.maxSeq ?? 0) + 1).padStart(3, "0")}`;
-}
-
-/** Company wajib milik org yang sama (cubic P2 project-repo:85). */
-async function requireOrgCompany(orgId: string, id: string): Promise<void> {
-  const [row] = await db
-    .select({ id: crmCompanies.id })
-    .from(crmCompanies)
-    .where(and(eq(crmCompanies.id, id), eq(crmCompanies.orgId, orgId)))
-    .limit(1);
-  if (!row) throw new NotFoundError("Perusahaan tidak ditemukan.");
 }
 
 export async function createProject(
@@ -91,10 +85,14 @@ export async function createProject(
   if (input.clientCompanyId) {
     await requireOrgCompany(orgId, input.clientCompanyId);
   }
-  // Gen + insert satu transaksi: kode unik per org, race ditutup oleh
-  // projects_org_code_unique (cubic P2 project-repo:78).
+  // Gen + insert satu transaksi. Advisory lock per org menserialisasi
+  // alokasi max+1 sehingga dua create bersamaan tidak saling rebut kode;
+  // unique(orgId, code) tetap jadi backstop.
   const row = await db.transaction(async (tx) => {
-    const code = await nextProjectCode(orgId);
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext('openbizcrm-project-code:' || ${orgId}))`,
+    );
+    const code = await nextProjectCode(tx, orgId);
     const [r] = await tx
       .insert(projects)
       .values({

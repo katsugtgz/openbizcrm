@@ -3,6 +3,7 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
+import { requireOrgRole } from "@/lib/org-scope";
 import { listEmployees } from "@/lib/repos/hrm-repo";
 import { formatIDR } from "@/lib/money";
 import { KaryawanToasts } from "./toasts";
@@ -118,9 +119,12 @@ export default async function KaryawanPage({
 }) {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  // WorkOS session IDs -> internal UUIDs (cubic P1 karyawan-page:124).
+  // WorkOS session IDs -> internal UUIDs before the org-scoped reads.
   const ids = await resolveSessionIds(user);
   if (!ids) redirect("/dashboard");
+  // Membership is guaranteed by the resolver; requireOrgRole enforces the
+  // role (and keeps the guard consistent with sibling pages).
+  await requireOrgRole(ids.userId, ids.orgId, "member");
   const { orgId } = ids;
   const sp = await searchParams;
 
