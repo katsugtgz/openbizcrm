@@ -44,6 +44,10 @@ export function ProductGrid({ products }: { products: Product[] }) {
     [cart, products],
   );
   const subtotal = cartItems.reduce((s, x) => s + x.product.price * x.qty, 0);
+  // Total bisa melewati MAX_SAFE_INTEGER sebelum checkout tervalidasi —
+  // formatIDR lempar MoneyError saat render. Tandai tak aman, jangan crash
+  // (cubic pr8 product-grid:54).
+  const unsafe = (v: number) => !Number.isSafeInteger(v);
   const taxAmount = useMemo(() => {
     try {
       return floorTax(subtotal, Number(taxPct || "0"));
@@ -52,6 +56,8 @@ export function ProductGrid({ products }: { products: Product[] }) {
     }
   }, [subtotal, taxPct]);
   const total = subtotal + taxAmount;
+  const totalsUsable =
+    !unsafe(subtotal) && !unsafe(taxAmount) && !unsafe(total);
 
   function addToCart(p: Product) {
     setCart((prev) => {
@@ -173,29 +179,37 @@ export function ProductGrid({ products }: { products: Product[] }) {
                   </Button>
                 </span>
                 <span className="w-24 text-right tabular-nums">
-                  {formatIDR(product.price * qty)}
+                  {unsafe(product.price * qty)
+                    ? "—"
+                    : formatIDR(product.price * qty)}
                 </span>
               </li>
             ))}
           </ul>
         )}
-        <div className="mt-3 space-y-1 border-t pt-3 text-sm tabular-nums">
-          <p className="flex justify-between">
-            <span className="text-muted-foreground">Subtotal</span>
-            <span>{formatIDR(subtotal)}</span>
+        {totalsUsable ? (
+          <div className="mt-3 space-y-1 border-t pt-3 text-sm tabular-nums">
+            <p className="flex justify-between">
+              <span className="text-muted-foreground">Subtotal</span>
+              <span>{formatIDR(subtotal)}</span>
+            </p>
+            <p className="flex justify-between">
+              <span className="text-muted-foreground">PPN</span>
+              <span>{formatIDR(taxAmount)}</span>
+            </p>
+            <p className="flex justify-between font-semibold">
+              <span>Total</span>
+              <span>{formatIDR(total)}</span>
+            </p>
+          </div>
+        ) : (
+          <p className="mt-3 border-t pt-3 text-sm text-destructive">
+            Total keranjang melebihi batas aman. Kurangi jumlah item.
           </p>
-          <p className="flex justify-between">
-            <span className="text-muted-foreground">PPN</span>
-            <span>{formatIDR(taxAmount)}</span>
-          </p>
-          <p className="flex justify-between font-semibold">
-            <span>Total</span>
-            <span>{formatIDR(total)}</span>
-          </p>
-        </div>
+        )}
         <Button
           className="mt-3 w-full"
-          disabled={cartItems.length === 0}
+          disabled={cartItems.length === 0 || !totalsUsable}
           onClick={() => setCheckoutOpen(true)}
         >
           Checkout
@@ -213,7 +227,7 @@ export function ProductGrid({ products }: { products: Product[] }) {
               </DialogDescription>
             </DialogHeader>
             <p className="text-lg font-semibold tabular-nums">
-              {formatIDR(total)}
+              {totalsUsable ? formatIDR(total) : "—"}
             </p>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-2">
@@ -265,7 +279,11 @@ export function ProductGrid({ products }: { products: Product[] }) {
                 Batal
               </Button>
               <Button type="submit" disabled={pending}>
-                {pending ? "Memproses…" : `Bayar ${formatIDR(total)}`}
+                {pending
+                  ? "Memproses…"
+                  : totalsUsable
+                    ? `Bayar ${formatIDR(total)}`
+                    : "Bayar"}
               </Button>
             </DialogFooter>
           </form>

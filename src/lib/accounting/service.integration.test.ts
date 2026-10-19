@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq } from "drizzle-orm";
-import { fiscalPeriods, organizations, users } from "@/db/schema";
+import { fiscalPeriods, journalLines, organizations, users } from "@/db/schema";
 
 // DB-touching modules load ONLY when RUN_DB_TESTS=1 (lazy-import pattern,
 // sama dengan crm.integration.test.ts).
@@ -216,4 +216,204 @@ describe("accounting integration", () => {
       void expense;
     },
   );
+
+  // cubic P2 accounting:369 — closePeriod tidak boleh terima bulan mustahil
+  // (13, 00): biarkan gagal di service, bukan sebagai raw database error.
+  itDb("closePeriod menolak bulan tidak valid (00/13)", async () => {
+    const owner = await makeOrg();
+    await expect(
+      acct.closePeriod(owner.userId, owner.orgId, "2026-13"),
+    ).rejects.toThrow(/Bulan/);
+    await expect(
+      acct.closePeriod(owner.userId, owner.orgId, "2026-00"),
+    ).rejects.toThrow(/Bulan/);
+  });
+
+  // cubic P2 accounting:444 — semua komponen balance sheet berasal dari SATU
+  // snapshot: retainedEarnings konsisten dengan income statement dan
+  // balance flag benar walau ada posting konkuren.
+  itDb(
+    "balanceSheet konsisten satu snapshot dengan incomeStatement",
+    async () => {
+      const owner = await makeOrg();
+      const cash = await acct.createAccount(owner.userId, owner.orgId, {
+        code: "1-1000",
+        name: "Kas",
+        type: "asset",
+      });
+      const sales = await acct.createAccount(owner.userId, owner.orgId, {
+        code: "4-1000",
+        name: "Pendapatan",
+        type: "revenue",
+      });
+      const e = await acct.createJournalEntry(owner.userId, owner.orgId, {
+        date: "2026-11-01",
+        lines: [
+          { accountId: cash.id, debit: 500, credit: 0 },
+          { accountId: sales.id, debit: 0, credit: 500 },
+        ],
+      });
+      await acct.postEntry(owner.userId, owner.orgId, e.entry.id);
+      const bs = await acct.balanceSheet(owner.orgId);
+      const is = await acct.incomeStatement(owner.orgId);
+      expect(bs.retainedEarnings).toBe(is.netIncome);
+      expect(bs.retainedEarnings).toBe(500);
+      expect(bs.balanced).toBe(true);
+    },
+  );
+
+  // cubic pr8 schema:813 — baris jurnal org A tidak boleh mengaitkan akun
+  // org B (cross-tenant). Service menolak; DB FK komposit memblokir lapisan
+  // terakhir meski writer lupa validasi.
+  itDb("journalLine menolak akun lintas org (service + FK)", async () => {
+    const oA = await makeOrg();
+    const oB = await makeOrg();
+    const cashA = await acct.createAccount(oA.userId, oA.orgId, {
+      code: "1-1000",
+      name: "Kas A",
+      type: "asset",
+    });
+    const salesA = await acct.createAccount(oA.userId, oA.orgId, {
+      code: "4-1000",
+      name: "Pendapatan A",
+      type: "revenue",
+    });
+    const cashB = await acct.createAccount(oB.userId, oB.orgId, {
+      code: "1-1000",
+      name: "Kas B",
+      type: "asset",
+    });
+    // Service: akun org B ditolak pada entry org A.
+    await expect(
+      acct.createJournalEntry(oA.userId, oA.orgId, {
+        date: "2026-11-01",
+        lines: [
+          { accountId: cashB.id, debit: 10, credit: 0 },
+          { accountId: salesA.id, debit: 0, credit: 10 },
+        ],
+      }),
+    ).rejects.toThrow(/tidak ditemukan/);
+    // DB layer: tulis langsung (melewati service) -> FK komposit komposit
+    // (entry_id -> journal_entries(org_id,id) dan account_id ->
+    // accounts(org_id,id)) harus menolak.
+    const e = await acct.createJournalEntry(oA.userId, oA.orgId, {
+      date: "2026-11-01",
+      lines: [
+        { accountId: cashA.id, debit: 10, credit: 0 },
+        { accountId: salesA.id, debit: 0, credit: 10 },
+      ],
+    });
+    await expect(
+      db.insert(journalLines).values({
+        orgId: oA.orgId,
+        entryId: e.entry.id,
+        accountId: cashB.id, // akun org B pada entry org A
+        debit: 1,
+        credit: 0,
+      }),
+    ).rejects.toThrow();
+  });
+
+  // cubic pr8 schema:826/:902 — journalEntryId pada invoices/pos_sales/
+  // invoice_payments wajib FK ke journal_entries(org) (cascade), tidak ada
+  // dangling reference lintas org.
+  itDb(
+    "journalEntryId links: FK komposit mencegah dangling/cross-org",
+    async () => {
+      const { posSales, invoices, invoicePayments } =
+        await import("@/db/schema");
+      const o = await makeOrg();
+      const cash = await acct.createAccount(o.userId, o.orgId, {
+        code: "1-1000",
+        name: "Kas",
+        type: "asset",
+      });
+      const sales = await acct.createAccount(o.userId, o.orgId, {
+        code: "4-1000",
+        name: "Pendapatan",
+        type: "revenue",
+      });
+      const e = await acct.createJournalEntry(o.userId, o.orgId, {
+        date: "2026-11-01",
+        lines: [
+          { accountId: cash.id, debit: 5, credit: 0 },
+          { accountId: sales.id, debit: 0, credit: 5 },
+        ],
+      });
+      // pos_sales: FK valid diterima; dangling UUID ditolak DB.
+      const [sale] = await db
+        .insert(posSales)
+        .values({
+          orgId: o.orgId,
+          saleNumber: "SLS-FK-1",
+          paymentMethod: "cash",
+          taxPct: 0,
+          subtotal: 5,
+          taxAmount: 0,
+          total: 5,
+          journalEntryId: e.entry.id,
+        })
+        .returning();
+      expect(sale.journalEntryId).toBe(e.entry.id);
+      await expect(
+        db.insert(posSales).values({
+          orgId: o.orgId,
+          saleNumber: "SLS-FK-2",
+          paymentMethod: "cash",
+          taxPct: 0,
+          subtotal: 1,
+          taxAmount: 0,
+          total: 1,
+          journalEntryId: "00000000-0000-0000-0000-000000000000",
+        }),
+      ).rejects.toThrow();
+      // Cross-org journal ditolak: jurnal milik org lain.
+      const oB = await makeOrg();
+      await expect(
+        db.insert(posSales).values({
+          orgId: oB.orgId,
+          saleNumber: "SLS-FK-B",
+          paymentMethod: "cash",
+          taxPct: 0,
+          subtotal: 1,
+          taxAmount: 0,
+          total: 1,
+          journalEntryId: e.entry.id, // jurnal org pertama
+        }),
+      ).rejects.toThrow();
+      void invoices;
+      void invoicePayments;
+    },
+  );
+
+  // cubic pr8 schema:826 — (debit,credit)=(0,0) ditolak DB-level.
+  itDb("journalLines CHECK menolak (0,0)", async () => {
+    const o = await makeOrg();
+    const cash = await acct.createAccount(o.userId, o.orgId, {
+      code: "1-1000",
+      name: "Kas",
+      type: "asset",
+    });
+    const sales = await acct.createAccount(o.userId, o.orgId, {
+      code: "4-1000",
+      name: "Pendapatan",
+      type: "revenue",
+    });
+    const e = await acct.createJournalEntry(o.userId, o.orgId, {
+      date: "2026-11-01",
+      lines: [
+        { accountId: cash.id, debit: 5, credit: 0 },
+        { accountId: sales.id, debit: 0, credit: 5 },
+      ],
+    });
+    await expect(
+      db.insert(journalLines).values({
+        orgId: o.orgId,
+        entryId: e.entry.id,
+        accountId: cash.id,
+        debit: 0,
+        credit: 0,
+      }),
+    ).rejects.toThrow(); // drizzle bungkus error PG (cause) — cukup tolak
+  });
 });

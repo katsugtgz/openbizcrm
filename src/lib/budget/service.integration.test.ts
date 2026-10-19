@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq } from "drizzle-orm";
-import { organizations, users } from "@/db/schema";
+import { organizations, orgMemberships, users } from "@/db/schema";
 
 const itDb = process.env.RUN_DB_TESTS === "1" ? it : it.skip;
 
@@ -77,8 +77,29 @@ describe("budget integration", () => {
         type: "asset",
       });
 
-      // member tak boleh set budget (owner role >= admin di org ini — owner lolos;
-      // tes role-lebih-rendah perlu org dengan member terpisah, cukup: upsert ok)
+      // member tak boleh set budget — kontrak admin-only diverifikasi eksplisit
+      // (cubic pr8 budget-test:82); owner lolos karena role >= admin.
+      const member = await (
+        await import("@/lib/repos/user-repo")
+      ).createUser({
+        workosUserId: `it-bud-${suffix}-m`,
+        email: `it-bud-${suffix}-m@test.id`,
+      });
+      createdUserIds.push(member.id);
+      const { db: dbx } = await import("@/db");
+      await dbx.insert(orgMemberships).values({
+        orgId: o.orgId,
+        userId: member.id,
+        role: "member",
+      });
+      await expect(
+        budget.setBudget(member.id, o.orgId, {
+          accountId: expense.id,
+          period: "2026-11",
+          amount: 1,
+        }),
+      ).rejects.toThrow(/Peran admin|INSUFFICIENT_ROLE/i);
+
       const b1 = await budget.setBudget(o.userId, o.orgId, {
         accountId: expense.id,
         period: "2026-11",
@@ -141,4 +162,127 @@ describe("budget integration", () => {
       expect(exp2Row.actual).toBe(0); // posting Oktober tidak masuk Nov
     },
   );
+
+  // cubic pr8 budget:32 — periode bulan mustahil (00/13) ditolak di semua
+  // entry point, bukan lolos sebagai data bodoh.
+  itDb("periode bulan tidak valid (00/13) ditolak", async () => {
+    const o = await makeOrg();
+    const expense = await acct.createAccount(o.userId, o.orgId, {
+      code: "5-3000",
+      name: "Beban Tes",
+      type: "expense",
+    });
+    await expect(
+      budget.setBudget(o.userId, o.orgId, {
+        accountId: expense.id,
+        period: "2026-13",
+        amount: 1,
+      }),
+    ).rejects.toThrow(/bulan/i);
+    await expect(
+      budget.setBudget(o.userId, o.orgId, {
+        accountId: expense.id,
+        period: "2026-00",
+        amount: 1,
+      }),
+    ).rejects.toThrow(/bulan/i);
+    await expect(
+      budget.actualForPeriod(o.orgId, expense.id, "2026-13"),
+    ).rejects.toThrow(/bulan/i);
+    await expect(budget.actualVsBudget(o.orgId, "2026-00")).rejects.toThrow(
+      /bulan/i,
+    );
+  });
+
+  // cubic pr8 budget:98 — agregat bigint -> Number diam-diam rounding.
+  // Actual di atas MAX_SAFE ditolak, bukan dilaporkan salah angka.
+  itDb("aktual di atas MAX_SAFE ditolak (bukan dibulatkan)", async () => {
+    const o = await makeOrg();
+    const expense = await acct.createAccount(o.userId, o.orgId, {
+      code: "5-4000",
+      name: "Beban Besar",
+      type: "expense",
+    });
+    const cash = await acct.createAccount(o.userId, o.orgId, {
+      code: "1-5000",
+      name: "Kas Besar",
+      type: "asset",
+    });
+    const sales = await acct.createAccount(o.userId, o.orgId, {
+      code: "4-5000",
+      name: "Penjualan Besar",
+      type: "revenue",
+    });
+    // Tulis agregasi melebihi MAX_SAFE langsung (melewati validator entri,
+    // simulasi ledger historis/legacy): dua baris debit MAX_SAFE utk akun sama.
+    const { journalEntries, journalLines } = await import("@/db/schema");
+    const [entry] = await db
+      .insert(journalEntries)
+      .values({
+        orgId: o.orgId,
+        entryNumber: 1,
+        date: "2026-11-05",
+        status: "posted",
+        source: "manual",
+        postedAt: new Date(),
+      })
+      .returning();
+    await db.insert(journalLines).values([
+      {
+        orgId: o.orgId,
+        entryId: entry.id,
+        accountId: expense.id,
+        debit: Number.MAX_SAFE_INTEGER - 2,
+        credit: 0,
+      },
+      {
+        orgId: o.orgId,
+        entryId: entry.id,
+        accountId: expense.id,
+        debit: 2,
+        credit: 0,
+      },
+      {
+        orgId: o.orgId,
+        entryId: entry.id,
+        accountId: cash.id,
+        debit: Number.MAX_SAFE_INTEGER - 2,
+        credit: 0,
+      },
+      {
+        orgId: o.orgId,
+        entryId: entry.id,
+        accountId: sales.id,
+        debit: 0,
+        credit: Number.MAX_SAFE_INTEGER - 2,
+      },
+      {
+        // Baris kedua di-split agar tiap baris di bawah cap per baris DB
+        // (journal_lines_amounts_check, 0019); agregat lintas baris tetap
+        // melebihi MAX_SAFE — kasus yang diuji tetap rounding-reject.
+        orgId: o.orgId,
+        entryId: entry.id,
+        accountId: sales.id,
+        debit: 0,
+        credit: Number.MAX_SAFE_INTEGER,
+      },
+    ]);
+    // Agregat beban = MAX_SAFE tepat -> masih ok.
+    const actual = await budget.actualForPeriod(o.orgId, expense.id, "2026-11");
+    expect(actual).toBe(Number.MAX_SAFE_INTEGER);
+    // Satu rupiah lagi -> melebihi MAX_SAFE -> service menolak, bukan rounding.
+    await db.insert(journalLines).values({
+      orgId: o.orgId,
+      entryId: entry.id,
+      accountId: expense.id,
+      debit: 1,
+      credit: 0,
+    });
+    await expect(
+      budget.actualForPeriod(o.orgId, expense.id, "2026-11"),
+    ).rejects.toThrow(/MAX_SAFE/);
+    await expect(budget.actualVsBudget(o.orgId, "2026-11")).rejects.toThrow(
+      /MAX_SAFE/,
+    );
+  });
 });

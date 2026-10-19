@@ -1,11 +1,11 @@
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
 import { journalEntries, journalLines } from "@/db/schema";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
-import { requireOrgRole } from "@/lib/org-scope";
+import { hasRole, requireOrgRole } from "@/lib/org-scope";
 import { listAccounts } from "@/lib/accounting/service";
 import { jakartaDateISO } from "@/lib/attendance/rules";
 import { formatIDR } from "@/lib/money";
@@ -34,12 +34,18 @@ export const metadata = { title: "Jurnal" };
 
 async function Entries({ orgId, userId }: { orgId: string; userId: string }) {
   await requireOrgRole(userId, orgId, "member");
-  const entries = await db
-    .select()
-    .from(journalEntries)
-    .where(eq(journalEntries.orgId, orgId))
-    .orderBy(desc(journalEntries.entryNumber))
-    .limit(50);
+  const [entries, accounts] = await Promise.all([
+    db
+      .select()
+      .from(journalEntries)
+      .where(eq(journalEntries.orgId, orgId))
+      .orderBy(desc(journalEntries.entryNumber))
+      .limit(50),
+    listAccounts(orgId),
+  ]);
+  const accountName = new Map(
+    accounts.map((a) => [a.id, `${a.code} ${a.name}`]),
+  );
   if (entries.length === 0) {
     return (
       <p className="py-6 text-center text-sm text-muted-foreground">
@@ -47,11 +53,20 @@ async function Entries({ orgId, userId }: { orgId: string; userId: string }) {
       </p>
     );
   }
-  // Baris satu query, dikelompokkan di memori (hindari N+1).
-  const lines = await db
-    .select()
-    .from(journalLines)
-    .where(eq(journalLines.orgId, orgId));
+  // Baris satu query, dikelompokkan di memori (hindari N+1). Filter ke id
+  // entri halaman — jangan muat seluruh ledger org (cubic pr8 jurnal:54).
+  const entryIds = entries.map((e) => e.id);
+  const lines = entryIds.length
+    ? await db
+        .select()
+        .from(journalLines)
+        .where(
+          and(
+            eq(journalLines.orgId, orgId),
+            inArray(journalLines.entryId, entryIds),
+          ),
+        )
+    : [];
   const byEntry = new Map<string, typeof lines>();
   for (const l of lines) {
     const arr = byEntry.get(l.entryId) ?? [];
@@ -95,7 +110,9 @@ async function Entries({ orgId, userId }: { orgId: string; userId: string }) {
                 <TableBody>
                   {entryLines.map((l) => (
                     <TableRow key={l.id}>
-                      <TableCell className="text-xs">{l.accountId}</TableCell>
+                      <TableCell className="text-xs">
+                        {accountName.get(l.accountId) ?? l.accountId}
+                      </TableCell>
                       <TableCell className="text-right tabular-nums">
                         {l.debit ? formatIDR(l.debit) : "—"}
                       </TableCell>
@@ -135,7 +152,9 @@ export default async function JurnalPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <ClosePeriodDialog />
+          <Suspense fallback={null}>
+            <ClosePeriodGate orgId={orgId} userId={userId} />
+          </Suspense>
           <Suspense fallback={null}>
             <NewEntryGate orgId={orgId} userId={userId} />
           </Suspense>
@@ -146,6 +165,20 @@ export default async function JurnalPage() {
       </Suspense>
     </div>
   );
+}
+
+// Admin-only: member tidak boleh lihat tombol tutup periode (cubic pr8
+// close-period:42 — closePeriod selalu gagal utk member).
+async function ClosePeriodGate({
+  orgId,
+  userId,
+}: {
+  orgId: string;
+  userId: string;
+}) {
+  const { role } = await requireOrgRole(userId, orgId, "member");
+  if (!hasRole(role, "admin")) return null;
+  return <ClosePeriodDialog />;
 }
 
 async function NewEntryGate({

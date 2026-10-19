@@ -2,6 +2,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   accounts,
+  inventoryMovements,
   journalEntries,
   journalLines,
   posSaleItems,
@@ -14,7 +15,9 @@ import {
 import { NotFoundError, requireOrgRole } from "@/lib/org-scope";
 import { recordAudit } from "@/lib/repos/audit-repo";
 import { assertSafeAmount } from "@/lib/money";
+import { AccountingError } from "@/lib/accounting/engine";
 import { computeLineTotals, floorTax } from "@/lib/invoicing/totals";
+import { PPN_OUT_CODE } from "@/lib/invoicing/service";
 
 export class PosError extends Error {
   constructor(message: string) {
@@ -85,32 +88,45 @@ export async function restock(
     throw new PosError("Jumlah restock harus integer > 0.");
   }
   // Expected-state: stock saat baca; berubah => tolak (race kecil, cukup).
-  const [product] = await db
+  // Kartu stok wajib: mutasi restock dicatat di transaksi yang sama dengan
+  // perubahan stockQty (cubic pr8 schema:761).
+  await db.transaction(async (tx) => {
+    const [product] = await tx
+      .select()
+      .from(products)
+      .where(and(eq(products.id, productId), eq(products.orgId, orgId)))
+      .limit(1)
+      .for("update");
+    if (!product) throw new NotFoundError("Produk tidak ditemukan.");
+    const [updated] = await tx
+      .update(products)
+      .set({ stockQty: product.stockQty + qty })
+      .where(eq(products.id, productId))
+      .returning();
+    await tx.insert(inventoryMovements).values({
+      orgId,
+      productId,
+      qtyDelta: qty,
+      reason: "restock",
+    });
+    await recordAudit(
+      {
+        orgId,
+        userId,
+        action: "pos.restock",
+        entity: "product",
+        entityId: productId,
+        metadata: { qty },
+      },
+      tx,
+    );
+    return updated;
+  });
+  const [updated] = await db
     .select()
     .from(products)
-    .where(and(eq(products.id, productId), eq(products.orgId, orgId)))
+    .where(eq(products.id, productId))
     .limit(1);
-  if (!product) throw new NotFoundError("Produk tidak ditemukan.");
-  const [updated] = await db
-    .update(products)
-    .set({ stockQty: sql`${products.stockQty} + ${qty}` })
-    .where(
-      and(
-        eq(products.id, productId),
-        eq(products.orgId, orgId),
-        eq(products.stockQty, product.stockQty),
-      ),
-    )
-    .returning();
-  if (!updated) throw new PosError("Stok berubah; restock dibatalkan.");
-  await recordAudit({
-    orgId,
-    userId,
-    action: "pos.restock",
-    entity: "product",
-    entityId: productId,
-    metadata: { qty },
-  });
   return updated;
 }
 
@@ -160,8 +176,11 @@ export async function checkout(
   const taxPct = input.taxPct ?? 0;
 
   return db.transaction(async (tx) => {
+    // Satu lock family dengan accounting + invoicing (cubic P1 invoicing:294
+    // dan P2 pos:164): checkout menulis journal_entries.entryNumber, jadi
+    // alokasi nomor jurnal wajib serialized dengan semua penulis jurnal lain.
     await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtext(${`pos:${orgId}`}))`,
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`acct:${orgId}`}))`,
     );
 
     // Baca + lock produk; insufficient stock => throw (rollback semua).
@@ -219,7 +238,23 @@ export async function checkout(
         : (numResult as unknown as { maxseq: number }[]);
     const saleNumber = `SLS-${String((numRows[0]?.maxseq ?? 0) + 1).padStart(3, "0")}`;
 
-    // Jurnal: debit kas/bank, credit pendapatan (posted langsung).
+    // Periode fiskal bulan tanggal jurnal harus terbuka (cubic P1 pos:252)
+    // — assert dalam tx yang sama, sama dengan accounting/invoicing.
+    const closed = await tx.execute(
+      sql`SELECT 1 FROM fiscal_periods WHERE org_id = ${orgId} AND period_start = date_trunc('month', ${input.date}::text::date)::date AND closed = true LIMIT 1`,
+    );
+    const closedRows =
+      Array.isArray(closed) === false && "rows" in closed
+        ? closed.rows
+        : (closed as unknown as Record<string, unknown>[]);
+    if (closedRows.length > 0) {
+      throw new AccountingError(
+        `Periode fiskal ${input.date.slice(0, 7)} sudah ditutup.`,
+      );
+    }
+
+    // Jurnal: debit kas/bank gross, credit Revenue subtotal, credit PPN
+    // keluaran taxAmount (PPN bukan pendapatan — cubic P1 invoicing:312).
     const cashCode = input.paymentMethod === "cash" ? "1-1000" : "1-1100";
     const [cashAccount] = await tx
       .select({ id: accounts.id })
@@ -256,7 +291,13 @@ export async function checkout(
         createdBy: userId,
       })
       .returning();
-    await tx.insert(journalLines).values([
+    const posJournalLines: {
+      orgId: string;
+      entryId: string;
+      accountId: string;
+      debit: number;
+      credit: number;
+    }[] = [
       {
         orgId,
         entryId: entry.id,
@@ -269,9 +310,40 @@ export async function checkout(
         entryId: entry.id,
         accountId: revenueAccount.id,
         debit: 0,
-        credit: total,
+        credit: subtotal,
       },
-    ]);
+    ];
+    if (taxAmount > 0) {
+      let [ppnAccount] = await tx
+        .select({ id: accounts.id })
+        .from(accounts)
+        .where(and(eq(accounts.orgId, orgId), eq(accounts.code, PPN_OUT_CODE)))
+        .limit(1);
+      if (!ppnAccount) {
+        // Auto-create akun PPN keluaran (liability) per org, seperti invoicing.
+        [ppnAccount] = await tx
+          .insert(accounts)
+          .values({
+            orgId,
+            code: PPN_OUT_CODE,
+            name: "PPN Keluaran",
+            type: "liability",
+          })
+          .onConflictDoUpdate({
+            target: [accounts.orgId, accounts.code],
+            set: { name: "PPN Keluaran" },
+          })
+          .returning();
+      }
+      posJournalLines.push({
+        orgId,
+        entryId: entry.id,
+        accountId: ppnAccount.id,
+        debit: 0,
+        credit: taxAmount,
+      });
+    }
+    await tx.insert(journalLines).values(posJournalLines);
 
     const [sale] = await tx
       .insert(posSales)
@@ -299,22 +371,32 @@ export async function checkout(
       )
       .returning();
 
-    // Potong stok (produk masih terkunci FOR UPDATE).
+    // Potong stok (produk masih terkunci FOR UPDATE) + kartu mutasi
+    // `sale` di transaksi yang sama (cubic pr8 schema:761).
     for (const [productId, qty] of qtyByProduct) {
       await tx
         .update(products)
         .set({ stockQty: sql`${products.stockQty} - ${qty}` })
         .where(and(eq(products.id, productId), eq(products.orgId, orgId)));
+      await tx.insert(inventoryMovements).values({
+        orgId,
+        productId,
+        qtyDelta: -qty,
+        reason: "sale",
+      });
     }
 
-    await recordAudit({
-      orgId,
-      userId,
-      action: "pos.checkout",
-      entity: "pos_sale",
-      entityId: sale.id,
-      metadata: { saleNumber, total, items: itemValues.length },
-    });
+    await recordAudit(
+      {
+        orgId,
+        userId,
+        action: "pos.checkout",
+        entity: "pos_sale",
+        entityId: sale.id,
+        metadata: { saleNumber, total, items: itemValues.length },
+      },
+      tx,
+    );
     return { sale, items: itemRows };
   });
 }

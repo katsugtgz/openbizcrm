@@ -60,7 +60,8 @@ async function InvoiceTable({
       <CardHeader>
         <CardTitle>Daftar Faktur</CardTitle>
         <CardDescription>
-          Draft belum berdampak jurnal; kirim untuk posting AR.
+          100 faktur terbaru · draft belum berdampak jurnal; kirim untuk posting
+          AR.
         </CardDescription>
       </CardHeader>
       <CardContent>

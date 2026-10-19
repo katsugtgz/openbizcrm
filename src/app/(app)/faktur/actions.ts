@@ -34,6 +34,19 @@ function fail(error: unknown): { ok: false; error: string } {
   };
 }
 
+/**
+ * Normalisasi tanggal form ke "YYYY-MM-DD" kalender (cubic pr8 actions:60 —
+ * createInvoice membandingkan string; input tak valid/offset-zona harus
+ * ditolak di boundary, bukan lolos lewat lexical compare).
+ */
+function normalizeDate(raw: FormDataEntryValue | null, label: string): string {
+  const v = String(raw ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(Date.parse(v))) {
+    throw new Error(`${label} harus tanggal YYYY-MM-DD.`);
+  }
+  return v;
+}
+
 export async function createInvoiceAction(
   formData: FormData,
 ): Promise<ActionResult> {
@@ -56,8 +69,8 @@ export async function createInvoiceAction(
     const { invoice } = await createInvoice(userId, orgId, {
       companyId: String(formData.get("companyId") ?? ""),
       contactId: String(formData.get("contactId") ?? "") || null,
-      issueDate: String(formData.get("issueDate") ?? ""),
-      dueDate: String(formData.get("dueDate") ?? ""),
+      issueDate: normalizeDate(formData.get("issueDate"), "Tanggal terbit"),
+      dueDate: normalizeDate(formData.get("dueDate"), "Jatuh tempo"),
       taxPct: taxRaw ? Number(taxRaw) : 0,
       notes: String(formData.get("notes") ?? "").trim() || null,
       items,

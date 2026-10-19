@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
 import { requireOrgRole } from "@/lib/org-scope";
-import { balanceSheet, incomeStatement } from "@/lib/accounting/service";
+import { financialReports } from "@/lib/accounting/service";
 import { formatIDR } from "@/lib/money";
 import {
   Card,
@@ -17,6 +17,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 
 export const metadata = { title: "Laporan Keuangan" };
+
+/** Filter periode Laba Rugi — "YYYY-MM" kosong = kumulatif semua posted. */
+function periodFromRaw(raw: string | undefined): string | undefined {
+  if (!raw || !/^\d{4}-\d{2}$/.test(raw)) return undefined;
+  const month = Number(raw.slice(5));
+  return month >= 1 && month <= 12 ? raw : undefined;
+}
 
 function ReportTable({
   rows,
@@ -62,19 +69,28 @@ function ReportTable({
   );
 }
 
-async function Reports({ orgId, userId }: { orgId: string; userId: string }) {
+async function Reports({
+  orgId,
+  userId,
+  period,
+}: {
+  orgId: string;
+  userId: string;
+  period?: string;
+}) {
   await requireOrgRole(userId, orgId, "member");
-  const [income, bs] = await Promise.all([
-    incomeStatement(orgId),
-    balanceSheet(orgId),
-  ]);
+  // Satu snapshot trial balance untuk kedua panel (cubic pr8 laporan:67);
+  // period memfilter Laba Rugi saja — neraca tetap kumulatif.
+  const { income, balance: bs } = await financialReports(orgId, period);
   return (
     <div className="grid gap-4 lg:grid-cols-2">
       <Card>
         <CardHeader>
           <CardTitle>Laba Rugi</CardTitle>
           <CardDescription>
-            Pendapatan vs beban periode berjalan (posted).
+            {period
+              ? `Pendapatan vs beban bulan ${period} (posted).`
+              : "Pendapatan vs beban kumulatif semua jurnal posted."}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -108,7 +124,7 @@ async function Reports({ orgId, userId }: { orgId: string; userId: string }) {
         <CardHeader>
           <CardTitle>Neraca</CardTitle>
           <CardDescription>
-            Aset = liabilitas + ekuitas + laba ditahan.
+            Aset = liabilitas + ekuitas + laba ditahan (kumulatif).
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -172,12 +188,36 @@ function ReportsSkeleton() {
   );
 }
 
-export default async function LaporanPage() {
+const MONTHS = [
+  "01",
+  "02",
+  "03",
+  "04",
+  "05",
+  "06",
+  "07",
+  "08",
+  "09",
+  "10",
+  "11",
+  "12",
+];
+
+export default async function LaporanPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ period?: string }>;
+}) {
   const user = await session.getSession();
   if (!user) redirect("/login");
   const ids = await resolveSessionIds(user);
   if (!ids) redirect("/dashboard");
   const { userId, orgId } = ids!;
+  const params = await searchParams;
+  const period = periodFromRaw(params.period);
+  const now = new Date();
+  const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const thisYear = String(now.getFullYear());
 
   return (
     <div className="flex flex-col gap-6">
@@ -197,8 +237,45 @@ export default async function LaporanPage() {
           ← Akuntansi
         </Link>
       </div>
+      {/* Filter periode Laba Rugi: bulan berjalan default, link kumulatif. */}
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <span className="text-muted-foreground">Periode Laba Rugi:</span>
+        <Link
+          href={`/akuntansi/laporan?period=${thisMonth}`}
+          className={
+            period === thisMonth
+              ? "font-semibold underline"
+              : "text-muted-foreground underline-offset-4 hover:underline"
+          }
+        >
+          Bulan ini ({thisMonth})
+        </Link>
+        {MONTHS.map((m) => (
+          <Link
+            key={m}
+            href={`/akuntansi/laporan?period=${thisYear}-${m}`}
+            className={
+              period === `${thisYear}-${m}`
+                ? "font-semibold underline"
+                : "text-muted-foreground underline-offset-4 hover:underline"
+            }
+          >
+            {m}
+          </Link>
+        ))}
+        <Link
+          href="/akuntansi/laporan"
+          className={
+            !period
+              ? "font-semibold underline"
+              : "text-muted-foreground underline-offset-4 hover:underline"
+          }
+        >
+          Semua (kumulatif)
+        </Link>
+      </div>
       <Suspense fallback={<ReportsSkeleton />}>
-        <Reports orgId={orgId} userId={userId} />
+        <Reports orgId={orgId} userId={userId} period={period} />
       </Suspense>
     </div>
   );

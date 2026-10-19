@@ -41,11 +41,13 @@ async function Kpis({ orgId, userId }: { orgId: string; userId: string }) {
   const tb = await trialBalanceService(orgId);
   const pick = (type: string) =>
     tb.lines.filter((l) => l.type === type).reduce((s, l) => s + l.balance, 0);
+  const laba = pick("revenue") - pick("expense");
   const kpi = [
     { label: "Total Aset", value: pick("asset") },
     { label: "Liabilitas", value: pick("liability") },
-    { label: "Ekuitas + Laba", value: pick("equity") },
-    { label: "Laba Bersih", value: pick("revenue") - pick("expense") },
+    // Ekuitas nominal + laba berjalan — tanpa laba kartu tidak cocok laporan.
+    { label: "Ekuitas + Laba", value: pick("equity") + laba },
+    { label: "Laba Bersih", value: laba },
   ];
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

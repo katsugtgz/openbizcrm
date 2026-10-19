@@ -55,9 +55,12 @@ export function NewEntryDialog({
     [lines, accounts],
   );
   const errors = useMemo(() => validateEntry(numeric), [numeric]);
+  // Baris tanpa akun difilter server sebelum validasi — form harus menolaknya
+  // sendiri, bukan menampilkan "Seimbang" (cubic pr8 new-entry:60).
+  const missingAccount = lines.some((l) => !l.accountId);
   const totalDebit = numeric.reduce((s, l) => s + l.debit, 0);
   const totalCredit = numeric.reduce((s, l) => s + l.credit, 0);
-  const balanced = errors.length === 0;
+  const balanced = !missingAccount && errors.length === 0;
 
   function setLine(i: number, patch: Partial<Line>) {
     setLines((prev) => prev.map((l, j) => (j === i ? { ...l, ...patch } : l)));
@@ -182,9 +185,11 @@ export function NewEntryDialog({
             >
               {lines.length < 2
                 ? "Minimal 2 baris."
-                : balanced
-                  ? "Seimbang — siap disimpan."
-                  : errors[0]}
+                : missingAccount
+                  ? "Pilih akun untuk setiap baris."
+                  : balanced
+                    ? "Seimbang — siap disimpan."
+                    : errors[0]}
             </p>
           </div>
           <DialogFooter>

@@ -25,17 +25,41 @@ function periodOf(dateISO: string): string {
   return dateISO.slice(0, 7);
 }
 
-async function requireAccountInOrg(
+/**
+ * Muat akun milik org lalu wajibkan tipenya: akun beban penyusutan harus
+ * "expense", akun akumulasi penyusutan harus "asset", dan keduanya harus
+ * akun berbeda. Mencegah posting depresiasi terklasifikasi salah.
+ */
+async function requireDepreciationAccounts(
   orgId: string,
-  accountId: string,
+  expenseAccountId: string,
+  accumulatedAccountId: string,
   exec: Tx | typeof db = db,
 ): Promise<void> {
-  const [row] = await exec
-    .select({ id: accounts.id })
+  if (expenseAccountId === accumulatedAccountId) {
+    throw new AssetError(
+      "Akun beban penyusutan dan akun akumulasi penyusutan harus berbeda.",
+    );
+  }
+  const rows = await exec
+    .select({ id: accounts.id, type: accounts.type })
     .from(accounts)
-    .where(and(eq(accounts.id, accountId), eq(accounts.orgId, orgId)))
-    .limit(1);
-  if (!row) throw new NotFoundError("Akun tidak ditemukan.");
+    .where(
+      and(
+        eq(accounts.orgId, orgId),
+        sql`${accounts.id} in (${expenseAccountId}, ${accumulatedAccountId})`,
+      ),
+    );
+  const byId = new Map(rows.map((r) => [r.id, r.type]));
+  if (!byId.has(expenseAccountId) || !byId.has(accumulatedAccountId)) {
+    throw new NotFoundError("Akun tidak ditemukan.");
+  }
+  if (byId.get(expenseAccountId) !== "expense") {
+    throw new AssetError("Akun beban penyusutan harus bertipe expense.");
+  }
+  if (byId.get(accumulatedAccountId) !== "asset") {
+    throw new AssetError("Akun akumulasi penyusutan harus bertipe asset.");
+  }
 }
 
 export interface AddAssetInput {
@@ -48,7 +72,7 @@ export interface AddAssetInput {
   accumulatedDepreciationAccountId: string;
 }
 
-/** Tambah aset tetap. Akun depresiasi wajib milik org. */
+/** Tambah aset tetap. Akun depresiasi wajib milik org + tipe benar. */
 export async function addAsset(
   userId: string,
   orgId: string,
@@ -70,8 +94,11 @@ export async function addAsset(
   if (input.cost === salvageValue) {
     throw new AssetError("Nilai penyusutan tidak boleh 0 (cost == salvage).");
   }
-  await requireAccountInOrg(orgId, input.depreciationExpenseAccountId);
-  await requireAccountInOrg(orgId, input.accumulatedDepreciationAccountId);
+  await requireDepreciationAccounts(
+    orgId,
+    input.depreciationExpenseAccountId,
+    input.accumulatedDepreciationAccountId,
+  );
   const [row] = await db
     .insert(fixedAssets)
     .values({
@@ -106,12 +133,29 @@ export function monthlyDepreciation(asset: {
   return Math.floor((asset.cost - asset.salvageValue) / asset.usefulLifeMonths);
 }
 
+/** "2026-03" -> "2026-03-31": hari kalender terakhir bulan periode. */
+function lastDayOfMonth(period: string): string {
+  const [y, m] = period.split("-").map(Number);
+  return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+}
+
 /**
  * Jalankan depresiasi bulanan untuk semua aset active sampai periodEnd
- * "YYYY-MM" (inklusif). Idempoten per bulan via last_depreciated_period:
- * aset yang sudah mencapai period tsb dilewati. Jurnal posted langsung:
- * debit Depreciation Expense, credit Accumulated Depreciation.
- * Aset fully-depreciated otomatis terlewat.
+ * "YYYY-MM" (inklusif). Advisory lock per org (sama dengan accounting:
+ * "acct:<orgId>") diambil di awal transaksi SEBELUM aset dibaca, jadi snapshot
+ * selalu terkunci — run konkuren serial, first-caller-wins per bulan
+ * (run kedua melihat last_depreciated_period sudah maju dan skip).
+ *
+ * Semantik penjumlahan: bulan perolehan dihitung. Floor per bulan; seluruh
+ * sisa dibulatkan dan diposting pada bulan terakhir umur ekonomis
+ * (ke-usefulLifeMonths) — juga menutup kasus depreciable base < life
+ * (floor 0 per bulan) sehingga setiap aset pasti habis terdepresiasi tepat
+ * di akhir umurnya. Jurnal diposting tanggal hari terakhir bulan periode.
+ *
+ * Guard periode fiskal: bulan kalender tiap bulan dalam rentang diperiksa
+ * terhadap fiscal_periods.closed di dalam transaksi yang sama — periode
+ * tertutup memblokir, sama seperti postEntry. Aset fully-depreciated tetap
+ * "active" (beda dengan disposal fisik).
  */
 export async function runMonthlyDepreciation(
   userId: string,
@@ -119,23 +163,28 @@ export async function runMonthlyDepreciation(
   periodEnd: string, // "YYYY-MM"
 ): Promise<{ processed: number; totalAmount: number; skipped: number }> {
   await requireOrgRole(userId, orgId, "member");
-  if (!/^\d{4}-\d{2}$/.test(periodEnd)) {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(periodEnd)) {
     throw new AssetError("Format periode harus YYYY-MM.");
   }
-  const assetRows = await db
-    .select()
-    .from(fixedAssets)
-    .where(and(eq(fixedAssets.orgId, orgId), eq(fixedAssets.status, "active")))
-    .orderBy(asc(fixedAssets.acquiredDate));
 
   let processed = 0;
   let totalAmount = 0;
   let skipped = 0;
 
   await db.transaction(async (tx) => {
+    // Lock dulu, baca sesudahnya — snapshot tidak bisa basi.
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtext(${`acct:${orgId}`}))`,
     );
+    const assetRows = await tx
+      .select()
+      .from(fixedAssets)
+      .where(
+        and(eq(fixedAssets.orgId, orgId), eq(fixedAssets.status, "active")),
+      )
+      .orderBy(asc(fixedAssets.acquiredDate))
+      .for("update");
+
     for (const asset of assetRows) {
       if (asset.lastDepreciatedPeriod === periodEnd) {
         skipped += 1; // sudah didepresiasikan sampai periodEnd — idempoten
@@ -150,27 +199,45 @@ export async function runMonthlyDepreciation(
         skipped += 1;
         continue;
       }
+
+      // Periode fiskal: bulan mana pun dalam rentang yang ditutup = blokir,
+      // replikasi guard postEntry (depresiasi tidak boleh menyusup ke bulan
+      // yang sudah ditutup).
+      const monthsToRun = monthsBetweenExclusive(startPeriod, periodEnd);
+      // Rentang yang benar-benar diposting: bulan setelah startPeriod s/d periodEnd.
+      const closed = await tx.execute(
+        sql`SELECT to_char(period_start, 'YYYY-MM') AS period FROM fiscal_periods WHERE org_id = ${orgId} AND closed = true AND period_start > (${startPeriod} || '-01')::date AND period_start <= (${periodEnd} || '-01')::date LIMIT 1`,
+      );
+      const closedRows =
+        Array.isArray(closed) === false && "rows" in closed
+          ? closed.rows
+          : (closed as unknown as Record<string, unknown>[]);
+      if (closedRows.length > 0) {
+        throw new AssetError(
+          `Periode fiskal ${String((closedRows[0] as { period: string }).period)} sudah ditutup; depresiasi tidak bisa melewatinya.`,
+        );
+      }
+
+      // Jumlah: floor per bulan kali bulan berjalan; saat periodEnd mencapai
+      // (atau melewati) bulan terakhir umur ekonomis, posting seluruh sisa —
+      // menutup kasus base < life (monthly 0) dan sisa pembulatan sekaligus.
+      const depreciable = asset.cost - asset.salvageValue;
       const monthly = monthlyDepreciation(asset);
-      if (monthly <= 0) {
-        skipped += 1; // fully depreciated (atau rounding habis)
-        continue;
-      }
-      const remaining =
-        asset.cost - asset.salvageValue - asset.totalDepreciated;
-      if (remaining <= 0) {
-        skipped += 1; // fully depreciated
-        continue;
-      }
-      const months = monthsBetweenExclusive(startPeriod, periodEnd);
-      let amount = monthly * months;
-      if (amount > remaining) amount = remaining; // jangan lewat depreciable base
+      const finalPeriod = addMonths(
+        minusOneMonth(periodOf(asset.acquiredDate)),
+        asset.usefulLifeMonths,
+      );
+      const isFinalPeriod = periodEnd >= finalPeriod;
+      const amount = isFinalPeriod
+        ? depreciable - asset.totalDepreciated // catch-up bulan terakhir
+        : monthly * Math.min(monthsToRun, Math.max(0, asset.usefulLifeMonths));
       if (amount <= 0) {
-        skipped += 1;
+        skipped += 1; // fully depreciated / tidak ada kenaikan bulan ini
         continue;
       }
 
-      // Jurnal posted (satu entri per aset per run, tanggal akhir periode).
-      const entryDate = `${periodEnd}-28`; // hari terakhir aman utk semua bulan? gunakan tanggal hari-1 bulan berikutnya
+      // Jurnal posted (satu entri per aset per run, tanggal akhir bulan).
+      const entryDate = lastDayOfMonth(periodEnd);
       const [{ nextNum }] = await tx
         .select({
           nextNum: sql<number>`coalesce(max(${journalEntries.entryNumber}), 0) + 1`,
@@ -206,22 +273,32 @@ export async function runMonthlyDepreciation(
           credit: amount,
         },
       ]);
+
       const newTotal = asset.totalDepreciated + amount;
-      const fully = newTotal >= asset.cost - asset.salvageValue;
-      await tx
+      // Expected-state: status masih active. Disposal konkuren (yang juga
+      // memegang advisory lock yang sama) tidak mungkin terjadi di dalam lock
+      // ini; predicate tetap dipertahankan sebagai lapis kedua.
+      const [updated] = await tx
         .update(fixedAssets)
         .set({
           totalDepreciated: newTotal,
           lastDepreciatedPeriod: periodEnd,
-          status: fully ? "disposed" : "active", // fully-depreciated == selesai
         })
         .where(
           and(
             eq(fixedAssets.id, asset.id),
             eq(fixedAssets.orgId, orgId),
-            eq(fixedAssets.totalDepreciated, asset.totalDepreciated), // expected-state
+            eq(fixedAssets.status, "active"), // expected-state
+            eq(fixedAssets.totalDepreciated, asset.totalDepreciated),
           ),
-        );
+        )
+        .returning();
+      if (!updated) {
+        // Baris berubah di bawah kaki kita (mis. disposal) — jangan posting
+        // jurnal untuk state basi; hitung skip.
+        skipped += 1;
+        continue;
+      }
       processed += 1;
       totalAmount += amount;
     }
@@ -247,6 +324,15 @@ export function monthsBetweenExclusive(a: string, b: string): number {
   return (by - ay) * 12 + (bm - am);
 }
 
+/** "2025-12" + 24 -> "2027-12". */
+function addMonths(period: string, n: number): string {
+  const [y, m] = period.split("-").map(Number);
+  const total = y * 12 + (m - 1) + n;
+  const ny = Math.floor(total / 12);
+  const nm = (total % 12) + 1;
+  return `${ny}-${String(nm).padStart(2, "0")}`;
+}
+
 /** "2026-01" -> "2025-12". */
 function minusOneMonth(period: string): string {
   const [y, m] = period.split("-").map(Number);
@@ -261,28 +347,27 @@ export async function dispose(
   disposalDate: string,
 ): Promise<FixedAsset> {
   await requireOrgRole(userId, orgId, "admin");
-  const [updated] = await db
-    .update(fixedAssets)
-    .set({ status: "disposed", disposalDate })
-    .where(
-      and(
-        eq(fixedAssets.id, assetId),
-        eq(fixedAssets.orgId, orgId),
-        eq(fixedAssets.status, "active"),
-      ),
-    )
-    .returning();
-  if (!updated)
-    throw new NotFoundError("Aset tidak ditemukan / sudah disposed.");
-  await recordAudit({
-    orgId,
-    userId,
-    action: "asset.dispose",
-    entity: "fixed_asset",
-    entityId: assetId,
-    metadata: { disposalDate },
+  // Serialisasi dengan run depresiasi (lock sama "acct:<orgId>"): disposal
+  // tidak bisa menyelinap di antara baca dan tulis run yang sedang berjalan.
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`acct:${orgId}`}))`,
+    );
+    const [updated] = await tx
+      .update(fixedAssets)
+      .set({ status: "disposed", disposalDate })
+      .where(
+        and(
+          eq(fixedAssets.id, assetId),
+          eq(fixedAssets.orgId, orgId),
+          eq(fixedAssets.status, "active"), // expected-state
+        ),
+      )
+      .returning();
+    if (!updated)
+      throw new NotFoundError("Aset tidak ditemukan / sudah disposed.");
+    return updated;
   });
-  return updated;
 }
 
 export async function listAssets(orgId: string): Promise<FixedAsset[]> {

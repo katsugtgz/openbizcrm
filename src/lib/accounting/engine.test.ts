@@ -32,7 +32,8 @@ describe("validateEntry", () => {
       { accountCode: "4-1000", debit: 0, credit: 100 },
     ]);
     expect(errors).toHaveLength(1);
-    expect(errors[0]).toMatch(/50/);
+    // /50/ juga cocok dgn suffix "150" — assertion eksplisit (cubic pr8 eng:35).
+    expect(errors[0]).toMatch(/selisih 50\)/);
   });
 
   it("one-sided line ditolak (debit dan credit sekaligus)", () => {
@@ -45,11 +46,15 @@ describe("validateEntry", () => {
   });
 
   it("zero line diizinkan? tidak — baris nol keduanya ditolak", () => {
+    // Fixture seimbang dgn SALES credit 100: tanpa baris CASH pasangan, test
+    // tetap hijau walau rule zero-line hilang (cubic pr8 eng:41).
     const errors = validateEntry([
       { accountCode: "1-1000", debit: 0, credit: 0 },
+      { accountCode: "1-1000", debit: 100, credit: 0 },
       SALES,
     ]);
-    expect(errors.length).toBeGreaterThan(0);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/tidak boleh 0 di kedua sisi/);
   });
 
   it("float ditolak", () => {
@@ -69,15 +74,16 @@ describe("validateEntry", () => {
   });
 
   it("MAX_SAFE_INTEGER overflow pada debit+credit terdeteksi", () => {
+    // Baris per-line valid (satu baris MAX lolos per-line check); overflow
+    // dari AKUMULASI lintas baris — MAX + 100 > 2^53 (cubic pr8 eng:78).
     const MAX = Number.MAX_SAFE_INTEGER;
     const errors = validateEntry([
       { accountCode: "1-1000", debit: MAX, credit: 0 },
-      { accountCode: "2-1000", debit: 1, credit: 0 },
+      { accountCode: "1-1000", debit: 100, credit: 0 },
       { accountCode: "3-1000", debit: 0, credit: MAX },
+      { accountCode: "3-1000", debit: 0, credit: 100 },
     ]);
-    expect(errors.some((e) => e.match(/batas kolom DB|overflow|safe/i))).toBe(
-      true,
-    );
+    expect(errors.some((e) => e.includes("overflow"))).toBe(true);
   });
 
   it("entry kosong ditolak", () => {
@@ -163,19 +169,113 @@ describe("trialBalance", () => {
   });
 });
 
-describe("MAX_LINE_AMOUNT (batas kolom PG integer pada debit/credit)", () => {
-  it("baris tepat 2^31-1 lolos, 2^31 ditolak sebelum kena DB", () => {
-    const MAXLINE = 2_147_483_647;
+describe("MAX_LINE_AMOUNT (kolom debit/credit kini bigint — batas JS safe)", () => {
+  it("2^31-1 dan di atasnya lolos; MAX_SAFE lolos; MAX_SAFE+1 ditolak", () => {
     expect(
       validateEntry([
-        { accountCode: "1-1000", debit: MAXLINE, credit: 0 },
-        { accountCode: "3-1000", debit: 0, credit: MAXLINE },
+        { accountCode: "1-1000", debit: 2_147_483_648, credit: 0 },
+        { accountCode: "3-1000", debit: 0, credit: 2_147_483_648 },
+      ]),
+    ).toEqual([]);
+    expect(
+      validateEntry([
+        { accountCode: "1-1000", debit: Number.MAX_SAFE_INTEGER, credit: 0 },
+        {
+          accountCode: "3-1000",
+          debit: 0,
+          credit: Number.MAX_SAFE_INTEGER,
+        },
       ]),
     ).toEqual([]);
     const errors = validateEntry([
-      { accountCode: "1-1000", debit: 2_147_483_648, credit: 0 },
-      { accountCode: "3-1000", debit: 0, credit: 2_147_483_648 },
+      { accountCode: "1-1000", debit: 9_007_199_254_740_992, credit: 0 },
+      {
+        accountCode: "3-1000",
+        debit: 0,
+        credit: 9_007_199_254_740_992,
+      },
     ]);
-    expect(errors.some((e) => e.includes("batas kolom DB"))).toBe(true);
+    expect(errors.some((e) => e.includes("MAX_SAFE"))).toBe(true);
+  });
+});
+
+describe("BigInt aggregation (cubic pr8 engine:114/:134)", () => {
+  const MAXLINE = 2_147_483_647;
+  // Sum di atas 2^53 dulu diluar Number.MAX_SAFE? 2^53 = 9.007e15; 3 baris
+  // debit 2^31-1 tak cukup. Gunakan akumulasi lintas banyak entri via
+  // trialBalance: 4.3M baris tak praktis — cukup buktikan agregat BigInt
+  // tepat melewati batas number float.
+  it("total melebihi MAX_SAFE_INTEGER: tolak eksplisit, bukan rounding diam-diam", () => {
+    const big = 4_503_599_627_370_495; // 2^52-1, per-baris aman
+    expect(() =>
+      trialBalance(
+        [
+          [
+            { accountCode: "1-1000", debit: big, credit: 0 },
+            { accountCode: "1-1000", debit: big, credit: 0 },
+            { accountCode: "1-1000", debit: big + 2, credit: 0 },
+            { accountCode: "3-1000", debit: 0, credit: big },
+            { accountCode: "3-1000", debit: 0, credit: big },
+            { accountCode: "3-1000", debit: 0, credit: big + 2 },
+          ],
+        ],
+        TYPES,
+      ),
+    ).toThrow(/MAX_SAFE/);
+  });
+
+  it("agregat di bawah MAX_SAFE: BigInt-presisi tepat", () => {
+    const big = 4_503_599_627_370_495; // 2^52-1
+    const tb = trialBalance(
+      [
+        [
+          { accountCode: "1-1000", debit: big, credit: 0 },
+          { accountCode: "1-1000", debit: big, credit: 0 },
+          { accountCode: "3-1000", debit: 0, credit: big },
+          { accountCode: "3-1000", debit: 0, credit: big },
+        ],
+      ],
+      TYPES,
+    );
+    expect(tb.totalDebit).toBe(2 * big);
+    expect(tb.balanced).toBe(true);
+  });
+
+  it("baris per-line MAX_LINE_AMOUNT (2^31-1) di-total lintas entri tanpa kehilangan presisi", () => {
+    const tb = trialBalance(
+      [
+        [
+          { accountCode: "1-1000", debit: MAXLINE, credit: 0 },
+          { accountCode: "3-1000", debit: 0, credit: MAXLINE },
+        ],
+        [
+          { accountCode: "1-1000", debit: MAXLINE, credit: 0 },
+          { accountCode: "3-1000", debit: 0, credit: MAXLINE },
+        ],
+        [
+          { accountCode: "1-1000", debit: MAXLINE, credit: 0 },
+          { accountCode: "3-1000", debit: 0, credit: MAXLINE },
+        ],
+      ],
+      TYPES,
+    );
+    expect(tb.totalDebit).toBe(3 * MAXLINE);
+    expect(tb.balanced).toBe(true);
+  });
+});
+
+describe("unmapped account type (cubic pr8 engine:141)", () => {
+  it("accountCode tanpa mapping types ditolak, bukan diam-diam jadi asset", () => {
+    expect(() =>
+      trialBalance(
+        [
+          [
+            { accountCode: "9-9999", debit: 10, credit: 0 },
+            { accountCode: "1-1000", debit: 0, credit: 10 },
+          ],
+        ],
+        TYPES,
+      ),
+    ).toThrow(/9-9999/);
   });
 });

@@ -1,6 +1,34 @@
 <!-- cubic:review-summary:start -->
+
 **60 issues found** across 53 files
 <!-- cubic:review-summary:end -->
+
+## Resolution — UI + test-cleanliness slice (2026-10-20)
+
+| Finding                                                         | Status | Fix                                                                                            |
+| --------------------------------------------------------------- | ------ | ---------------------------------------------------------------------------------------------- |
+| akuntansi/page.tsx:47 Ekuitas + Laba omits profit               | fixed  | KPI now `pick("equity") + laba`, shared with Laba Bersih card.                                 |
+| faktur/page.tsx:54 unbounded invoice fetch                      | fixed  | `listInvoices(orgId, limit = 100)`; card copy states "100 terbaru".                            |
+| add-asset-dialog.tsx:98 state persists on cancel                | fixed  | `handleOpenChange` resets both account selections on close.                                    |
+| add-asset-dialog.tsx:100 admin control rendered to members      | fixed  | New `isAdmin` prop; trigger hidden for non-admins (`hasRole(role, "admin")` in aset/page.tsx). |
+| new-entry-dialog.tsx:60 "Seimbang" with missing accounts        | fixed  | `missingAccount` check gates `balanced`; error "Pilih akun untuk setiap baris."                |
+| jurnal/page.tsx:54 loads every journal line                     | fixed  | Lines filtered via `inArray(entryId, page entry ids)`.                                         |
+| jurnal/page.tsx:98 raw account UUIDs                            | fixed  | Lines joined to `listAccounts` map → `code name`.                                              |
+| pos/service.integration.test.ts:116 serial race case            | fixed  | `Promise.allSettled` two checkouts over stock 1; exactly one succeeds, stock reaches 0.        |
+| pos/service.integration.test.ts:167 org-B omits balanced        | fixed  | `expect(tbB.balanced).toBe(true)` added.                                                       |
+| budget/service.integration.test.ts:82 admin-only untested       | fixed  | Creates real `member` membership; asserts `setBudget` rejects with INSUFFICIENT_ROLE.          |
+| assets/service.integration.test.ts:89 one-sided org isolation   | fixed  | Complementary case: org-A expense + org-B accum account rejected.                              |
+| assets/service.integration.test.ts:94 invalid inputs untested   | fixed  | Separate `salvageValue > cost` and `usefulLifeMonths: 0` cases.                                |
+| close-period-dialog.tsx:42 rendered to members                  | fixed  | `ClosePeriodGate` in jurnal/page.tsx: `hasRole(role, "admin")` or `null`.                      |
+| faktur/actions.ts:60 lexical date compare                       | fixed  | `normalizeDate` validates `YYYY-MM-DD` at the boundary for issueDate/dueDate.                  |
+| buku-besar/page.tsx:79 per-line rows mislabeled as transactions | fixed  | Aggregates per entry (Map by entry id), deterministic running balance per entry.               |
+| engine.test.ts:35 `/50/` matches "150"                          | fixed  | Asserts `selisih 50)`.                                                                         |
+| engine.test.ts:41 zero-line fixture already unbalanced          | fixed  | Added matching debit 100 CASH line; asserts exactly the zero-side error.                       |
+| engine.test.ts:78 overflow test passes on per-line bound        | fixed  | Per-line-valid MAX + 100 accumulation; asserts `overflow`.                                     |
+
+Non-DB suite 227 passed; DB suites (accounting/invoicing 42, pos/budget/assets 16) passed on seeded dev PG. `tsc`, `eslint`, `next build` clean.
+
+Other 42 findings (service/DB/schema) are outside this slice; see their own resolution passes.
 
 <details>
 <summary>Prompt for AI agents (unresolved issues)</summary>
@@ -265,3 +293,67 @@ P2: These are journal-line rows, not transactions: repeating an account in one e
 <sub>Reply with feedback, questions, or to request a fix.<br /><br />[View guided diff](https://www.cubic.dev/pr/katsugtgz/openbizcrm/pull/8?utm_source=github&utm_medium=review_footer) | [Turn on auto-fix](https://www.cubic.dev/action/auto-fix/pr/katsugtgz/openbizcrm/8?returnTo=https%3A%2F%2Fgithub.com%2Fkatsugtgz%2Fopenbizcrm%2Fpull%2F8) | [Re-trigger cubic](https://www.cubic.dev/action/re-review/pr/katsugtgz/openbizcrm/8/ai_pr_review_github_delivery_780185cbb77b216c5664688a31873060330537e2b236a5d0824f876a2ba80776?returnTo=https%3A%2F%2Fgithub.com%2Fkatsugtgz%2Fopenbizcrm%2Fpull%2F8)</sub>
 
 <!-- cubic:review-post:ai_pr_review_github_delivery_780185cbb77b216c5664688a31873060330537e2b236a5d0824f876a2ba80776:15fc5da11bb3ba3fec1c17ce9651e77a9b69fe19:3619a093-62ec-57fa-b60c-e2b47032664e -->
+
+## Resolution status (round 1) — 2026-10-20
+
+Full pass over all 60 findings. Gates: `bun install` ok; prettier/lint (0 errors, 1 pre-existing warning in tasks/service.ts)/`tsc`/`next build` clean; `RUN_DB_TESTS=1 bun run test:coverage` **285/285 green** (29 files); `db:generate` clean (schema in sync, migration 0019 generated + applied to dev PG).
+
+| Finding                                                              | Status  | Fix                                                                                                                                                                      |
+| -------------------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| assets/service.ts:1 (account type not validated)                     | FIXED   | `requireDepreciationAccounts` — expense/asset type + distinct enforced.                                                                                                  |
+| assets/service.ts:2 (MM=00/13 accepted)                              | FIXED   | `^\d{4}-(0[1-9]                                                                                                                                                          | 1[0-2])$` + test "periode bulan 00/13 ditolak". |
+| assets/service.ts:3+4 (snapshot before lock, zero-row ignored)       | FIXED   | Advisory `acct:<orgId>` taken inside tx BEFORE `SELECT ... FOR UPDATE`; zero-row update → `skipped`, journal not counted (test: concurrent double-run, exactly 1 posts). |
+| assets/service.ts:5+6 (base<life never depreciates; floor remainder) | FIXED   | Catch-up in final life month posts full remainder; test "Tiny" cost 20 / life 24 posts 20 at 2027-12.                                                                    |
+| assets/service.ts:7 (journal dated 28th)                             | FIXED   | `lastDayOfMonth(periodEnd)`.                                                                                                                                             |
+| assets/service.ts:8 (bypasses period close)                          | FIXED   | Fiscal-period check inside tx; test "closed period blocks depreciation".                                                                                                 |
+| assets/service.ts:9 (full depreciation = disposal)                   | FIXED   | Fully-depreciated asset stays `active`; disposal only via `dispose()`.                                                                                                   |
+| assets/service.ts:10 (disposal race overwrites)                      | FIXED   | Same `acct:<orgId>` lock in `dispose()` + expected-state predicate; test disposal-vs-depreciation race.                                                                  |
+| pos/service.ts:1 (audit second pool connection)                      | FIXED   | `recordAudit(..., tx)` in restock/checkout; audit-repo transaction-aware.                                                                                                |
+| pos/service.ts:2 + schema.ts:1 (no inventory_movements)              | FIXED   | `restock`/`sale` movement rows inserted in same tx as stockQty change.                                                                                                   |
+| pos/service.ts:3 (entryNumber lock family)                           | FIXED   | checkout takes `acct:<orgId>`; shared with accounting/invoicing/assets.                                                                                                  |
+| pos/service.ts:4 (closed-period POS bypass)                          | FIXED   | `fiscal_periods.closed` assert in checkout tx; test "checkout ditolak saat periode fiskal ditutup".                                                                      |
+| accounting/service.ts:1 (audit pool deadlock)                        | FIXED   | All in-tx audit calls pass `tx` (create/post/close).                                                                                                                     |
+| accounting/service.ts:2 (impossible months)                          | FIXED   | 01–12 range check in `closePeriod`.                                                                                                                                      |
+| accounting/service.ts:3 (inconsistent balance snapshot)              | FIXED   | `balanceSheet`/`financialReports` compute all components from one trial-balance snapshot.                                                                                |
+| invoicing/service.ts:1 (postJournal line cap)                        | FIXED   | `computeLineTotals` per line + MAX_SAFE totals checks before insert.                                                                                                     |
+| invoicing/service.ts:2 (audit second connection)                     | FIXED   | All `recordAudit(..., tx)` inside invoice txs.                                                                                                                           |
+| invoicing/service.ts:3 (invoice vs POS different locks)              | FIXED   | Invoice posting/postJournal use `acct:<orgId>` (only `inv:` for invoice-numbering block, orthogonal).                                                                    |
+| invoicing/service.ts:4+5 (PPN as revenue)                            | FIXED   | Credit Revenue=subtotal, credit PPN-liability (2-2000, auto-created)=taxAmount; test asserts liability line.                                                             |
+| invoicing/service.ts:6 (future-due overdue)                          | FIXED   | `dueDate <= CURRENT_DATE` predicate in markOverdue UPDATE + explicit "belum jatuh tempo" error; NEW test (red→green this round).                                         |
+| schema.ts:2 (journal_lines tenant FKs)                               | FIXED   | 0018 composite FKs `(org_id, entry_id)`/`(org_id, account_id)` + parent unique keys.                                                                                     |
+| schema.ts:3 (bigint removed engine cap)                              | FIXED   | 0019: `journal_lines_amounts_check` now also bounds debit/credit ≤ 9007199254740991 (MAX_SAFE_INTEGER) — every journal writer shares the constraint.                     |
+| schema.ts:4 ((0,0) lines accepted)                                   | FIXED   | Same CHECK requires exactly one positive side; test "journalLines CHECK menolak (0,0)".                                                                                  |
+| schema.ts:5 (dangling journal refs)                                  | FIXED   | Composite FKs on invoices/invoice_payments/pos_sales → journal_entries(org,id).                                                                                          |
+| laporan/page.tsx:1+2 (3x trial-balance scans)                        | FIXED   | `financialReports` single snapshot for both panels.                                                                                                                      |
+| laporan/page.tsx:3 (Laba Rugi cumulative mislabeled)                 | FIXED   | Optional `period` filter + explicit description ("kumulatif"/"bulan X").                                                                                                 |
+| engine.ts:1 (MAX_LINE_AMOUNT stale)                                  | FIXED   | `MAX_LINE_AMOUNT = Number.MAX_SAFE_INTEGER`, matches bigint columns + new DB check.                                                                                      |
+| engine.ts:2+3 (unsafe aggregation)                                   | FIXED   | BigInt `sumExact` with explicit reject before rounding; overflow tests.                                                                                                  |
+| engine.ts:4 (unmapped accounts default asset)                        | FIXED   | `trialBalance` throws on missing `types[accountCode]`.                                                                                                                   |
+| akuntansi/page.tsx:1 (KPI omits profit)                              | FIXED   | `pick("equity") + laba`.                                                                                                                                                 |
+| invoicing/totals.ts:1 (qty > int max)                                | FIXED   | `QTY_DB_MAX` check; tests at boundary.                                                                                                                                   |
+| budget/service.ts:1 (dead service)                                   | WONTFIX | Service is tested + wired for next slice; adding a UI page now is out of scope for this review round (no product request). Tracked as follow-up.                         |
+| budget/service.ts:2 (2026-13 accepted)                               | FIXED   | `assertPeriod` format+range in all 3 entry points; DB CHECK on `budgets.period` format.                                                                                  |
+| budget/service.ts:3 (bigint→Number rounding)                         | FIXED   | `numberFromAggregate` rejects aggregates > MAX_SAFE; test "aktual di atas MAX_SAFE ditolak".                                                                             |
+| faktur/page.tsx:1 (unbounded fetch)                                  | FIXED   | `limit = 100` + "100 faktur terbaru" copy.                                                                                                                               |
+| add-asset-dialog.tsx:1 (state persists)                              | FIXED   | `handleOpenChange` resets selections on close.                                                                                                                           |
+| add-asset-dialog.tsx:2 (admin control for all)                       | FIXED   | `isAdmin` prop hides trigger.                                                                                                                                            |
+| new-entry-dialog.tsx:1+2 (balanced without accounts)                 | FIXED   | `missingAccount` gates balanced + "Pilih akun untuk setiap baris."                                                                                                       |
+| jurnal/page.tsx:1 (all lines loaded)                                 | FIXED   | `inArray(entryId, pageIds)`.                                                                                                                                             |
+| jurnal/page.tsx:2 (raw UUIDs)                                        | FIXED   | Lines mapped to `code name`.                                                                                                                                             |
+| drizzle/0017 (tenant-scoped FKs)                                     | FIXED   | 0018/0019 composite unique + FK constraints.                                                                                                                             |
+| product-grid.tsx:1 (formatIDR crash)                                 | FIXED   | `unsafe()` guard + `totalsUsable` gate, checkout stays usable.                                                                                                           |
+| pos test:1 (serial race case)                                        | FIXED   | `Promise.allSettled` double checkout, exactly-one-succeeds.                                                                                                              |
+| pos test:2 (org-B balanced missing)                                  | FIXED   | `expect(tbB.balanced).toBe(true)`.                                                                                                                                       |
+| budget test:1 (admin-only untested)                                  | FIXED   | Real member membership + INSUFFICIENT_ROLE assertion.                                                                                                                    |
+| assets test:1 (one-sided org isolation)                              | FIXED   | Complementary cross-org accum-account case.                                                                                                                              |
+| assets test:2 (invalid inputs untested)                              | FIXED   | Separate salvage>cost and life=0 cases.                                                                                                                                  |
+| close-period-dialog.tsx:1 (members see dialog)                       | FIXED   | `hasRole(role,"admin")` gate returns null for members.                                                                                                                   |
+| engine.test.ts:1 (`/50/` matches 150)                                | FIXED   | `/selisih 50\)/`.                                                                                                                                                        |
+| engine.test.ts:2 (zero-line test green without rule)                 | FIXED   | Balanced fixture + exact zero-line error assertion.                                                                                                                      |
+| engine.test.ts:3 (per-line-bound false pass)                         | FIXED   | Per-line-valid MAX+100 aggregation → `overflow` error.                                                                                                                   |
+| faktur/actions.ts:1 (lexical date compare)                           | FIXED   | `normalizeDate` strict `YYYY-MM-DD` + `Date.parse` at boundary.                                                                                                          |
+| buku-besar/page.tsx:1 (per-line rows mislabeled)                     | FIXED   | Per-entry aggregation; deterministic order via (date, entryNumber).                                                                                                      |
+
+**60/60 resolved: 59 FIXED, 1 WONTFIX (budget/service.ts:1 — dead-service finding; wiring a new UI page is a feature, not a review fix; tracked as follow-up).**
+
+This round's deltas: markOverdue dueDate guard + test (invoicing/service.ts, service.integration.test.ts), journal-line amount-cap CHECK + migration 0019 (src/db/schema.ts, drizzle/0019_bouncy_xorn.sql), budget overflow test adjusted to per-line caps.

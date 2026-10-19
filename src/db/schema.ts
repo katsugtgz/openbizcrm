@@ -1,5 +1,6 @@
 import {
   check,
+  foreignKey,
   pgTable,
   pgEnum,
   uuid,
@@ -744,6 +745,9 @@ export const accounts = pgTable(
   (t) => [
     // Kode akun unik per org — chart of accounts rapi, filter org+code cepat.
     unique("accounts_org_code_unique").on(t.orgId, t.code),
+    // Parent key utk FK komposit tenant-aware dari journal_lines (cubic pr8
+    // schema:813): akun tidak bisa dikaitkan lintas org.
+    unique("accounts_org_id_unique").on(t.orgId, t.id),
   ],
 );
 
@@ -797,6 +801,8 @@ export const journalEntries = pgTable(
   },
   (t) => [
     unique("journal_entries_org_number_unique").on(t.orgId, t.entryNumber),
+    // Parent key utk FK komposit tenant-aware (cubic pr8 schema:902).
+    unique("journal_entries_org_id_unique").on(t.orgId, t.id),
     index("journal_entries_org_date_idx").on(t.orgId, t.date),
   ],
 );
@@ -810,10 +816,12 @@ export const journalLines = pgTable(
       .references(() => organizations.id, { onDelete: "cascade" }),
     entryId: uuid("entry_id")
       .notNull()
-      .references(() => journalEntries.id, { onDelete: "cascade" }),
+      .references((): AnyPgColumn => journalEntries.id, {
+        onDelete: "cascade",
+      }),
     accountId: uuid("account_id")
       .notNull()
-      .references(() => accounts.id, { onDelete: "restrict" }),
+      .references((): AnyPgColumn => accounts.id, { onDelete: "restrict" }),
     /** Rupiah integer >= 0 (assertSafeAmount); salah satu dari keduanya 0. */
     debit: bigint("debit", { mode: "number" }).notNull().default(0),
     credit: bigint("credit", { mode: "number" }).notNull().default(0),
@@ -821,9 +829,24 @@ export const journalLines = pgTable(
   },
   (t) => [
     index("journal_lines_org_account_idx").on(t.orgId, t.accountId),
+    // FK komposit tenant-aware (cubic pr8 schema:813): entry & akun wajib
+    // milik org yang sama dengan barisnya — cross-org tertolak di DB.
+    foreignKey({
+      name: "journal_lines_entry_org_fk",
+      columns: [t.orgId, t.entryId],
+      foreignColumns: [journalEntries.orgId, journalEntries.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "journal_lines_account_org_fk",
+      columns: [t.orgId, t.accountId],
+      foreignColumns: [accounts.orgId, accounts.id],
+    }).onDelete("restrict"),
+    // Tepat satu sisi positif (cubic pr8 schema:826) — (0,0) tak valid; batas
+    // per baris = batas engine JS aman (MAX_LINE_AMOUNT), supaya setiap penulis
+    // jurnal (invoice/POS/depresiasi) memakai constraint DB yang sama.
     check(
       "journal_lines_amounts_check",
-      sql`debit >= 0 AND credit >= 0 AND (debit = 0 OR credit = 0)`,
+      sql`debit >= 0 AND credit >= 0 AND debit <= 9007199254740991 AND credit <= 9007199254740991 AND (debit > 0 AND credit = 0 OR credit > 0 AND debit = 0)`,
     ),
   ],
 );
@@ -899,6 +922,7 @@ export const posSales = pgTable(
     subtotal: bigint("subtotal", { mode: "number" }).notNull(),
     taxAmount: bigint("tax_amount", { mode: "number" }).notNull(),
     total: bigint("total", { mode: "number" }).notNull(),
+    // FK tenant-aware: jurnal harus milik org yang sama (cubic pr8 :902).
     journalEntryId: uuid("journal_entry_id"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -906,6 +930,13 @@ export const posSales = pgTable(
   },
   (t) => [
     unique("pos_sales_org_number_unique").on(t.orgId, t.saleNumber),
+    // FK komposit journalEntryId -> jurnal org yang sama (cubic pr8 :902).
+    unique("pos_sales_org_id_unique").on(t.orgId, t.id),
+    foreignKey({
+      name: "pos_sales_journal_entry_org_fk",
+      columns: [t.orgId, t.journalEntryId],
+      foreignColumns: [journalEntries.orgId, journalEntries.id],
+    }),
     index("pos_sales_org_created_idx").on(t.orgId, t.createdAt),
   ],
 );
@@ -982,6 +1013,13 @@ export const invoices = pgTable(
   },
   (t) => [
     unique("invoices_org_number_unique").on(t.orgId, t.invoiceNumber),
+    // FK komposit journalEntryId -> jurnal org yang sama (cubic pr8 :902).
+    unique("invoices_org_id_unique").on(t.orgId, t.id),
+    foreignKey({
+      name: "invoices_journal_entry_org_fk",
+      columns: [t.orgId, t.journalEntryId],
+      foreignColumns: [journalEntries.orgId, journalEntries.id],
+    }),
     index("invoices_org_status_idx").on(t.orgId, t.status),
   ],
 );
@@ -1018,6 +1056,7 @@ export const invoicePayments = pgTable(
     amount: bigint("amount", { mode: "number" }).notNull(),
     method: paymentMethodEnum("method").notNull(),
     paidAt: date("paid_at").notNull(),
+    // FK tenant-aware: jurnal harus milik org yang sama (cubic pr8 :902).
     journalEntryId: uuid("journal_entry_id"),
     createdBy: uuid("created_by").references(() => users.id, {
       onDelete: "set null",
@@ -1026,7 +1065,15 @@ export const invoicePayments = pgTable(
       .notNull()
       .defaultNow(),
   },
-  (t) => [index("invoice_payments_invoice_idx").on(t.invoiceId)],
+  (t) => [
+    // FK komposit journalEntryId -> jurnal org yang sama (cubic pr8 :902).
+    foreignKey({
+      name: "invoice_payments_journal_entry_org_fk",
+      columns: [t.orgId, t.journalEntryId],
+      foreignColumns: [journalEntries.orgId, journalEntries.id],
+    }),
+    index("invoice_payments_invoice_idx").on(t.invoiceId),
+  ],
 );
 
 export type Invoice = typeof invoices.$inferSelect;

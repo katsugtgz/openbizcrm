@@ -48,6 +48,39 @@ async function Ledger({
     );
   }
   const rows = await listLedger(orgId, account.id);
+  // Agregasi per entri: akun bisa muncul 2x dalam satu jurnal — render baris
+  // per entri, bukan per line, agar header count & saldo berjalan
+  // deterministik (cubic pr8 buku-besar:79; listLedger tak punya urutan
+  // intra-entri). Urutan entri = urutan rows (date, entryNumber).
+  const entryRows = new Map<
+    string,
+    {
+      key: string;
+      date: string;
+      description: string | null;
+      debit: number;
+      credit: number;
+    }
+  >();
+  for (const { line, entry } of rows) {
+    const cur = entryRows.get(entry.id) ?? {
+      key: entry.id,
+      date: entry.date,
+      description: entry.description,
+      debit: 0,
+      credit: 0,
+    };
+    cur.debit += line.debit;
+    cur.credit += line.credit;
+    entryRows.set(entry.id, cur);
+  }
+  const normalSign =
+    account.type === "asset" || account.type === "expense" ? 1 : -1;
+  let acc = 0;
+  const entries = [...entryRows.values()].map((e) => {
+    acc += normalSign * (e.debit - e.credit);
+    return { ...e, runningBalance: acc };
+  });
   return (
     <Card>
       <CardHeader>
@@ -56,11 +89,11 @@ async function Ledger({
           {account.name}
         </CardTitle>
         <CardDescription>
-          {rows.length} transaksi posted · saldo berjalan.
+          {entries.length} transaksi posted · saldo berjalan.
         </CardDescription>
       </CardHeader>
       <CardContent>
-        {rows.length === 0 ? (
+        {entries.length === 0 ? (
           <p className="py-6 text-center text-sm text-muted-foreground">
             Belum ada baris posted pada akun ini.
           </p>
@@ -76,22 +109,22 @@ async function Ledger({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rows.map(({ line, entry, runningBalance }) => (
-                <TableRow key={line.id}>
+              {entries.map((e) => (
+                <TableRow key={e.key}>
                   <TableCell className="whitespace-nowrap text-xs">
-                    {entry.date}
+                    {e.date}
                   </TableCell>
                   <TableCell className="text-xs">
-                    {entry.description ?? "-"}
+                    {e.description ?? "-"}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
-                    {line.debit ? formatIDR(line.debit) : "—"}
+                    {e.debit ? formatIDR(e.debit) : "—"}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
-                    {line.credit ? formatIDR(line.credit) : "—"}
+                    {e.credit ? formatIDR(e.credit) : "—"}
                   </TableCell>
                   <TableCell className="text-right font-medium tabular-nums">
-                    {formatIDR(runningBalance)}
+                    {formatIDR(e.runningBalance)}
                   </TableCell>
                 </TableRow>
               ))}

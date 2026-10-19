@@ -63,14 +63,25 @@ function AccountSelect({
 export function AddAssetDialog({
   expenseAccounts,
   assetAccounts,
+  isAdmin,
 }: {
   expenseAccounts: AccountOption[];
   assetAccounts: AccountOption[];
+  isAdmin: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
   const [expenseAcc, setExpenseAcc] = useState("");
   const [accumAcc, setAccumAcc] = useState("");
+
+  // Tutup tanpa simpan tidak boleh membawa pilihan akun aset sebelumnya.
+  function handleOpenChange(next: boolean) {
+    setOpen(next);
+    if (!next) {
+      setExpenseAcc("");
+      setAccumAcc("");
+    }
+  }
 
   function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -84,9 +95,7 @@ export function AddAssetDialog({
     startTransition(async () => {
       const result = await addAssetAction(formData);
       if (result.ok) {
-        setOpen(false);
-        setExpenseAcc("");
-        setAccumAcc("");
+        handleOpenChange(false);
         toast.success("Aset ditambahkan.");
       } else {
         toast.error(result.error ?? "Gagal.");
@@ -94,8 +103,10 @@ export function AddAssetDialog({
     });
   }
 
+  if (!isAdmin) return null; // admin-only: sembunyikan trigger utk member
+
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         <Button size="sm">Aset Baru</Button>
       </DialogTrigger>

@@ -67,6 +67,33 @@ export async function accountByCode(
   return row.id;
 }
 
+/** Kode akun PPN keluaran (liability), auto-create per org saat dipakai. */
+export const PPN_OUT_CODE = "2-2000";
+
+/** Ambil id akun PPN keluaran; auto-create liability kalau belum ada. */
+async function ppnOutAccountId(exec: Tx, orgId: string): Promise<string> {
+  const [existing] = await exec
+    .select({ id: accounts.id })
+    .from(accounts)
+    .where(and(eq(accounts.orgId, orgId), eq(accounts.code, PPN_OUT_CODE)))
+    .limit(1);
+  if (existing) return existing.id;
+  const [created] = await exec
+    .insert(accounts)
+    .values({
+      orgId,
+      code: PPN_OUT_CODE,
+      name: "PPN Keluaran",
+      type: "liability",
+    })
+    .onConflictDoUpdate({
+      target: [accounts.orgId, accounts.code],
+      set: { name: "PPN Keluaran" },
+    })
+    .returning();
+  return created.id;
+}
+
 /** Nomor dokumen "INV-001" / "SLS-001" per org, max numeric suffix + 1
  * (pola nextProjectCode), diserialisasi advisory lock per org. */
 export async function nextDocNumber(
@@ -268,14 +295,17 @@ export async function createInvoice(
         })),
       )
       .returning();
-    await recordAudit({
-      orgId,
-      userId,
-      action: "invoice.create",
-      entity: "invoice",
-      entityId: invoice.id,
-      metadata: { invoiceNumber, total },
-    });
+    await recordAudit(
+      {
+        orgId,
+        userId,
+        action: "invoice.create",
+        entity: "invoice",
+        entityId: invoice.id,
+        metadata: { invoiceNumber, total },
+      },
+      tx,
+    );
     return { invoice, items: itemRows };
   });
 }
@@ -302,15 +332,22 @@ export async function sendInvoice(
     await assertPeriodOpen(tx, orgId, invoice.issueDate);
     const arId = await accountByCode(orgId, "1-1300", tx); // Piutang usaha
     const revId = await accountByCode(orgId, "4-1000", tx); // Pendapatan
+    // PPN keluaran = liability, BUKAN pendapatan (cubic P1 invoicing:312):
+    // debit AR gross, credit Revenue subtotal, credit PPN keluaran tax.
+    const lines: { accountId: string; debit: number; credit: number }[] = [
+      { accountId: arId, debit: invoice.total, credit: 0 },
+      { accountId: revId, debit: 0, credit: invoice.subtotal },
+    ];
+    if (invoice.taxAmount > 0) {
+      const ppnId = await ppnOutAccountId(tx, orgId);
+      lines.push({ accountId: ppnId, debit: 0, credit: invoice.taxAmount });
+    }
     const journalEntryId = await postJournal(tx, orgId, userId, {
       date: invoice.issueDate,
       description: `Invoice ${invoice.invoiceNumber}`,
       source: "invoice",
       paymentMethod: "transfer",
-      lines: [
-        { accountId: arId, debit: invoice.total, credit: 0 },
-        { accountId: revId, debit: 0, credit: invoice.total },
-      ],
+      lines,
     });
     // Expected-state predicate: status masih draft saat UPDATE.
     const [updated] = await tx
@@ -327,14 +364,20 @@ export async function sendInvoice(
     if (!updated) {
       throw new InvoiceError("Status invoice berubah; kirim dibatalkan.");
     }
-    await recordAudit({
-      orgId,
-      userId,
-      action: "invoice.send",
-      entity: "invoice",
-      entityId: invoiceId,
-      metadata: { invoiceNumber: invoice.invoiceNumber, total: invoice.total },
-    });
+    await recordAudit(
+      {
+        orgId,
+        userId,
+        action: "invoice.send",
+        entity: "invoice",
+        entityId: invoiceId,
+        metadata: {
+          invoiceNumber: invoice.invoiceNumber,
+          total: invoice.total,
+        },
+      },
+      tx,
+    );
     return updated;
   });
 }
@@ -420,14 +463,17 @@ export async function recordPayment(
     if (!updated) {
       throw new InvoiceError("Invoice berubah; pembayaran dibatalkan.");
     }
-    await recordAudit({
-      orgId,
-      userId,
-      action: "invoice.payment",
-      entity: "invoice",
-      entityId: invoiceId,
-      metadata: { amount: input.amount, method: input.method },
-    });
+    await recordAudit(
+      {
+        orgId,
+        userId,
+        action: "invoice.payment",
+        entity: "invoice",
+        entityId: invoiceId,
+        metadata: { amount: input.amount, method: input.method },
+      },
+      tx,
+    );
     return { invoice: updated, payment };
   });
 }
@@ -441,6 +487,8 @@ export async function markOverdue(
   invoiceId: string,
 ): Promise<Invoice> {
   await requireOrgRole(userId, orgId, "member");
+  // dueDate <= hari ini wajib (cubic P2 invoicing:446) — invoice yang belum
+  // jatuh tempo tidak boleh dipaksa overdue walau statusnya sent.
   const [updated] = await db
     .update(invoices)
     .set({ status: "overdue" })
@@ -449,12 +497,18 @@ export async function markOverdue(
         eq(invoices.id, invoiceId),
         eq(invoices.orgId, orgId),
         eq(invoices.status, "sent"),
+        sql`${invoices.dueDate} <= CURRENT_DATE`,
       ),
     )
     .returning();
   if (!updated) {
     const invoice = await requireInvoice(orgId, invoiceId);
     if (invoice.status === "overdue") return invoice; // idempoten
+    if (invoice.status === "sent") {
+      throw new InvoiceError(
+        `Invoice ${invoice.invoiceNumber} belum jatuh tempo (${invoice.dueDate}).`,
+      );
+    }
     throw new InvoiceError(
       `Hanya invoice sent bisa overdue (status: ${invoice.status}).`,
     );
@@ -502,12 +556,17 @@ export async function cancelInvoice(
 
 // ---------------- Queries ----------------
 
-export async function listInvoices(orgId: string): Promise<Invoice[]> {
+/** Daftar faktur terbaru; dibatasi 100 (cubic pr8 faktur/page:54). */
+export async function listInvoices(
+  orgId: string,
+  limit = 100,
+): Promise<Invoice[]> {
   return db
     .select()
     .from(invoices)
     .where(eq(invoices.orgId, orgId))
-    .orderBy(desc(invoices.createdAt));
+    .orderBy(desc(invoices.createdAt))
+    .limit(limit);
 }
 
 export async function getInvoice(

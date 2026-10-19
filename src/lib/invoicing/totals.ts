@@ -52,6 +52,9 @@ export interface TotalsResult {
 }
 
 /** Satu baris invoice/POS item: validasi qty/unitPrice + hitung total. */
+/** Kolom DB pos_sales_items.qty / invoice_items.qty adalah integer PG. */
+const QTY_DB_MAX = 2_147_483_647;
+
 export function computeLineTotals(
   qty: number,
   unitPrice: number,
@@ -60,6 +63,11 @@ export function computeLineTotals(
   assertInt(qty, "Jumlah (qty)");
   if (qty <= 0) {
     throw new TotalsError("Jumlah (qty) harus > 0.");
+  }
+  if (qty > QTY_DB_MAX) {
+    throw new TotalsError(
+      `Jumlah (qty) melebihi batas kolom DB (max ${QTY_DB_MAX}).`,
+    );
   }
   assertSafeAmount(unitPrice, "Harga satuan");
   const product = qty * unitPrice;

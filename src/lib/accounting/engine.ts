@@ -45,8 +45,8 @@ function isSafePositiveInt(v: number): boolean {
   return Number.isInteger(v) && v >= 0 && v <= MAX_LINE_AMOUNT;
 }
 
-/** Batas kolom journal_lines.debit/credit (integer PG = 2^31-1). */
-export const MAX_LINE_AMOUNT = 2_147_483_647;
+/** journal_lines.debit/credit kini bigint PG — batas JS number aman. */
+export const MAX_LINE_AMOUNT = Number.MAX_SAFE_INTEGER;
 
 /**
  * Validasi satu entri jurnal (draft maupun sebelum posting):
@@ -65,7 +65,7 @@ export function validateEntry(lines: JournalLineInput[]): string[] {
   for (const l of lines) {
     if (!isSafePositiveInt(l.debit) || !isSafePositiveInt(l.credit)) {
       errors.push(
-        `Baris ${l.accountCode}: debit/credit harus bilangan bulat >= 0 dan <= ${MAX_LINE_AMOUNT} (batas kolom DB).`,
+        `Baris ${l.accountCode}: debit/credit harus bilangan bulat >= 0 dan <= ${MAX_LINE_AMOUNT} (batas JS aman).`,
       );
       continue;
     }
@@ -103,17 +103,34 @@ export function validateEntry(lines: JournalLineInput[]): string[] {
   return errors;
 }
 
+/**
+ * Akumulasi tepat via BigInt; tolak eksplisit sebelum hasil tak bisa
+ * direpresentasikan aman sebagai number (cubic pr8 engine:114/:134) —
+ * rounded totals bisa membuat balanced salah. API tetap number.
+ */
+function sumExact(values: Iterable<number | bigint>): number {
+  let acc = 0n;
+  for (const v of values) {
+    acc += BigInt(v);
+  }
+  if (
+    acc > BigInt(Number.MAX_SAFE_INTEGER) ||
+    acc < -BigInt(Number.MAX_SAFE_INTEGER)
+  ) {
+    throw new AccountingError(
+      "Akumulasi melebihi Number.MAX_SAFE_INTEGER — tolak sebelum rounding.",
+    );
+  }
+  return Number(acc);
+}
+
 /** Saldo sisi normal satu akun: asset/expense = debit-credit; sisanya credit-debit. */
 export function accountBalance(
   lines: JournalLineInput[],
   type: AccountType,
 ): number {
   const normal = DEBIT_NORMAL.includes(type) ? 1 : -1;
-  let sum = 0;
-  for (const l of lines) {
-    sum += normal * (l.debit - l.credit);
-  }
-  return sum;
+  return sumExact(lines.map((l) => normal * (l.debit - l.credit)));
 }
 
 /** Neraca saldo dari kumpulan entri (masing-masing array baris).
@@ -122,23 +139,39 @@ export function trialBalance(
   entries: JournalLineInput[][],
   types: Record<string, AccountType>,
 ): TrialBalance {
-  const byAccount = new Map<string, { debit: number; credit: number }>();
-  let totalDebit = 0;
-  let totalCredit = 0;
+  const agg = new Map<string, { debit: bigint; credit: bigint }>();
   for (const entry of entries) {
     for (const l of entry) {
-      const cur = byAccount.get(l.accountCode) ?? { debit: 0, credit: 0 };
-      cur.debit += l.debit;
-      cur.credit += l.credit;
-      byAccount.set(l.accountCode, cur);
-      totalDebit += l.debit;
-      totalCredit += l.credit;
+      // types tanpa mapping = tolak; default "asset" memfabricate saldo
+      // normal salah utk liability/equity/revenue (cubic pr8 engine:141).
+      if (!types[l.accountCode]) {
+        throw new AccountingError(
+          `Tipe akun tidak dikenal untuk ${l.accountCode} — daftarkan akun di chart of accounts.`,
+        );
+      }
+      const cur = agg.get(l.accountCode) ?? { debit: 0n, credit: 0n };
+      cur.debit += BigInt(l.debit);
+      cur.credit += BigInt(l.credit);
+      agg.set(l.accountCode, cur);
     }
+  }
+  const totalDebit = sumExact([...agg.values()].map((a) => a.debit));
+  const totalCredit = sumExact([...agg.values()].map((a) => a.credit));
+  const byAccount = new Map<string, { debit: number; credit: number }>();
+  for (const [code, a] of agg) {
+    const debit = Number(a.debit);
+    const credit = Number(a.credit);
+    if (debit > Number.MAX_SAFE_INTEGER || credit > Number.MAX_SAFE_INTEGER) {
+      throw new AccountingError(
+        `Akumulasi akun ${code} melebihi Number.MAX_SAFE_INTEGER.`,
+      );
+    }
+    byAccount.set(code, { debit, credit });
   }
   const lines: TrialBalanceLine[] = [...byAccount.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([accountCode, agg]) => {
-      const type: AccountType = types[accountCode] ?? "asset";
+      const type = types[accountCode];
       return {
         accountCode,
         debit: agg.debit,

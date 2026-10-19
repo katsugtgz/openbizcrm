@@ -177,14 +177,17 @@ export async function createJournalEntry(
         })),
       )
       .returning();
-    await recordAudit({
-      orgId,
-      userId,
-      action: "accounting.entry.create",
-      entity: "journal_entry",
-      entityId: entry.id,
-      metadata: { date: input.date, lines: input.lines.length },
-    });
+    await recordAudit(
+      {
+        orgId,
+        userId,
+        action: "accounting.entry.create",
+        entity: "journal_entry",
+        entityId: entry.id,
+        metadata: { date: input.date, lines: input.lines.length },
+      },
+      tx,
+    );
     return { entry, lines: lineRows };
   });
 }
@@ -273,14 +276,17 @@ export async function postEntry(
         `Posting basi: entri sudah ${fresh?.status ?? "hilang"}.`,
       );
     }
-    await recordAudit({
-      orgId,
-      userId,
-      action: "accounting.entry.post",
-      entity: "journal_entry",
-      entityId: entryId,
-      metadata: { entryNumber: entry.entryNumber },
-    });
+    await recordAudit(
+      {
+        orgId,
+        userId,
+        action: "accounting.entry.post",
+        entity: "journal_entry",
+        entityId: entryId,
+        metadata: { entryNumber: entry.entryNumber },
+      },
+      tx,
+    );
     return updated;
   });
 }
@@ -328,6 +334,7 @@ export async function listLedger(
 /** Neraca saldo posted seluruh org. */
 export async function trialBalanceService(
   orgId: string,
+  period?: string, // "YYYY-MM" — batasi jurnal posted pada bulan kalender tsb
 ): Promise<TrialBalance & { accountById: Map<string, Account> }> {
   const accountRows = await db
     .select()
@@ -338,7 +345,13 @@ export async function trialBalanceService(
     .from(journalLines)
     .innerJoin(journalEntries, eq(journalLines.entryId, journalEntries.id))
     .where(
-      and(eq(journalLines.orgId, orgId), eq(journalEntries.status, "posted")),
+      and(
+        eq(journalLines.orgId, orgId),
+        eq(journalEntries.status, "posted"),
+        period
+          ? sql`to_char(${journalEntries.date}::text::date, 'YYYY-MM') = ${period}`
+          : undefined,
+      ),
     );
   const types: Record<string, AccountType> = {};
   const accountById = new Map<string, Account>();
@@ -369,6 +382,12 @@ export async function closePeriod(
   if (!/^\d{4}-\d{2}$/.test(yearMonth)) {
     throw new AccountingError("Format periode harus YYYY-MM.");
   }
+  const month = Number(yearMonth.slice(5));
+  if (month < 1 || month > 12) {
+    throw new AccountingError(
+      `Bulan periode tidak valid: ${yearMonth} (01-12).`,
+    );
+  }
   await db.transaction(async (tx) => {
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtext(${`acct:${orgId}`}))`,
@@ -378,13 +397,16 @@ export async function closePeriod(
       VALUES (${orgId}, (${yearMonth} || '-01')::date, true)
       ON CONFLICT (org_id, period_start) DO UPDATE SET closed = true
     `);
-  });
-  await recordAudit({
-    orgId,
-    userId,
-    action: "accounting.period.close",
-    entity: "fiscal_period",
-    entityId: yearMonth,
+    await recordAudit(
+      {
+        orgId,
+        userId,
+        action: "accounting.period.close",
+        entity: "fiscal_period",
+        entityId: yearMonth,
+      },
+      tx,
+    );
   });
 }
 
@@ -396,13 +418,24 @@ export interface IncomeStatement {
   netIncome: number;
 }
 
-export async function incomeStatement(orgId: string): Promise<IncomeStatement> {
-  const tb = await trialBalanceService(orgId);
+export async function incomeStatement(
+  orgId: string,
+  period?: string, // "YYYY-MM"
+): Promise<IncomeStatement> {
+  const tb = await trialBalanceService(orgId, period);
+  return incomeStatementFromTb(tb);
+}
+
+/** Laporan laba rugi dari trial balance yang sudah diambil (satu snapshot). */
+function incomeStatementFromTb(
+  tb: Awaited<ReturnType<typeof trialBalanceService>>,
+): IncomeStatement {
   const revenue: IncomeStatement["revenue"] = [];
   const expense: IncomeStatement["expense"] = [];
   for (const line of tb.lines) {
-    const account = [...tb.accountById.values()].find(
-      (a) => a.code === line.accountCode,
+    const account = tb.accountById.get(
+      [...tb.accountById.values()].find((a) => a.code === line.accountCode)
+        ?.id ?? "",
     );
     if (!account) continue;
     if (account.type === "revenue")
@@ -426,12 +459,17 @@ export interface BalanceSheet {
 }
 
 export async function balanceSheet(orgId: string): Promise<BalanceSheet> {
+  // Satu snapshot trial balance untuk SEMUA komponen (cubic P2
+  // accounting:444) — income statement dihitung dari tb yang sama, bukan
+  // query kedua, sehingga concurrent posting tidak bisa menghasilkan
+  // neraca self-inconsistent.
   const tb = await trialBalanceService(orgId);
   const pick = (type: AccountType) =>
     tb.lines
       .map((l) => ({
-        account: [...tb.accountById.values()].find(
-          (a) => a.code === l.accountCode,
+        account: tb.accountById.get(
+          [...tb.accountById.values()].find((a) => a.code === l.accountCode)
+            ?.id ?? "",
         )!,
         balance: l.balance,
       }))
@@ -441,8 +479,7 @@ export async function balanceSheet(orgId: string): Promise<BalanceSheet> {
   const equity = pick("equity");
   const sum = (xs: { balance: number }[]) =>
     xs.reduce((s, x) => s + x.balance, 0);
-  const income = await incomeStatement(orgId);
-  const retainedEarnings = income.netIncome;
+  const retainedEarnings = incomeStatementFromTb(tb).netIncome;
   const totalAsset = sum(asset);
   const totalRhs = sum(liability) + sum(equity) + retainedEarnings;
   return {
@@ -451,5 +488,56 @@ export async function balanceSheet(orgId: string): Promise<BalanceSheet> {
     equity,
     retainedEarnings,
     balanced: totalAsset === totalRhs,
+  };
+}
+
+// ---------------- Laporan gabungan (cubic pr8 laporan:67/:68) ----------------
+
+export interface FinancialReports {
+  income: IncomeStatement;
+  balance: BalanceSheet;
+}
+
+/**
+ * Satu pemanggilan untuk halaman laporan: snapshot kumulatif untuk neraca
+ * (laba ditahan kumulatif, `balanced` konsisten) plus — bila `period` diisi —
+ * snapshot kedua berfilter bulan kalender untuk Laba Rugi "periode berjalan".
+ * Tanpa period, satu scan saja (income dihitung dari snapshot yang sama).
+ */
+export async function financialReports(
+  orgId: string,
+  period?: string, // "YYYY-MM"
+): Promise<FinancialReports> {
+  const tb = await trialBalanceService(orgId);
+  const income = period
+    ? incomeStatementFromTb(await trialBalanceService(orgId, period))
+    : incomeStatementFromTb(tb);
+  const pick = (type: AccountType) =>
+    tb.lines
+      .map((l) => ({
+        account: tb.accountById.get(
+          [...tb.accountById.values()].find((a) => a.code === l.accountCode)
+            ?.id ?? "",
+        )!,
+        balance: l.balance,
+      }))
+      .filter((x) => x.account && x.account.type === type);
+  const sum = (xs: { balance: number }[]) =>
+    xs.reduce((s, x) => s + x.balance, 0);
+  const asset = pick("asset");
+  const liability = pick("liability");
+  const equity = pick("equity");
+  const retainedEarnings = incomeStatementFromTb(tb).netIncome;
+  const balanced =
+    sum(asset) === sum(liability) + sum(equity) + retainedEarnings;
+  return {
+    income,
+    balance: {
+      asset,
+      liability,
+      equity,
+      retainedEarnings,
+      balanced,
+    },
   };
 }

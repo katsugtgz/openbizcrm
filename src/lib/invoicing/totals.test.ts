@@ -86,3 +86,13 @@ describe("computeLineTotals", () => {
     expect(() => computeLineTotals(2, halfPlusOne)).toThrow(/MAX_SAFE/);
   });
 });
+
+describe("qty integer cap (cubic pr8 totals:60)", () => {
+  const INT_MAX = 2_147_483_647;
+  it("qty tepat 2^31-1 lolos, di atasnya ditolak sebelum kena kolom integer DB", () => {
+    expect(computeLineTotals(INT_MAX, 1).lineTotal).toBe(INT_MAX);
+    expect(() => computeLineTotals(INT_MAX + 1, 1)).toThrow(
+      /2.147.483.647|kolom|integer/i,
+    );
+  });
+});

@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
-import { requireOrgRole } from "@/lib/org-scope";
+import { hasRole, requireOrgRole } from "@/lib/org-scope";
 import { listAssets, monthlyDepreciation } from "@/lib/assets/service";
 import { listAccounts } from "@/lib/accounting/service";
 import { formatIDR } from "@/lib/money";
@@ -31,7 +31,7 @@ import { DisposeAssetButton } from "./dispose-asset-button";
 export const metadata = { title: "Aset Tetap" };
 
 async function Assets({ orgId, userId }: { orgId: string; userId: string }) {
-  await requireOrgRole(userId, orgId, "member");
+  const { role } = await requireOrgRole(userId, orgId, "member");
   const [assets, accounts] = await Promise.all([
     listAssets(orgId),
     listAccounts(orgId),
@@ -51,6 +51,7 @@ async function Assets({ orgId, userId }: { orgId: string; userId: string }) {
         <div className="flex gap-2">
           <RunDepreciationDialog />
           <AddAssetDialog
+            isAdmin={hasRole(role, "admin")}
             expenseAccounts={accounts
               .filter((a) => a.type === "expense")
               .map((a) => ({ id: a.id, code: a.code, name: a.name }))}
