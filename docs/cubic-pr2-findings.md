@@ -1,3 +1,5 @@
+> **Historical document — PR #2 cubic review transcript.** Archived for reference; the findings here were addressed in PR #2 and do NOT describe the current PR #7 work. See `docs/cubic-pr6-findings.md` for the current resolution status.
+
 === cubic-dev-ai[bot] [COMMENTED] 2026-10-18T17:07:51Z ===
 <!-- cubic:review-summary:start -->
 

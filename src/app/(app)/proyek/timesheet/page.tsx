@@ -217,16 +217,21 @@ export default async function TimesheetPage({
   // WIB kalender, bukan UTC.
   const today = jakartaDateISO(new Date());
   // Regex meloloskan "2024-13-01"; Date.parse menerima overflow
-  // ("2024-02-31" jadi 2 Maret) — normalisasi harus persis sama dengan input,
-  // kalau tidak fallback ke hari ini.
+  // ("2024-02-31" jadi 2 Maret) dan nilai tak valid membuat toISOString()
+  // melempar — cek validitas lalu bandingkan ISO ternormalisasi dengan input,
+  // kalau tidak sama fallback ke hari ini.
   const weekParam = /^\d{4}-\d{2}-\d{2}$/.test(sp.week ?? "") ? sp.week! : null;
-  const weekStart = mondayOf(
-    weekParam &&
-      new Date(`${weekParam}T00:00:00Z`).toISOString().slice(0, 10) ===
-        weekParam
-      ? weekParam
-      : today,
-  );
+  let validWeek: string | null = null;
+  if (weekParam) {
+    const parsed = new Date(`${weekParam}T00:00:00Z`);
+    if (
+      !Number.isNaN(parsed.getTime()) &&
+      parsed.toISOString().slice(0, 10) === weekParam
+    ) {
+      validWeek = weekParam;
+    }
+  }
+  const weekStart = mondayOf(validWeek ?? today);
   const prevWeek = new Date(
     new Date(`${weekStart}T00:00:00Z`).getTime() - 7 * DAY_MS,
   )

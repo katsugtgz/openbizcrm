@@ -119,6 +119,23 @@ describe("quotation totals", () => {
     ).toEqual({ subtotal: near, discountTotal: near, total: 0 });
   });
 
+  it("3.28% at MAX_SAFE_INTEGER discriminates old vs new ordering (cubic P2 quotation.test:91)", () => {
+    // Bentuk lama (lineTotal/100)*pct dan baru lineTotal*(pct/100) harus
+    // menghasilkan rupiah BERBEDA di kombinasi ini — test gagal melawan
+    // implementasi lama, lolos melawan yang baru. (66.67% TIDAK
+    // membedakan: kedua bentuk menghasilkan rupiah sama; 3.28% beda 1.)
+    const M = Number.MAX_SAFE_INTEGER;
+    expect(
+      calculateQuotationTotals([
+        { description: "A", quantity: 1, unitPrice: M, discountPercent: 3.28 },
+      ]),
+    ).toEqual({
+      subtotal: M,
+      discountTotal: 295_436_135_555_504,
+      total: M - 295_436_135_555_504,
+    });
+  });
+
   it("50% discount on MAX_SAFE_INTEGER - 1 rounds exactly (cubic P2 quotation:55)", () => {
     // near = 4503599627370495 ganjil; exact floor = ...494.75 → 495 (round).
     // Bentuk lama menghasilkan ...496 (1 lebih) karena (x/100)*50 tak exact.

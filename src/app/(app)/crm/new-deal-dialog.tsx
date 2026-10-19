@@ -48,6 +48,7 @@ export function NewDealDialog({
       const result = await createDealAction(formData);
       if (result.ok) {
         setOpen(false);
+        setCompanyId("");
         setTitle("");
         setValue("");
         toast.success("Deal dibuat.");
@@ -64,6 +65,7 @@ export function NewDealDialog({
   function handleOpenChange(next: boolean) {
     setOpen(next);
     if (!next) {
+      setCompanyId("");
       setTitle("");
       setValue("");
     }

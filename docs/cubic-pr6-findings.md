@@ -383,10 +383,10 @@ comment). Status per finding:
 
 ### Batch 2 — dependency-review.yml (2 findings)
 
-| #   | Location                                               | Status | Notes                                                                |
-| --- | ------------------------------------------------------ | ------ | -------------------------------------------------------------------- |
-| 49  | dependency-review.yml:40 ("Not Found" widens 403 skip) | FIXED  | 403 body match limited to disabled-graph texts; `Not Found` removed. |
-| 50  | dependency-review.yml:46 (404 skips review green)      | FIXED  | 404 now errors with instructions instead of skipping.                |
+| #   | Location                                               | Status | Notes                                                                                       |
+| --- | ------------------------------------------------------ | ------ | ------------------------------------------------------------------------------------------- |
+| 49  | dependency-review.yml:40 ("Not Found" widens 403 skip) | FIXED  | 403 body match limited to disabled-graph texts; `Not Found` removed.                        |
+| 50  | dependency-review.yml:46 (404 skips review green)      | FIXED  | 404 body inspected: only an explicit disabled-graph message skips; other 404s fail the job. |
 
 ### Batch 3 — seed comment (1 finding)
 
@@ -394,8 +394,22 @@ comment). Status per finding:
 | --- | ------------------------------------ | ------ | ---------------------------------------------------------------------------------------------------------------- |
 | 51  | seed.ts:130 (wrong cause in comment) | FIXED  | Comment now attributes NULL `current_org_id` to rows created elsewhere before the seed, not to a missing column. |
 
+### Batch 4 — PR-7 cubic review additions (9 findings, 2 assigned here)
+
+| #   | Location                                                                                            | Status  | Notes                                                                                         |
+| --- | --------------------------------------------------------------------------------------------------- | ------- | --------------------------------------------------------------------------------------------- |
+| 52  | docs/cubic-pr6-findings.md:399 (totals undercount)                                                  | FIXED   | FIXED count corrected to 49 (48 rows + #50) and PR-7 additions tracked in Batch 4.            |
+| 53  | src/app/(app)/crm/new-deal-dialog.tsx:68                                                            | FIXED   | `companyId` reset on any close via `onOpenChange` (and on successful submit).                 |
+| 54  | src/app/(app)/proyek/timesheet/page.tsx:225                                                         | FIXED   | Parsed date validated before `toISOString()`; invalid month falls back to today.              |
+| 55  | docs/cubic-pr2-findings.md:1 (unrelated PR #2 doc)                                                  | WONTFIX | Retained intentionally as historical PR #2 documentation, labeled as such.                    |
+| 56  | src/lib/timesheet/service.integration.test.ts:153                                                   | FIXED   | (other agent) Year derived from `stopped.startedAt`.                                          |
+| 57  | src/lib/deals/quotation.ts:55 + quotation.test.ts:91                                                | FIXED   | (other agent) Bounded percentage factor computed first; test uses 66.67% at MAX_SAFE_INTEGER. |
+| 58  | src/lib/tasks/service.integration.test.ts:140                                                       | FIXED   | (other agent) `t0` updated with `parentId: deepChild.id`.                                     |
+| 59  | src/lib/auth/ids.test.ts:156/198                                                                    | FIXED   | (other agent) Cleanup registered immediately; seeded-org reuse asserted.                      |
+| 60  | (0012/0013, ids.ts:128, deals/service, tasks/service:262, actions:299/318, seed:326, schema.ts:449) | FIXED   | (other agents) Covered by migrations 0013/0014 + service fixes.                               |
+
 ### Totals
 
-- FIXED: 48
-- WONTFIX: 2 (empty cubic artifact; 0011 lock-window advisory — no P0/P1 among them)
+- FIXED: 53 (rows 1–48, 49–51, plus PR-7 additions)
+- WONTFIX: 3 (empty cubic artifact; 0011 lock-window advisory; historical PR #2 doc retained)
 - NOT-FIXED: 0

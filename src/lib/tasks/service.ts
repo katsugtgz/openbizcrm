@@ -79,12 +79,13 @@ async function assertNotDescendant(
 }
 
 /**
- * Batas judul (cubic P2 0010:3): title masuk unique index b-tree
- * (org, project, daily_for_date, title) — judul >2K karakter bisa menabrak
- * limit ukuran entri b-tree PostgreSQL dan bikin insert gagal dengan error
- * mentah. Dipotong di boundary service, bukan UI.
+ * Batas judul (cubic P2 0010:3, tasks:87): title masuk unique index b-tree
+ * (org, project, daily_for_date, title) — limit entri b-tree PostgreSQL
+ * ~2704 byte. `.length` menghitung UTF-16, bukan byte UTF-8, jadi 2.000
+ * karakter non-ASCII bisa melewati batas byte dan insert gagal dengan error
+ * mentah. 500 UTF-16 unit × 4 byte UTF-8 maksimal = 2.000 byte < 2.704.
  */
-export const TASK_TITLE_MAX = 2000;
+export const TASK_TITLE_MAX = 500;
 
 export interface TaskInput {
   title: string;

@@ -14,7 +14,7 @@ import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
 import { requireOrgRole } from "@/lib/org-scope";
 import { jakartaDateISO } from "@/lib/attendance/rules";
-import { assertProjectInOrg } from "@/lib/tasks/service";
+import { assertProjectInOrg, TASK_TITLE_MAX } from "@/lib/tasks/service";
 import { recordAudit } from "@/lib/repos/audit-repo";
 import {
   createProject,
@@ -224,6 +224,10 @@ export async function createTemplateAction(
     : "medium";
   try {
     if (!name) throw new Error("Nama template wajib diisi.");
+    // Nama jadi title task daily — ikut batas b-tree index (cubic P2 0012:3),
+    // sama dengan TASK_TITLE_MAX di task service.
+    if (name.length > TASK_TITLE_MAX)
+      throw new Error(`Nama template maksimal ${TASK_TITLE_MAX} karakter.`);
     // createProject membutuhkan role admin; template dibatasi admin juga.
     await requireOrgRole(userId, orgId, "admin");
     await db.insert(taskTemplates).values({ orgId, name, priority });
