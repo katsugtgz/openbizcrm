@@ -113,6 +113,34 @@
       "when": 1792500000000,
       "tag": "0015_daily-date-repair",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1792600000000,
+      "tag": "0016_magical_jimmy_woo",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1792700000000,
+      "tag": "0017_confused_silvermane",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1792441390757,
+      "tag": "0018_white_ronan",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1792445760013,
+      "tag": "0019_bouncy_xorn",
+      "breakpoints": true
     }
   ]
 }

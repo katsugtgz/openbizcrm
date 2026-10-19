@@ -1,0 +1,2 @@
+ALTER TABLE "journal_lines" DROP CONSTRAINT "journal_lines_amounts_check";--> statement-breakpoint
+ALTER TABLE "journal_lines" ADD CONSTRAINT "journal_lines_amounts_check" CHECK (debit >= 0 AND credit >= 0 AND debit <= 9007199254740991 AND credit <= 9007199254740991 AND (debit > 0 AND credit = 0 OR credit > 0 AND debit = 0));

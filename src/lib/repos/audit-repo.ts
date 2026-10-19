@@ -5,18 +5,29 @@ import { OrgScopeError, requireOrgRole } from "@/lib/org-scope";
 
 export type AuditLog = typeof auditLogs.$inferSelect;
 
-export async function recordAudit(input: {
-  orgId: string;
-  userId: string;
-  action: string;
-  entity?: string | null;
-  entityId?: string | null;
-  metadata?: Record<string, unknown> | null;
-}): Promise<AuditLog> {
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Audit transaction-aware (cubic P1 audit-repo: accounting:183 /
+ * invoicing:271 / pos:57): pemanggil di dalam transaksi wajib pass tx agar
+ * audit tidak menyewa koneksi kedua dari global pool dan ikut atomic dengan
+ * transaksi. Default `db` untuk pemanggil tanpa tx.
+ */
+export async function recordAudit(
+  input: {
+    orgId: string;
+    userId: string;
+    action: string;
+    entity?: string | null;
+    entityId?: string | null;
+    metadata?: Record<string, unknown> | null;
+  },
+  exec: Tx | typeof db = db,
+): Promise<AuditLog> {
   // The attributed user must actually belong to the org, or any caller could
   // fabricate cross-tenant / falsely attributed audit history
   // (cubic P2 audit-repo:16).
-  const [membership] = await db
+  const [membership] = await exec
     .select({ id: orgMemberships.id })
     .from(orgMemberships)
     .where(
@@ -32,7 +43,7 @@ export async function recordAudit(input: {
       "Pengguna bukan anggota organisasi ini.",
     );
   }
-  const [log] = await db
+  const [log] = await exec
     .insert(auditLogs)
     .values({
       orgId: input.orgId,
@@ -45,6 +56,8 @@ export async function recordAudit(input: {
     .returning();
   return log;
 }
+
+export type AuditTx = Tx;
 
 export async function listAuditLogs(
   userId: string,

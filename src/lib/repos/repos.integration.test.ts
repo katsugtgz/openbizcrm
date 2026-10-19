@@ -3,6 +3,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq, and } from "drizzle-orm";
 import {
   approvalRequests,
+  auditLogs,
   orgMemberships,
   organizations,
   users,
@@ -227,6 +228,35 @@ describe("repos integration", () => {
         action: "it.forged",
       }),
     ).rejects.toThrow(OrgScopeError);
+
+    // recordAudit menerima executor tx: baris audit jadi atomik dengan
+    // transaksi pemanggil (cubic P1 accounting:183 / invoicing:271 /
+    // pos:57) — rollback tx menghapus audit, baris pre-commit tidak
+    // terlihat di snapshot luar.
+    let auditId!: string;
+    await db.transaction(async (tx) => {
+      const log = await recordAudit(
+        {
+          orgId: org.id,
+          userId: owner.id,
+          action: "it.tx.probe",
+          entity: "branch",
+          entityId: branch.id,
+        },
+        tx,
+      );
+      auditId = log.id;
+      const [outside] = await db
+        .select()
+        .from(auditLogs)
+        .where(eq(auditLogs.id, auditId));
+      expect(outside).toBeUndefined(); // belum commit
+    });
+    const [committed] = await db
+      .select()
+      .from(auditLogs)
+      .where(eq(auditLogs.id, auditId));
+    expect(committed?.action).toBe("it.tx.probe"); // commit bersama tx
   });
 
   itDb(
