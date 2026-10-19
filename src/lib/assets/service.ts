@@ -366,6 +366,19 @@ export async function dispose(
       .returning();
     if (!updated)
       throw new NotFoundError("Aset tidak ditemukan / sudah disposed.");
+    // cubic r3 assets:369 — audit ikut tx (in-tx pattern), jangan hilang
+    // saat round-2 refactor dispose.
+    await recordAudit(
+      {
+        orgId,
+        userId,
+        action: "asset.dispose",
+        entity: "fixed_asset",
+        entityId: assetId,
+        metadata: { disposalDate, name: updated.name },
+      },
+      tx,
+    );
     return updated;
   });
 }

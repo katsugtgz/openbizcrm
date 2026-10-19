@@ -52,9 +52,9 @@ export interface TotalsResult {
 }
 
 /** Satu baris invoice/POS item: validasi qty/unitPrice + hitung total. */
-/** Kolom DB pos_sales_items.qty / invoice_items.qty adalah integer PG. */
-const QTY_DB_MAX = 2_147_483_647;
+const QTY_DB_MAX = 2_147_483_647; // kolom DB pos_sale_items/invoice_items integer PG
 
+/** Satu baris invoice/POS item: validasi qty/unitPrice + hitung total. */
 export function computeLineTotals(
   qty: number,
   unitPrice: number,

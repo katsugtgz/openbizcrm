@@ -90,7 +90,7 @@ export async function restock(
   // Expected-state: stock saat baca; berubah => tolak (race kecil, cukup).
   // Kartu stok wajib: mutasi restock dicatat di transaksi yang sama dengan
   // perubahan stockQty (cubic pr8 schema:761).
-  await db.transaction(async (tx) => {
+  const updated = await db.transaction(async (tx) => {
     const [product] = await tx
       .select()
       .from(products)
@@ -120,13 +120,10 @@ export async function restock(
       },
       tx,
     );
+    // cubic r3 pos:93 — kembalikan hasil dalam tx; post-commit re-read
+    // bisa menampilkan stock operasi concurrent lain.
     return updated;
   });
-  const [updated] = await db
-    .select()
-    .from(products)
-    .where(eq(products.id, productId))
-    .limit(1);
   return updated;
 }
 

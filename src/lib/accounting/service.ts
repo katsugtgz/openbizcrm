@@ -8,7 +8,11 @@ import {
   type JournalEntry,
   type JournalLine,
 } from "@/db/schema";
-import { NotFoundError, requireOrgRole } from "@/lib/org-scope";
+import {
+  NotFoundError,
+  OrgScopeError,
+  requireOrgRole,
+} from "@/lib/org-scope";
 import { recordAudit } from "@/lib/repos/audit-repo";
 import {
   AccountingError,
@@ -336,6 +340,10 @@ export async function trialBalanceService(
   orgId: string,
   period?: string, // "YYYY-MM" — batasi jurnal posted pada bulan kalender tsb
 ): Promise<TrialBalance & { accountById: Map<string, Account> }> {
+  // cubic r3: periode tak-valid -> error jelas, bukan laporan kosong diam
+  if (period !== undefined && !/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) {
+    throw new NotFoundError("Periode harus format YYYY-MM (bulan 01-12).");
+  }
   const accountRows = await db
     .select()
     .from(accounts)
@@ -458,12 +466,11 @@ export interface BalanceSheet {
   balanced: boolean;
 }
 
-export async function balanceSheet(orgId: string): Promise<BalanceSheet> {
-  // Satu snapshot trial balance untuk SEMUA komponen (cubic P2
-  // accounting:444) — income statement dihitung dari tb yang sama, bukan
-  // query kedua, sehingga concurrent posting tidak bisa menghasilkan
-  // neraca self-inconsistent.
-  const tb = await trialBalanceService(orgId);
+// cubic r3 accounting:515 — SATU implementasi neraca; balanceSheet dan
+// financialReports memakai helper ini supaya tidak drift.
+function balanceFromTb(
+  tb: Awaited<ReturnType<typeof trialBalanceService>>,
+): BalanceSheet {
   const pick = (type: AccountType) =>
     tb.lines
       .map((l) => ({
@@ -474,11 +481,11 @@ export async function balanceSheet(orgId: string): Promise<BalanceSheet> {
         balance: l.balance,
       }))
       .filter((x) => x.account && x.account.type === type);
+  const sum = (xs: { balance: number }[]) =>
+    xs.reduce((s, x) => s + x.balance, 0);
   const asset = pick("asset");
   const liability = pick("liability");
   const equity = pick("equity");
-  const sum = (xs: { balance: number }[]) =>
-    xs.reduce((s, x) => s + x.balance, 0);
   const retainedEarnings = incomeStatementFromTb(tb).netIncome;
   const totalAsset = sum(asset);
   const totalRhs = sum(liability) + sum(equity) + retainedEarnings;
@@ -489,6 +496,15 @@ export async function balanceSheet(orgId: string): Promise<BalanceSheet> {
     retainedEarnings,
     balanced: totalAsset === totalRhs,
   };
+}
+
+export async function balanceSheet(orgId: string): Promise<BalanceSheet> {
+  // Satu snapshot trial balance untuk SEMUA komponen (cubic P2
+  // accounting:444) — income statement dihitung dari tb yang sama, bukan
+  // query kedua, sehingga concurrent posting tidak bisa menghasilkan
+  // neraca self-inconsistent.
+  const tb = await trialBalanceService(orgId);
+  return balanceFromTb(tb);
 }
 
 // ---------------- Laporan gabungan (cubic pr8 laporan:67/:68) ----------------
@@ -512,32 +528,11 @@ export async function financialReports(
   const income = period
     ? incomeStatementFromTb(await trialBalanceService(orgId, period))
     : incomeStatementFromTb(tb);
-  const pick = (type: AccountType) =>
-    tb.lines
-      .map((l) => ({
-        account: tb.accountById.get(
-          [...tb.accountById.values()].find((a) => a.code === l.accountCode)
-            ?.id ?? "",
-        )!,
-        balance: l.balance,
-      }))
-      .filter((x) => x.account && x.account.type === type);
-  const sum = (xs: { balance: number }[]) =>
-    xs.reduce((s, x) => s + x.balance, 0);
-  const asset = pick("asset");
-  const liability = pick("liability");
-  const equity = pick("equity");
-  const retainedEarnings = incomeStatementFromTb(tb).netIncome;
-  const balanced =
-    sum(asset) === sum(liability) + sum(equity) + retainedEarnings;
+  // cubic r3 accounting:515 — hitung neraca lewat SATU implementasi
+  // (helper yang sama dipakai balanceSheet) supaya tidak drift.
+  const balance = balanceFromTb(tb);
   return {
     income,
-    balance: {
-      asset,
-      liability,
-      equity,
-      retainedEarnings,
-      balanced,
-    },
+    balance,
   };
 }
