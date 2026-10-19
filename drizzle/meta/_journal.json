@@ -50,6 +50,20 @@
       "when": 1792370863329,
       "tag": "0006_natural_millenium_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1792374903505,
+      "tag": "0007_brown_gabe_jones",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792375013015,
+      "tag": "0008_curious_wendell_vaughn",
+      "breakpoints": true
     }
   ]
 }

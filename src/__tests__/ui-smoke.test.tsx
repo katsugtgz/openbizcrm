@@ -82,8 +82,9 @@ describe("app shell", () => {
       "href",
       "/dashboard",
     );
-    // Placeholder hrefs stay inert (#)
-    expect(within(nav).getByText("CRM")).toHaveAttribute("href", "#");
+    // CRM & Proyek now real routes (was placeholder # before module build-out)
+    expect(within(nav).getByText("CRM")).toHaveAttribute("href", "/crm");
+    expect(within(nav).getByText("Proyek")).toHaveAttribute("href", "/proyek");
 
     // Org display renders (cubic ui-smoke.test.tsx:59 — asserted, not assumed)
     expect(screen.getByText("Organisasi")).toBeInTheDocument();

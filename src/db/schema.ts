@@ -9,7 +9,10 @@ import {
   jsonb,
   unique,
   index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import type { ApprovalRequest } from "@/lib/approval";
 import type { Payslip as PayslipBreakdown } from "@/lib/payroll/engine";
 
@@ -357,3 +360,292 @@ export const payslips = pgTable(
 
 export type PayrollRun = typeof payrollRuns.$inferSelect;
 export type Payslip = typeof payslips.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// Proyek / Task / Timesheet
+// ---------------------------------------------------------------------------
+
+export const projectStatusEnum = pgEnum("project_status", [
+  "planning",
+  "active",
+  "on_hold",
+  "done",
+  "cancelled",
+]);
+
+export const taskStatusEnum = pgEnum("task_status", [
+  "todo",
+  "in_progress",
+  "review",
+  "done",
+  "blocked",
+]);
+
+export const taskPriorityEnum = pgEnum("task_priority", [
+  "low",
+  "medium",
+  "high",
+  "urgent",
+]);
+
+export const projects = pgTable(
+  "projects",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    // FK real: crm_companies sudah ada di schema (modul CRM).
+    clientCompanyId: uuid("client_company_id").references(
+      () => crmCompanies.id,
+      { onDelete: "set null" },
+    ),
+    name: text("name").notNull(),
+    /** Auto-gen "PRJ-001" per org (project-repo.createProject). */
+    code: text("code").notNull(),
+    status: projectStatusEnum("status").notNull().default("planning"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  // Backstop race auto-gen code; juga mempercepat filter org+code.
+  (t) => [unique("projects_org_code_unique").on(t.orgId, t.code)],
+);
+
+export const tasks = pgTable(
+  "tasks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    parentId: uuid("parent_id").references((): AnyPgColumn => tasks.id, {
+      onDelete: "set null",
+    }),
+    title: text("title").notNull(),
+    description: text("description"),
+    status: taskStatusEnum("status").notNull().default("todo"),
+    priority: taskPriorityEnum("priority").notNull().default("medium"),
+    assigneeId: uuid("assignee_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    /** Urutan kanban dalam kolom status; renumber saat reorder. */
+    position: integer("position").notNull().default(0),
+    dueDate: date("due_date"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  // Kanban: fetch kolom per proyek terurut posisi (cubic P2 0000:2).
+  (t) => [
+    index("tasks_project_status_pos_idx").on(t.projectId, t.status, t.position),
+  ],
+);
+
+export const taskTemplates = pgTable("task_templates", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  orgId: uuid("org_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  description: text("description"),
+  priority: taskPriorityEnum("priority").notNull().default("medium"),
+});
+
+export const timesheets = pgTable(
+  "timesheets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    taskId: uuid("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+    /** Menit (bulat) saat stop; null selama timer terbuka. */
+    minutes: integer("minutes"),
+    notes: text("notes"),
+  },
+  (t) => [
+    // Satu timer terbuka per user — backstop DB untuk cek service (race).
+    uniqueIndex("timesheets_open_timer_unique")
+      .on(t.userId)
+      .where(sql`ended_at IS NULL`),
+    index("timesheets_org_task_idx").on(t.orgId, t.taskId),
+  ],
+);
+
+export type Project = typeof projects.$inferSelect;
+export type Task = typeof tasks.$inferSelect;
+export type TaskTemplate = typeof taskTemplates.$inferSelect;
+export type Timesheet = typeof timesheets.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// CRM
+// ---------------------------------------------------------------------------
+
+export const crmDealStatusEnum = pgEnum("crm_deal_status", [
+  "open",
+  "won",
+  "lost",
+]);
+
+export const crmQuotationStatusEnum = pgEnum("crm_quotation_status", [
+  "draft",
+  "sent",
+  "accepted",
+  "rejected",
+]);
+
+export const crmActivityTypeEnum = pgEnum("crm_activity_type", [
+  "call",
+  "task",
+  "meeting",
+  "note",
+]);
+
+export const crmCompanies = pgTable(
+  "crm_companies",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    industry: text("industry"),
+    ownerUserId: uuid("owner_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  // Org-scoped company lists filter org_id + order name (cubic P2 0000:13).
+  (t) => [
+    unique("crm_companies_org_name_unique").on(t.orgId, t.name),
+    index("crm_companies_org_idx").on(t.orgId, t.name),
+  ],
+);
+
+export const crmContacts = pgTable(
+  "crm_contacts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => crmCompanies.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    email: text("email"),
+    phone: text("phone"),
+    position: text("position"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [index("crm_contacts_org_company_idx").on(t.orgId, t.companyId)],
+);
+
+export const crmPipelines = pgTable(
+  "crm_pipelines",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => crmCompanies.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    unique("crm_pipelines_org_company_name_unique").on(
+      t.orgId,
+      t.companyId,
+      t.name,
+    ),
+  ],
+);
+
+export const crmStages = pgTable(
+  "crm_stages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    pipelineId: uuid("pipeline_id")
+      .notNull()
+      .references(() => crmPipelines.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** Urutan tampil kanban; 0 pertama. */
+    position: integer("position").notNull(),
+  },
+  (t) => [
+    unique("crm_stages_pipeline_position_unique").on(t.pipelineId, t.position),
+  ],
+);
+
+export const crmDeals = pgTable(
+  "crm_deals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    pipelineId: uuid("pipeline_id")
+      .notNull()
+      .references(() => crmPipelines.id, { onDelete: "cascade" }),
+    stageId: uuid("stage_id")
+      .notNull()
+      .references(() => crmStages.id, { onDelete: "cascade" }),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => crmCompanies.id, { onDelete: "cascade" }),
+    contactId: uuid("contact_id").references(() => crmContacts.id, {
+      onDelete: "set null",
+    }),
+    title: text("title").notNull(),
+    /** Nilai deal, rupiah integer (assertSafeAmount). */
+    value: integer("value").notNull().default(0),
+    status: crmDealStatusEnum("status").notNull().default("open"),
+    quotationStatus: crmQuotationStatusEnum("quotation_status")
+      .notNull()
+      .default("draft"),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  // Kanban board: ambil deals per org + pipeline, urut stage.
+  (t) => [index("crm_deals_org_pipeline_idx").on(t.orgId, t.pipelineId)],
+);
+
+export const crmActivities = pgTable(
+  "crm_activities",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    dealId: uuid("deal_id")
+      .notNull()
+      .references(() => crmDeals.id, { onDelete: "cascade" }),
+    userId: uuid("user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    type: crmActivityTypeEnum("type").notNull(),
+    content: text("content").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  // Timeline deal: filter deal_id, sort created_at desc.
+  (t) => [index("crm_activities_deal_created_idx").on(t.dealId, t.createdAt)],
+);
+
+export type CrmCompany = typeof crmCompanies.$inferSelect;
+export type CrmContact = typeof crmContacts.$inferSelect;
+export type CrmPipeline = typeof crmPipelines.$inferSelect;
+export type CrmStage = typeof crmStages.$inferSelect;
+export type CrmDeal = typeof crmDeals.$inferSelect;
+export type CrmActivity = typeof crmActivities.$inferSelect;

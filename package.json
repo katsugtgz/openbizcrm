@@ -36,6 +36,7 @@
     "db:seed": "bun src/db/seed.ts"
   },
   "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
     "@neondatabase/serverless": "^1.2.0",
     "@workos-inc/authkit-nextjs": "^4.4.0",
     "@workos-inc/node": "^10.7.0",
