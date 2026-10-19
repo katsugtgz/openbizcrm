@@ -1,10 +1,12 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, max, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { projects, tasks } from "@/db/schema";
 import { NotFoundError, OrgScopeError, requireOrgRole } from "@/lib/org-scope";
 import { recordAudit } from "@/lib/repos/audit-repo";
 import { requireProject } from "@/lib/repos/project-repo";
 import { moveAndRenumber } from "./reorder";
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export type Task = typeof tasks.$inferSelect;
 
@@ -46,6 +48,32 @@ async function assertParent(
   }
 }
 
+/**
+ * Cycle guard (cubic P2 tasks:129): parentId tidak boleh turunan dari task.
+ * Jalan naik rantai parent dari kandidat; kalau ketemu task => cycle.
+ */
+async function assertNotDescendant(
+  orgId: string,
+  taskId: string,
+  parentId: string,
+): Promise<void> {
+  let cursor: string | null = parentId;
+  for (let depth = 0; depth < 32 && cursor; depth++) {
+    if (cursor === taskId) {
+      throw new OrgScopeError(
+        "NO_MEMBERSHIP",
+        "Parent task tidak boleh merupakan turunan dari task ini.",
+      );
+    }
+    const [row] = await db
+      .select({ parentId: tasks.parentId })
+      .from(tasks)
+      .where(and(eq(tasks.id, cursor), eq(tasks.orgId, orgId)))
+      .limit(1);
+    cursor = row?.parentId ?? null;
+  }
+}
+
 export interface TaskInput {
   title: string;
   description?: string | null;
@@ -54,26 +82,6 @@ export interface TaskInput {
   assigneeId?: string | null;
   parentId?: string | null;
   dueDate?: string | null; // "YYYY-MM-DD"
-}
-
-/** Next position dalam satu kolom kanban (max + 1). */
-async function nextPosition(
-  orgId: string,
-  projectId: string,
-  status: TaskStatus,
-): Promise<number> {
-  const rows = await db
-    .select({ position: tasks.position })
-    .from(tasks)
-    .where(
-      and(
-        eq(tasks.orgId, orgId),
-        eq(tasks.projectId, projectId),
-        eq(tasks.status, status),
-      ),
-    )
-    .orderBy(asc(tasks.position));
-  return rows.length > 0 ? rows[rows.length - 1].position + 1 : 0;
 }
 
 export async function createTask(
@@ -91,21 +99,40 @@ export async function createTask(
     await assertParent(orgId, projectId, input.parentId);
   }
   const status = input.status ?? "todo";
-  const [row] = await db
-    .insert(tasks)
-    .values({
-      orgId,
-      projectId,
-      title: input.title,
-      description: input.description ?? null,
-      status,
-      priority: input.priority ?? "medium",
-      assigneeId: input.assigneeId ?? null,
-      parentId: input.parentId ?? null,
-      dueDate: input.dueDate ?? null,
-      position: await nextPosition(orgId, projectId, status),
-    })
-    .returning();
+  // Alokasi position di-serialize per proyek: lock baris project FOR UPDATE
+  // di dalam transaksi, jadi max+1 dua request konkuren tidak bentrok
+  // (cubic P2 tasks:106).
+  const row = await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select id from projects where id = ${projectId} for update`,
+    );
+    const [agg] = await tx
+      .select({ maxPos: max(tasks.position) })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.orgId, orgId),
+          eq(tasks.projectId, projectId),
+          eq(tasks.status, status),
+        ),
+      );
+    const [r] = await tx
+      .insert(tasks)
+      .values({
+        orgId,
+        projectId,
+        title: input.title,
+        description: input.description ?? null,
+        status,
+        priority: input.priority ?? "medium",
+        assigneeId: input.assigneeId ?? null,
+        parentId: input.parentId ?? null,
+        dueDate: input.dueDate ?? null,
+        position: (agg?.maxPos ?? -1) + 1,
+      })
+      .returning();
+    return r;
+  });
   await recordAudit({
     orgId,
     userId,
@@ -125,8 +152,18 @@ export async function updateTask(
 ): Promise<Task> {
   await requireOrgRole(userId, orgId, "member");
   const task = await requireTask(orgId, taskId);
+  if (input.title !== undefined && !input.title.trim()) {
+    throw new OrgScopeError("INSUFFICIENT_ROLE", "Judul task wajib diisi.");
+  }
   if (input.parentId) {
+    if (input.parentId === taskId) {
+      throw new OrgScopeError(
+        "NO_MEMBERSHIP",
+        "Task tidak bisa menjadi parent dirinya sendiri.",
+      );
+    }
     await assertParent(orgId, task.projectId, input.parentId);
+    await assertNotDescendant(orgId, taskId, input.parentId);
   }
   const [row] = await db
     .update(tasks)
@@ -176,6 +213,25 @@ export async function listTasks(
     .orderBy(asc(tasks.position));
 }
 
+/** Satu kolom kanban (id + position, urut position). */
+async function column(
+  orgId: string,
+  projectId: string,
+  status: TaskStatus,
+): Promise<{ id: string; position: number }[]> {
+  return db
+    .select({ id: tasks.id, position: tasks.position })
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.orgId, orgId),
+        eq(tasks.projectId, projectId),
+        eq(tasks.status, status),
+      ),
+    )
+    .orderBy(asc(tasks.position));
+}
+
 /**
  * Kanban reorder: pindahkan task ke status & index tujuan, renumber kolom
  * asal + tujuan. Urutan relatif item lain dijaga (moveAndRenumber, TDD).
@@ -190,45 +246,58 @@ export async function reorderTask(
   await requireOrgRole(userId, orgId, "member");
   const task = await requireTask(orgId, taskId);
 
-  // Kolom tujuan (urut position saat ini).
-  const target = await db
-    .select({ id: tasks.id, position: tasks.position })
-    .from(tasks)
-    .where(
-      and(
-        eq(tasks.orgId, orgId),
-        eq(tasks.projectId, task.projectId),
-        eq(tasks.status, toStatus),
-      ),
-    )
-    .orderBy(asc(tasks.position));
-
   if (task.status === toStatus) {
     // WITHIN: kolom tujuan = kolom asal (task masih di dalamnya).
-    const { updates } = moveAndRenumber(target, taskId, toIndex);
-    await persistPositions(orgId, updates);
-    return;
+    const col = await column(orgId, task.projectId, toStatus);
+    const { updates } = moveAndRenumber(col, taskId, toIndex);
+    await db.transaction((tx) => persistPositions(tx, orgId, updates));
+  } else {
+    // BETWEEN: renumber KEDUA kolom (cubic P2 tasks:209) dan persist
+    // position kolom tujuan termasuk task yang dipindah (cubic P1 tasks:222).
+    await db.transaction(async (tx) => {
+      const source = await tx
+        .select({ id: tasks.id, position: tasks.position })
+        .from(tasks)
+        .where(
+          and(
+            eq(tasks.orgId, orgId),
+            eq(tasks.projectId, task.projectId),
+            eq(tasks.status, task.status),
+          ),
+        )
+        .orderBy(asc(tasks.position));
+      const sourceRest = source.filter((t) => t.id !== taskId);
+      const sourceUpdates = sourceRest
+        .map((t, i) => ({ id: t.id, position: i }))
+        .filter((u, i) => u.position !== sourceRest[i].position);
+
+      const target = await tx
+        .select({ id: tasks.id, position: tasks.position })
+        .from(tasks)
+        .where(
+          and(
+            eq(tasks.orgId, orgId),
+            eq(tasks.projectId, task.projectId),
+            eq(tasks.status, toStatus),
+          ),
+        )
+        .orderBy(asc(tasks.position));
+      const index = Math.min(Math.max(toIndex, 0), target.length);
+      const inserted = [
+        ...target.slice(0, index),
+        { id: taskId, position: task.position },
+        ...target.slice(index),
+      ];
+      const { updates } = moveAndRenumber(inserted, taskId, index);
+      await tx
+        .update(tasks)
+        .set({ status: toStatus, position: index })
+        .where(and(eq(tasks.id, taskId), eq(tasks.orgId, orgId)));
+      await persistPositions(tx, orgId, [...sourceUpdates, ...updates]);
+    });
   }
 
-  // BETWEEN: keluarkan task dari kolom asal, hitung index tujuan pada
-  // kolom tujuan tanpa task itu, lalu sisipkan.
-  const withoutMoving = target.filter((t) => t.id !== taskId);
-  const index = Math.min(Math.max(toIndex, 0), withoutMoving.length);
-  const inserted = [
-    ...withoutMoving.slice(0, index),
-    { id: taskId, position: task.position },
-    ...withoutMoving.slice(index),
-  ];
-  const { updates } = moveAndRenumber(
-    inserted.map((it, i) => ({ ...it, position: i })),
-    taskId,
-    index,
-  );
-  await db
-    .update(tasks)
-    .set({ status: toStatus })
-    .where(and(eq(tasks.id, taskId), eq(tasks.orgId, orgId)));
-  await persistPositions(orgId, updates);
+  // Audit untuk kedua jalur (cubic P2 tasks:210).
   await recordAudit({
     orgId,
     userId,
@@ -240,11 +309,12 @@ export async function reorderTask(
 }
 
 async function persistPositions(
+  tx: Tx,
   orgId: string,
   updates: { id: string; position: number }[],
 ): Promise<void> {
   for (const u of updates) {
-    await db
+    await tx
       .update(tasks)
       .set({ position: u.position })
       .where(and(eq(tasks.id, u.id), eq(tasks.orgId, orgId)));

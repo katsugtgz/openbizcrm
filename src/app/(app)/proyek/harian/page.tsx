@@ -2,7 +2,8 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { asc, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { taskTemplates, users as schemaUsers } from "@/db/schema";
+import { taskTemplates } from "@/db/schema";
+import { resolveSessionIds } from "@/lib/auth/ids";
 import { session } from "@/lib/auth";
 import { requireOrgRole } from "@/lib/org-scope";
 import { listProjects } from "@/lib/repos/project-repo";
@@ -135,16 +136,12 @@ function SectionSkeleton() {
 export default async function TugasHarianPage() {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  const orgId =
-    user.organizationId ??
-    (
-      await db
-        .select({ orgId: schemaUsers.currentOrgId })
-        .from(schemaUsers)
-        .where(eq(schemaUsers.id, user.id))
-        .limit(1)
-    )[0]?.orgId;
-  if (!orgId) redirect("/dashboard");
+  // WorkOS session IDs -> internal UUIDs (cubic P1 harian:139). Guard runs
+  // at the page boundary, not inside the streamed child (cubic P2 harian:49).
+  const ids = await resolveSessionIds(user);
+  if (!ids) redirect("/dashboard");
+  const { userId, orgId } = ids!;
+  await requireOrgRole(userId, orgId, "admin");
 
   return (
     <div className="flex flex-col gap-6">
@@ -155,7 +152,7 @@ export default async function TugasHarianPage() {
         </p>
       </div>
       <Suspense fallback={<SectionSkeleton />}>
-        <TemplateSection orgId={orgId} userId={user.id} />
+        <TemplateSection orgId={orgId} userId={userId} />
       </Suspense>
     </div>
   );

@@ -130,6 +130,11 @@ jobs:
       - name: Push schema to Postgres
         run: bun run db:push
 
+      # Integration tests resolve against seeded rows (seed-owner-1,
+      # org_contoh-sejahtera) — seed is idempotent (advisory lock).
+      - name: Seed database
+        run: bun run db:seed
+
       - name: Run tests with coverage
         run: npx --no-install vitest run --coverage
 

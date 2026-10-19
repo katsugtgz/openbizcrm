@@ -1,0 +1,1 @@
+ALTER TABLE "tasks" ADD CONSTRAINT "tasks_org_project_title_due_unique" UNIQUE("org_id","project_id","title","due_date");

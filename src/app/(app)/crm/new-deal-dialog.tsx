@@ -31,6 +31,10 @@ export function NewDealDialog({
 }) {
   const [open, setOpen] = useState(false);
   const [companyId, setCompanyId] = useState("");
+  // Kontrol manual: form action React 19 me-reset uncontrolled input meski
+  // submit gagal, jadi judul/nilai diketik hilang (cubic P2 new-deal:61).
+  const [title, setTitle] = useState("");
+  const [value, setValue] = useState("");
   const [pending, startTransition] = useTransition();
   const router = useRouter();
 
@@ -44,6 +48,8 @@ export function NewDealDialog({
       const result = await createDealAction(formData);
       if (result.ok) {
         setOpen(false);
+        setTitle("");
+        setValue("");
         toast.success("Deal dibuat.");
         if (result.redirectTo) router.push(result.redirectTo);
       } else {
@@ -90,6 +96,8 @@ export function NewDealDialog({
               id="deal-title"
               name="title"
               required
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
               placeholder="Proyek ERP ABC"
             />
           </div>
@@ -99,6 +107,8 @@ export function NewDealDialog({
               id="deal-value"
               name="value"
               inputMode="numeric"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
               placeholder="15000000"
             />
           </div>

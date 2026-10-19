@@ -2,8 +2,9 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { employees, payslips, users as schemaUsers } from "@/db/schema";
+import { employees, payslips } from "@/db/schema";
 import { session } from "@/lib/auth";
+import { resolveSessionIds } from "@/lib/auth/ids";
 import { requireOrgRole } from "@/lib/org-scope";
 import { PayrollError, getRun } from "@/lib/payroll/service";
 import { formatIDR } from "@/lib/money";
@@ -52,21 +53,15 @@ export default async function PayslipPage({
   const { runId, employeeId } = await params;
   const user = await session.getSession();
   if (!user) redirect("/login");
-  const orgId =
-    user.organizationId ??
-    (
-      await db
-        .select({ orgId: schemaUsers.currentOrgId })
-        .from(schemaUsers)
-        .where(eq(schemaUsers.id, user.id))
-        .limit(1)
-    )[0]?.orgId;
-  if (!orgId) throw new Error("Tidak ada organisasi aktif.");
-  await requireOrgRole(user.id, orgId, "member");
+  // WorkOS session IDs -> internal UUIDs (cubic P1).
+  const ids = await resolveSessionIds(user);
+  if (!ids) throw new Error("Tidak ada organisasi aktif.");
+  const { userId, orgId } = ids;
+  await requireOrgRole(userId, orgId, "member");
 
   let run;
   try {
-    run = await getRun(user.id, orgId, runId);
+    run = await getRun(userId, orgId, runId);
   } catch (error) {
     if (error instanceof PayrollError && error.code === "NOT_FOUND") notFound();
     throw error;

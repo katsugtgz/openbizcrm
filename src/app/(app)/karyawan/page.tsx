@@ -1,10 +1,8 @@
 import Link from "next/link";
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
-import { eq } from "drizzle-orm";
-import { db } from "@/db";
-import { users as schemaUsers } from "@/db/schema";
 import { session } from "@/lib/auth";
+import { resolveSessionIds } from "@/lib/auth/ids";
 import { listEmployees } from "@/lib/repos/hrm-repo";
 import { formatIDR } from "@/lib/money";
 import { KaryawanToasts } from "./toasts";
@@ -120,16 +118,10 @@ export default async function KaryawanPage({
 }) {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  const orgId =
-    user.organizationId ??
-    (
-      await db
-        .select({ orgId: schemaUsers.currentOrgId })
-        .from(schemaUsers)
-        .where(eq(schemaUsers.id, user.id))
-        .limit(1)
-    )[0]?.orgId;
-  if (!orgId) redirect("/dashboard");
+  // WorkOS session IDs -> internal UUIDs (cubic P1 karyawan-page:124).
+  const ids = await resolveSessionIds(user);
+  if (!ids) redirect("/dashboard");
+  const { orgId } = ids;
   const sp = await searchParams;
 
   return (

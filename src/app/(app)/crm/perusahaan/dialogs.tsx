@@ -22,7 +22,11 @@ export function NewCompanyDialog() {
   const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
 
-  function submit(formData: FormData) {
+  // onSubmit + preventDefault: form action React 19 me-reset uncontrolled
+  // input meski submit gagal (cubic P2 perusahaan-dialogs:43).
+  function submit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
     startTransition(async () => {
       const result = await createCompanyAction(formData);
       if (result.ok) {
@@ -40,7 +44,7 @@ export function NewCompanyDialog() {
         <Button>Perusahaan Baru</Button>
       </DialogTrigger>
       <DialogContent>
-        <form action={submit} className="space-y-4">
+        <form onSubmit={submit} className="space-y-4">
           <DialogHeader>
             <DialogTitle>Perusahaan Baru</DialogTitle>
           </DialogHeader>
@@ -88,11 +92,15 @@ export function NewContactDialog({
   const [companyId, setCompanyId] = useState("");
   const [pending, startTransition] = useTransition();
 
-  function submit(formData: FormData) {
+  // onSubmit + preventDefault: sama dengan NewCompanyDialog — jaga input
+  // pengguna saat submit gagal (cubic P2 perusahaan-dialogs:43).
+  function submit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
     if (!companyId) {
       toast.error("Pilih perusahaan terlebih dahulu.");
       return;
     }
+    const formData = new FormData(e.currentTarget);
     formData.set("companyId", companyId);
     startTransition(async () => {
       const result = await createContactAction(formData);
@@ -111,7 +119,7 @@ export function NewContactDialog({
         <Button variant="outline">Kontak Baru</Button>
       </DialogTrigger>
       <DialogContent>
-        <form action={submit} className="space-y-4">
+        <form onSubmit={submit} className="space-y-4">
           <DialogHeader>
             <DialogTitle>Kontak Baru</DialogTitle>
           </DialogHeader>

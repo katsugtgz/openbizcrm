@@ -148,11 +148,15 @@ export function DealBoard({
     const deal = deals.find((d) => d.id === dealId);
     if (!deal || deal.stageId === stageId) return;
     startTransition(async () => {
-      const result = await moveDealAction(dealId, stageId);
-      if (result.ok) {
-        toast.success("Deal dipindahkan.");
-      } else {
-        toast.error(result.error ?? "Gagal memindahkan deal.");
+      try {
+        const result = await moveDealAction(dealId, stageId);
+        if (result.ok) {
+          toast.success("Deal dipindahkan.");
+        } else {
+          toast.error(result.error ?? "Gagal memindahkan deal.");
+        }
+      } catch {
+        toast.error("Gagal memindahkan deal.");
       }
     });
   }

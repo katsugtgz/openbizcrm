@@ -2,6 +2,7 @@ import {
   pgTable,
   pgEnum,
   uuid,
+  bigint,
   text,
   timestamp,
   integer,
@@ -22,6 +23,10 @@ export const organizations = pgTable("organizations", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
   slug: text("slug").notNull().unique(),
+  // WorkOS "org_…" id — the auth boundary maps AuthKit session organizationId
+  // to the internal row (src/lib/auth/ids.ts). Nullable: fake/dev orgs have
+  // no WorkOS counterpart.
+  workosOrgId: text("workos_org_id").unique(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -438,6 +443,15 @@ export const tasks = pgTable(
   // Kanban: fetch kolom per proyek terurut posisi (cubic P2 0000:2).
   (t) => [
     index("tasks_project_status_pos_idx").on(t.projectId, t.status, t.position),
+    // Daily generation idempotency: satu judul task per proyek per hari —
+    // generateTodayAction check-and-create jadi atomic di level DB
+    // (cubic P2 proyek-actions:279). dueDate NULL (task non-harian) bebas.
+    unique("tasks_org_project_title_due_unique").on(
+      t.orgId,
+      t.projectId,
+      t.title,
+      t.dueDate,
+    ),
   ],
 );
 
@@ -524,8 +538,9 @@ export const crmCompanies = pgTable(
   },
   // Org-scoped company lists filter org_id + order name (cubic P2 0000:13).
   (t) => [
+    // unique (org, name) sudah memenuhi filter/order org+name — index polos
+    // duplikat hanya menambah biaya tulis (cubic P3 schema:525).
     unique("crm_companies_org_name_unique").on(t.orgId, t.name),
-    index("crm_companies_org_idx").on(t.orgId, t.name),
   ],
 );
 
@@ -599,9 +614,11 @@ export const crmDeals = pgTable(
     pipelineId: uuid("pipeline_id")
       .notNull()
       .references(() => crmPipelines.id, { onDelete: "cascade" }),
+    // restrict: deal = catatan penjualan, stage berisi deal tidak boleh
+    // terhapus diam-diam (cubic P2 schema:604).
     stageId: uuid("stage_id")
       .notNull()
-      .references(() => crmStages.id, { onDelete: "cascade" }),
+      .references(() => crmStages.id, { onDelete: "restrict" }),
     companyId: uuid("company_id")
       .notNull()
       .references(() => crmCompanies.id, { onDelete: "cascade" }),
@@ -610,7 +627,9 @@ export const crmDeals = pgTable(
     }),
     title: text("title").notNull(),
     /** Nilai deal, rupiah integer (assertSafeAmount). */
-    value: integer("value").notNull().default(0),
+    // bigint mode number: assertSafeAmount mengizinkan sampai
+    // MAX_SAFE_INTEGER, int4 rembes di > 2,1 miliar (cubic P2 schema:613).
+    value: bigint("value", { mode: "number" }).notNull().default(0),
     status: crmDealStatusEnum("status").notNull().default("open"),
     quotationStatus: crmQuotationStatusEnum("quotation_status")
       .notNull()

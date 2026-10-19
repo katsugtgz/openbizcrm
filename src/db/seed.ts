@@ -22,6 +22,10 @@ import { DEFAULT_STAGE_NAMES } from "@/lib/repos/crm-repo";
 
 const ORG_NAME = "PT Contoh Sejahtera";
 const ORG_SLUG = "contoh-sejahtera";
+// WorkOS org id pengganti: resolver auth boundary (src/lib/auth/ids.ts) dan
+// integration test memakai ini untuk memetakan session.organizationId ->
+// organizations.id. Deterministik supaya seed idempotent.
+const ORG_WORKOS_ID = "org_contoh-sejahtera";
 
 const SEED_USERS = [
   {
@@ -71,7 +75,7 @@ async function seed() {
     if (!org) {
       [org] = await tx
         .insert(organizations)
-        .values({ name: ORG_NAME, slug: ORG_SLUG })
+        .values({ name: ORG_NAME, slug: ORG_SLUG, workosOrgId: ORG_WORKOS_ID })
         .onConflictDoNothing()
         .returning();
       if (!org) {
@@ -122,6 +126,15 @@ async function seed() {
             .limit(1);
         }
         console.log(`+ user ${u.workosUserId}`);
+      }
+      // Users created before currentOrgId existed (or by older seed runs)
+      // may have it NULL — backfill so session-id resolution works.
+      if (!user.currentOrgId) {
+        await tx
+          .update(users)
+          .set({ currentOrgId: org.id })
+          .where(eq(users.id, user.id));
+        user.currentOrgId = org.id;
       }
       await tx
         .insert(orgMemberships)
@@ -280,7 +293,14 @@ async function seed() {
       .from(crmStages)
       .where(eq(crmStages.pipelineId, pipeline.id))
       .orderBy(crmStages.position);
-    if (stageRows.length === 0) {
+    // Guard per nama stage, bukan sekadar "ada beberapa stage": pipeline
+    // parsial (mis. tanpa Close Won) membuat stage.name crash saat seeding
+    // deal (cubic P2 seed:283).
+    const stageNames = new Set(stageRows.map((s) => s.name));
+    const missingStages = DEFAULT_STAGE_NAMES.filter(
+      (name) => !stageNames.has(name),
+    );
+    if (missingStages.length > 0) {
       await tx
         .insert(crmStages)
         .values(
@@ -294,7 +314,7 @@ async function seed() {
         .onConflictDoNothing({
           target: [crmStages.pipelineId, crmStages.position],
         });
-      console.log("+ crm stages (6)");
+      console.log(`+ crm stages (${missingStages.length} kurang)`);
     }
     const stages = await tx
       .select()
@@ -434,13 +454,21 @@ async function seed() {
       }
     }
 
-    // 10 tasks across statuses (idempotent: judul unik dicek dulu).
+    // 10 tasks across statuses (idempotent: judul dicek per proyek — judul
+    // sama di proyek lain tidak boleh men-skip seed PRJ-001, cubic P2
+    // seed:442; unique (org,project,title,dueDate) hanya berlaku saat
+    // dueDate terisi).
     const existingTasks = await tx
       .select()
       .from(tasks)
-      .where(eq(tasks.orgId, org.id));
-    const taskTitles = new Set(existingTasks.map((t) => t.title));
+      .where(
+        and(
+          eq(tasks.orgId, org.id),
+          eq(tasks.projectId, projectByCode.get("PRJ-001")!.id),
+        ),
+      );
     const mainProject = projectByCode.get("PRJ-001")!;
+    const taskTitles = new Set(existingTasks.map((t) => t.title));
     const SEED_TASKS: {
       title: string;
       status: "todo" | "in_progress" | "review" | "done" | "blocked";

@@ -1,23 +1,25 @@
 "use server";
 
 import { session } from "@/lib/auth";
-import { getUser } from "@/lib/repos/user-repo";
+import { resolveSessionIds } from "@/lib/auth/ids";
 import { AttendanceError, checkIn, checkOut } from "@/lib/attendance/service";
 import type { LatLng } from "@/lib/attendance/rules";
 
 export type PresensiResult =
   { ok: true; message: string } | { ok: false; error: string };
 
-/** Resolve org from the signed-in user's currentOrgId (seed/dev flow). */
-async function currentOrgId(): Promise<string> {
+/**
+ * WorkOS session IDs -> internal UUIDs (cubic P1 presensi-actions). checkIn/
+ * checkOut write rows keyed by the INTERNAL users.id, not session user.id.
+ */
+async function resolveIds() {
   const user = await session.getSession();
   if (!user) throw new AttendanceError("NOT_ALLOWED", "Belum masuk.");
-  const dbUser = await getUser(user.id);
-  const orgId = dbUser?.currentOrgId;
-  if (!orgId) {
+  const ids = await resolveSessionIds(user);
+  if (!ids) {
     throw new AttendanceError("NOT_ALLOWED", "Organisasi aktif belum dipilih.");
   }
-  return orgId;
+  return ids;
 }
 
 export async function checkInAction(
@@ -27,11 +29,10 @@ export async function checkInAction(
     // ponytail: SSID tak terbaca dari browser (Web API tidak mengeksposnya);
     // Wi-Fi match aktif saat klien PWA native mengirim ssid. Upgrade: argumen
     // kedua { ssid } dari wrapper native.
-    const orgId = await currentOrgId();
-    const user = await session.getSession();
+    const { userId, orgId } = await resolveIds();
     const result = await checkIn({
       orgId,
-      userId: user!.id,
+      userId,
       now: new Date(),
       gps,
       ssid: null,
@@ -50,11 +51,10 @@ export async function checkInAction(
 
 export async function checkOutAction(): Promise<PresensiResult> {
   try {
-    const orgId = await currentOrgId();
-    const user = await session.getSession();
+    const { userId, orgId } = await resolveIds();
     const result = await checkOut({
       orgId,
-      userId: user!.id,
+      userId,
       now: new Date(),
     });
     return {

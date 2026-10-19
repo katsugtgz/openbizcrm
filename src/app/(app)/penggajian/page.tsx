@@ -3,8 +3,9 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { desc, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { payrollRuns, users as schemaUsers } from "@/db/schema";
+import { payrollRuns } from "@/db/schema";
 import { session } from "@/lib/auth";
+import { resolveSessionIds } from "@/lib/auth/ids";
 import { requireOrgRole } from "@/lib/org-scope";
 import { RunPayrollDialog } from "./run-dialog";
 import { PayrollToasts } from "./toasts";
@@ -118,17 +119,11 @@ export default async function PenggajianPage({
 }) {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  const orgId =
-    user.organizationId ??
-    (
-      await db
-        .select({ orgId: schemaUsers.currentOrgId })
-        .from(schemaUsers)
-        .where(eq(schemaUsers.id, user.id))
-        .limit(1)
-    )[0]?.orgId;
-  if (!orgId) throw new Error("Tidak ada organisasi aktif.");
-  await requireOrgRole(user.id, orgId, "member");
+  // WorkOS session IDs -> internal UUIDs (cubic P1).
+  const ids = await resolveSessionIds(user);
+  if (!ids) throw new Error("Tidak ada organisasi aktif.");
+  const { userId, orgId } = ids;
+  await requireOrgRole(userId, orgId, "member");
   const sp = await searchParams;
 
   return (

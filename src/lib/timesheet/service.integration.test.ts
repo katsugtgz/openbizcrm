@@ -136,22 +136,30 @@ describe("projects/tasks/timesheet integration", () => {
         /Tidak ada timer/,
       );
 
-      // task milik org lain tidak bisa di-timer dari org ini
+      // task milik org lain tidak bisa di-timer dari org ini:
+      // otherOwner member otherOrg tapi task tetap NotFound (org guard task,
+      // bukan cuma membership — cubic P2 ts-test:141).
       await expect(
-        tsSvc.startTimer(owner.id, otherOrg.id, t1.id),
-      ).rejects.toThrow(OrgScopeError);
+        tsSvc.startTimer(otherOwner.id, otherOrg.id, t1.id),
+      ).rejects.toThrow(/Task tidak ditemukan/);
 
+      const year = new Date().getUTCFullYear();
       const rows = await tsSvc.listMine(owner.id, org.id, {
-        from: "2026-01-01",
-        to: "2026-12-31",
+        from: `${year}-01-01`,
+        to: `${year}-12-31`,
       });
       expect(rows).toHaveLength(1);
       expect(rows[0].taskId).toBe(t1.id);
 
-      const summary = await tsSvc.summaryByProject(org.id, project.id, {
-        from: "2026-01-01",
-        to: "2026-12-31",
-      });
+      const summary = await tsSvc.summaryByProject(
+        owner.id,
+        org.id,
+        project.id,
+        {
+          from: `${year}-01-01`,
+          to: `${year}-12-31`,
+        },
+      );
       expect(summary.projectId).toBe(project.id);
       expect(summary.totalMinutes).toBe(stopped.minutes ?? 0);
     },

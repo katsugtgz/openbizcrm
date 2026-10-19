@@ -4,14 +4,13 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { db } from "@/db";
-import {
-  tasks as tasksTable,
-  taskTemplates,
-  timesheets,
-  users as schemaUsers,
-} from "@/db/schema";
+import { tasks as tasksTable, taskTemplates, timesheets } from "@/db/schema";
 import { session } from "@/lib/auth";
+import { resolveSessionIds } from "@/lib/auth/ids";
 import { requireOrgRole } from "@/lib/org-scope";
+import { jakartaDateISO } from "@/lib/attendance/rules";
+import { assertProjectInOrg } from "@/lib/tasks/service";
+import { recordAudit } from "@/lib/repos/audit-repo";
 import {
   createProject,
   updateProject,
@@ -32,20 +31,17 @@ export interface ActionResult {
   redirectTo?: string;
 }
 
+/**
+ * Auth boundary: WorkOS session IDs -> internal UUIDs (cubic P0 proyek:39).
+ * requireOrgRole/repos accept database UUIDs only; session user.id/orgId
+ * are WorkOS "user_…"/"org_…" values and fail the UUID contract.
+ */
 async function requireSession() {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  const orgId =
-    user.organizationId ??
-    (
-      await db
-        .select({ orgId: schemaUsers.currentOrgId })
-        .from(schemaUsers)
-        .where(eq(schemaUsers.id, user.id))
-        .limit(1)
-    )[0]?.orgId;
-  if (!orgId) throw new Error("Tidak ada organisasi aktif.");
-  return { user, orgId };
+  const ids = await resolveSessionIds(user);
+  if (!ids) throw new Error("Tidak ada organisasi aktif.");
+  return { user, ...ids };
 }
 
 function errMessage(error: unknown): string {
@@ -57,12 +53,12 @@ function errMessage(error: unknown): string {
 export async function createProjectAction(
   formData: FormData,
 ): Promise<ActionResult> {
-  const { user, orgId } = await requireSession();
+  const { userId, orgId } = await requireSession();
   const name = String(formData.get("name") ?? "").trim();
   const clientCompanyId = String(formData.get("clientCompanyId") ?? "") || null;
   try {
     if (!name) throw new Error("Nama proyek wajib diisi.");
-    await createProject(user.id, orgId, { name, clientCompanyId });
+    await createProject(userId, orgId, { name, clientCompanyId });
   } catch (error) {
     return { ok: false, error: errMessage(error) };
   }
@@ -74,9 +70,9 @@ export async function updateProjectStatusAction(
   projectId: string,
   status: string,
 ): Promise<ActionResult> {
-  const { user, orgId } = await requireSession();
+  const { userId, orgId } = await requireSession();
   try {
-    await updateProject(user.id, orgId, projectId, {
+    await updateProject(userId, orgId, projectId, {
       status: status as
         "planning" | "active" | "on_hold" | "done" | "cancelled",
     });
@@ -91,9 +87,9 @@ export async function updateProjectStatusAction(
 export async function deleteProjectAction(
   projectId: string,
 ): Promise<ActionResult> {
-  const { user, orgId } = await requireSession();
+  const { userId, orgId } = await requireSession();
   try {
-    await deleteProject(user.id, orgId, projectId);
+    await deleteProject(userId, orgId, projectId);
   } catch (error) {
     return { ok: false, error: errMessage(error) };
   }
@@ -106,14 +102,14 @@ export async function deleteProjectAction(
 export async function createTaskAction(
   formData: FormData,
 ): Promise<ActionResult> {
-  const { user, orgId } = await requireSession();
+  const { userId, orgId } = await requireSession();
   const projectId = String(formData.get("projectId") ?? "");
   const title = String(formData.get("title") ?? "").trim();
   const priority = String(formData.get("priority") ?? "medium");
   const dueDate = String(formData.get("dueDate") ?? "") || null;
   try {
     if (!title) throw new Error("Judul task wajib diisi.");
-    await createTask(user.id, orgId, projectId, {
+    await createTask(userId, orgId, projectId, {
       title,
       priority: priority as "low" | "medium" | "high" | "urgent",
       dueDate,
@@ -126,14 +122,15 @@ export async function createTaskAction(
 }
 
 export async function reorderTaskAction(
+  projectId: string,
   taskId: string,
   toStatus: string,
   toIndex: number,
 ): Promise<ActionResult> {
-  const { user, orgId } = await requireSession();
+  const { userId, orgId } = await requireSession();
   try {
     await reorderTask(
-      user.id,
+      userId,
       orgId,
       taskId,
       toStatus as TaskStatus,
@@ -142,6 +139,9 @@ export async function reorderTaskAction(
   } catch (error) {
     return { ok: false, error: errMessage(error) };
   }
+  // Revalidate: tanpa ini kartu kembali ke kolom lama sementara toast bilang
+  // sukses (cubic P1 task-board:225).
+  revalidatePath(`/proyek/${projectId}`);
   return { ok: true };
 }
 
@@ -150,9 +150,9 @@ export async function setTaskDueAction(
   projectId: string,
   dueDate: string,
 ): Promise<ActionResult> {
-  const { user, orgId } = await requireSession();
+  const { userId, orgId } = await requireSession();
   try {
-    await updateTask(user.id, orgId, taskId, { dueDate: dueDate || null });
+    await updateTask(userId, orgId, taskId, { dueDate: dueDate || null });
   } catch (error) {
     return { ok: false, error: errMessage(error) };
   }
@@ -164,9 +164,9 @@ export async function deleteTaskAction(
   taskId: string,
   projectId: string,
 ): Promise<ActionResult> {
-  const { user, orgId } = await requireSession();
+  const { userId, orgId } = await requireSession();
   try {
-    await deleteTask(user.id, orgId, taskId);
+    await deleteTask(userId, orgId, taskId);
   } catch (error) {
     return { ok: false, error: errMessage(error) };
   }
@@ -180,9 +180,9 @@ export async function startTimerAction(
   taskId: string,
   projectId: string,
 ): Promise<ActionResult> {
-  const { user, orgId } = await requireSession();
+  const { userId, orgId } = await requireSession();
   try {
-    await startTimer(user.id, orgId, taskId);
+    await startTimer(userId, orgId, taskId);
   } catch (error) {
     return { ok: false, error: errMessage(error) };
   }
@@ -192,9 +192,9 @@ export async function startTimerAction(
 }
 
 export async function stopTimerAction(): Promise<ActionResult> {
-  const { user, orgId } = await requireSession();
+  const { userId, orgId } = await requireSession();
   try {
-    await stopTimer(user.id, orgId);
+    await stopTimer(userId, orgId);
   } catch (error) {
     return { ok: false, error: errMessage(error) };
   }
@@ -209,7 +209,7 @@ const TEMPLATE_PRIORITIES = ["low", "medium", "high", "urgent"] as const;
 export async function createTemplateAction(
   formData: FormData,
 ): Promise<ActionResult> {
-  const { user, orgId } = await requireSession();
+  const { userId, orgId } = await requireSession();
   const name = String(formData.get("name") ?? "").trim();
   const priorityRaw = String(formData.get("priority") ?? "medium");
   const priority = (TEMPLATE_PRIORITIES as readonly string[]).includes(
@@ -220,7 +220,7 @@ export async function createTemplateAction(
   try {
     if (!name) throw new Error("Nama template wajib diisi.");
     // createProject membutuhkan role admin; template dibatasi admin juga.
-    await requireOrgRole(user.id, orgId, "admin");
+    await requireOrgRole(userId, orgId, "admin");
     await db.insert(taskTemplates).values({ orgId, name, priority });
   } catch (error) {
     return { ok: false, error: errMessage(error) };
@@ -232,9 +232,9 @@ export async function createTemplateAction(
 export async function deleteTemplateAction(
   templateId: string,
 ): Promise<ActionResult> {
-  const { user, orgId } = await requireSession();
+  const { userId, orgId } = await requireSession();
   try {
-    await requireOrgRole(user.id, orgId, "admin");
+    await requireOrgRole(userId, orgId, "admin");
     await db
       .delete(taskTemplates)
       .where(
@@ -254,7 +254,7 @@ export async function deleteTemplateAction(
 export async function generateTodayAction(
   projectId: string,
 ): Promise<ActionResult & { created: number }> {
-  const { user, orgId } = await requireSession();
+  const { userId, orgId } = await requireSession();
   try {
     const templates = await db
       .select()
@@ -263,7 +263,14 @@ export async function generateTodayAction(
       .orderBy(asc(taskTemplates.name));
     if (templates.length === 0) throw new Error("Belum ada template tugas.");
 
-    const today = new Date().toISOString().slice(0, 10);
+    // WIB kalender, bukan UTC — 00:00–06:59 WIB UTC masih hari sebelumnya
+    // (cubic P2 proyek-actions:266).
+    const today = jakartaDateISO(new Date());
+    await requireOrgRole(userId, orgId, "member");
+    await assertProjectInOrg(orgId, projectId);
+    // Atomic check-and-create: unique (org, project, title, dueDate) +
+    // onConflictDoNothing menutup duplikat template & request konkuren
+    // (cubic P2 proyek-actions:279). Pre-read hanya optimasi counter.
     const existing = await db
       .select({ title: tasksTable.title })
       .from(tasksTable)
@@ -276,17 +283,43 @@ export async function generateTodayAction(
       );
     const existingTitles = new Set(existing.map((r) => r.title));
 
-    const todo = templates.filter((t) => !existingTitles.has(t.name));
-    for (const t of todo) {
-      await createTask(user.id, orgId, projectId, {
-        title: t.name,
-        description: t.description,
-        priority: t.priority,
-        dueDate: today,
-      });
+    let created = 0;
+    for (const t of templates) {
+      if (existingTitles.has(t.name)) continue;
+      const [row] = await db
+        .insert(tasksTable)
+        .values({
+          orgId,
+          projectId,
+          title: t.name,
+          description: t.description,
+          priority: t.priority,
+          dueDate: today,
+          position: 0,
+        })
+        .onConflictDoNothing({
+          target: [
+            tasksTable.orgId,
+            tasksTable.projectId,
+            tasksTable.title,
+            tasksTable.dueDate,
+          ],
+        })
+        .returning();
+      if (row) {
+        created++;
+        await recordAudit({
+          orgId,
+          userId,
+          action: "task.create",
+          entity: "task",
+          entityId: row.id,
+          metadata: { projectId, title: row.title, daily: true },
+        });
+      }
     }
     revalidatePath(`/proyek/${projectId}`);
-    return { ok: true, created: todo.length };
+    return { ok: true, created };
   } catch (error) {
     return { ok: false, created: 0, error: errMessage(error) };
   }
@@ -297,13 +330,13 @@ export async function getOpenTimerAction(): Promise<{
   ok: boolean;
   timer: { id: string; taskId: string } | null;
 }> {
-  const { user, orgId } = await requireSession();
+  const { userId, orgId } = await requireSession();
   const [open] = await db
     .select({ id: timesheets.id, taskId: timesheets.taskId })
     .from(timesheets)
     .where(
       and(
-        eq(timesheets.userId, user.id),
+        eq(timesheets.userId, userId),
         eq(timesheets.orgId, orgId),
         isNull(timesheets.endedAt),
       ),

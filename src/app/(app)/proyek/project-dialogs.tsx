@@ -45,7 +45,11 @@ export function NewProjectDialog({
   const [pending, startTransition] = useTransition();
   const router = useRouter();
 
-  function submit(formData: FormData) {
+  // onSubmit + preventDefault: form action React 19 me-reset input tak
+  // terkontrol meski create gagal (cubic P2 project-dialogs:68).
+  function submit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
     if (clientCompanyId) formData.set("clientCompanyId", clientCompanyId);
     startTransition(async () => {
       const result = await createProjectAction(formData);
@@ -65,7 +69,7 @@ export function NewProjectDialog({
         <Button>Proyek Baru</Button>
       </DialogTrigger>
       <DialogContent>
-        <form action={submit} className="space-y-4">
+        <form onSubmit={submit} className="space-y-4">
           <DialogHeader>
             <DialogTitle>Proyek Baru</DialogTitle>
           </DialogHeader>
@@ -81,7 +85,7 @@ export function NewProjectDialog({
           <div className="space-y-2">
             <Label>Perusahaan Klien</Label>
             <Select value={clientCompanyId} onValueChange={setClientCompanyId}>
-              <SelectTrigger className="w-full">
+              <SelectTrigger aria-label="Perusahaan Klien" className="w-full">
                 <SelectValue placeholder="Opsional" />
               </SelectTrigger>
               <SelectContent>

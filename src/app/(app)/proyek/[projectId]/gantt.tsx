@@ -43,15 +43,14 @@ export function GanttChart({ tasks }: { tasks: GanttTask[] }) {
     const ends = dated.map((t) => parseDay(t.dueDate));
     const min = Math.min(...starts);
     const max = Math.max(...ends);
-    // Snap ke Senin.
+    // Snap ke Senin. `last` TANPA roll-forward: due tepat di Senin terakhir
+    // tetap punya minggunya sendiri, tidak nol lebar (cubic P2 gantt:54).
     const first = new Date(min);
     first.setUTCDate(first.getUTCDate() - ((first.getUTCDay() + 6) % 7));
     const last = new Date(max);
-    last.setUTCDate(
-      last.getUTCDate() + ((7 - ((last.getUTCDay() + 6) % 7)) % 7),
-    );
+    last.setUTCDate(last.getUTCDate() - ((last.getUTCDay() + 6) % 7));
     const weekStarts: number[] = [];
-    for (let d = first.getTime(); d < last.getTime(); d += 7 * DAY_MS) {
+    for (let d = first.getTime(); d <= last.getTime(); d += 7 * DAY_MS) {
       weekStarts.push(d);
     }
 
@@ -60,7 +59,8 @@ export function GanttChart({ tasks }: { tasks: GanttTask[] }) {
       const s = parseDay(dateOnly(t.createdAt));
       const e = parseDay(t.dueDate);
       const colStart = weekStarts.filter((w) => w <= s).length;
-      const colEnd = weekStarts.filter((w) => w < e).length + 1;
+      // `<=`: due di minggu itu tetap menghitung minggunya (bukan `w < e`).
+      const colEnd = weekStarts.filter((w) => w <= e).length;
       const start = Math.min(Math.max(colStart, 1), totalWeeks);
       const end = Math.min(Math.max(colEnd, start), totalWeeks + 1);
       return { task: t, start, span: end - start };
@@ -86,7 +86,7 @@ export function GanttChart({ tasks }: { tasks: GanttTask[] }) {
     <div className="overflow-x-auto">
       <div
         className="min-w-max"
-        role="img"
+        role="group"
         aria-label={`Gantt ${tasks.length} task dalam ${weeks.length} minggu`}
       >
         {/* Header minggu */}

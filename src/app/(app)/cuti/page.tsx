@@ -1,8 +1,6 @@
 import { session } from "@/lib/auth";
+import { resolveSessionIds } from "@/lib/auth/ids";
 import { redirect } from "next/navigation";
-import { eq } from "drizzle-orm";
-import { db } from "@/db";
-import { users as schemaUsers } from "@/db/schema";
 import {
   listLeaveRequests,
   listBalances,
@@ -46,18 +44,6 @@ const STATUS_BADGE: Record<string, string> = {
   rejected: "bg-red-100 text-red-800",
 };
 
-async function orgIdFor(userId: string): Promise<string> {
-  const [row] = await db
-    .select({ currentOrgId: schemaUsers.currentOrgId })
-    .from(schemaUsers)
-    .where(eq(schemaUsers.id, userId))
-    .limit(1);
-  if (!row?.currentOrgId) redirect("/dashboard");
-  return row.currentOrgId;
-}
-
-type SessionUser = NonNullable<Awaited<ReturnType<typeof session.getSession>>>;
-
 type Balances = Awaited<ReturnType<typeof listBalances>>;
 
 function BalanceCard({
@@ -92,16 +78,16 @@ function BalanceCard({
 }
 
 async function LeaveSection({
-  user,
+  userId,
   orgId,
 }: {
-  user: SessionUser;
+  userId: string;
   orgId: string;
 }) {
   const year = new Date().getFullYear();
-  const requests = await listLeaveRequests(user.id, orgId);
-  const employee = await getEmployeeByUser(user.id, orgId);
-  const balances = employee ? await listBalances(user.id, orgId, year) : [];
+  const requests = await listLeaveRequests(userId, orgId);
+  const employee = await getEmployeeByUser(userId, orgId);
+  const balances = employee ? await listBalances(userId, orgId, year) : [];
 
   return (
     <>
@@ -274,7 +260,10 @@ export default async function CutiPage({
 }) {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  const orgId = await orgIdFor(user.id);
+  // WorkOS session IDs -> internal UUIDs (cubic P1 cuti-page:102).
+  const ids = await resolveSessionIds(user);
+  if (!ids) redirect("/dashboard");
+  const { userId, orgId } = ids;
   const sp = await searchParams;
 
   return (
@@ -288,7 +277,7 @@ export default async function CutiPage({
         </p>
       </div>
       <Suspense fallback={<SectionSkeleton />}>
-        <LeaveSection user={user} orgId={orgId} />
+        <LeaveSection userId={userId} orgId={orgId} />
       </Suspense>
       {/* hasil server action via searchParams -> toast klien */}
       <LeaveToasts ok={sp.ok} error={sp.error} />

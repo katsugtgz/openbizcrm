@@ -1,17 +1,27 @@
 "use client";
 
 import { useEffect, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { stopTimerAction } from "@/app/(app)/proyek/actions";
 
-/** Jam:menit berjalan sejak startedAt; update tiap detik. */
-function useElapsed(startedAtMs: number): string {
-  const [now, setNow] = useState(() => Date.now());
+/** Jam:menit:detik berjalan sejak startedAt; mulai null supaya SSR ==
+ * hydration (cubic P2 timer-banner:10). */
+function useElapsed(startedAtMs: number): string | null {
+  const [now, setNow] = useState<number | null>(null);
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
+    const tick = () => setNow(Date.now());
+    // Tick pertama lewat interval 0 — setState tetap di callback, bukan di
+    // body effect (react-hooks/set-state-in-effect).
+    const initial = setTimeout(tick, 0);
+    const id = setInterval(tick, 1000);
+    return () => {
+      clearTimeout(initial);
+      clearInterval(id);
+    };
   }, []);
+  if (now === null) return null;
   const totalMin = Math.max(0, Math.floor((now - startedAtMs) / 60_000));
   const h = Math.floor(totalMin / 60);
   const m = totalMin % 60;
@@ -44,14 +54,20 @@ function RunningTimer({
   startedAtMs: number;
   taskTitle: string;
 }) {
+  const router = useRouter();
   const [pending, startTransition] = useTransition();
   const elapsed = useElapsed(startedAtMs);
 
   function stop() {
     startTransition(async () => {
       const result = await stopTimerAction();
-      if (result.ok) toast.success("Timer dihentikan.");
-      else toast.error(result.error ?? "Gagal menghentikan timer.");
+      if (result.ok) {
+        toast.success("Timer dihentikan.");
+        router.refresh();
+      } else {
+        toast.error(result.error ?? "Gagal menghentikan timer.");
+        router.refresh();
+      }
     });
   }
 

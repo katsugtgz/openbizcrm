@@ -3,9 +3,11 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/db";
-import { tasks, timesheets, users as schemaUsers } from "@/db/schema";
+import { tasks, timesheets } from "@/db/schema";
 import { session } from "@/lib/auth";
+import { resolveSessionIds } from "@/lib/auth/ids";
 import { requireOrgRole } from "@/lib/org-scope";
+import { jakartaDateISO } from "@/lib/attendance/rules";
 import { listMine } from "@/lib/timesheet/service";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -52,6 +54,7 @@ async function TimesheetView({
     .slice(0, 10);
 
   const [rows, openTimerRows] = await Promise.all([
+    // listMine range WIB-aware (cubic P2 ts-page:80).
     listMine(userId, orgId, { from, to }),
     db
       .select({
@@ -61,7 +64,13 @@ async function TimesheetView({
       })
       .from(timesheets)
       .innerJoin(tasks, eq(timesheets.taskId, tasks.id))
-      .where(and(eq(timesheets.userId, userId), isNull(timesheets.endedAt)))
+      .where(
+        and(
+          eq(timesheets.orgId, orgId),
+          eq(timesheets.userId, userId),
+          isNull(timesheets.endedAt),
+        ),
+      )
       .limit(1),
   ]);
 
@@ -77,7 +86,7 @@ async function TimesheetView({
   }
   for (const r of rows) {
     if (r.minutes) {
-      const day = r.startedAt.toISOString().slice(0, 10);
+      const day = jakartaDateISO(r.startedAt);
       perDay.set(day, (perDay.get(day) ?? 0) + r.minutes);
     }
   }
@@ -149,10 +158,16 @@ async function TimesheetView({
                 {rows.map((r) => (
                   <TableRow key={r.id}>
                     <TableCell className="tabular-nums">
-                      {r.startedAt.toLocaleString("id-ID")}
+                      {r.startedAt.toLocaleString("id-ID", {
+                        timeZone: "Asia/Jakarta",
+                      })}
                     </TableCell>
                     <TableCell className="tabular-nums">
-                      {r.endedAt ? r.endedAt.toLocaleString("id-ID") : "—"}
+                      {r.endedAt
+                        ? r.endedAt.toLocaleString("id-ID", {
+                            timeZone: "Asia/Jakarta",
+                          })
+                        : "—"}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
                       {r.minutes !== null ? fmtMinutes(r.minutes) : "berjalan"}
@@ -193,22 +208,22 @@ export default async function TimesheetPage({
 }) {
   const user = await session.getSession();
   if (!user) redirect("/login");
-  const orgId =
-    user.organizationId ??
-    (
-      await db
-        .select({ orgId: schemaUsers.currentOrgId })
-        .from(schemaUsers)
-        .where(eq(schemaUsers.id, user.id))
-        .limit(1)
-    )[0]?.orgId;
-  if (!orgId) redirect("/dashboard");
+  // WorkOS session IDs -> internal UUIDs (cubic P1 timesheet:197).
+  const ids = await resolveSessionIds(user);
+  if (!ids) redirect("/dashboard");
+  const { userId, orgId } = ids;
 
   const sp = await searchParams;
-  const today = new Date().toISOString().slice(0, 10);
-  const weekStart = /^\d{4}-\d{2}-\d{2}$/.test(sp.week ?? "")
-    ? mondayOf(sp.week!)
-    : mondayOf(today);
+  // WIB kalender, bukan UTC (cubic P2 timesheet:80).
+  const today = jakartaDateISO(new Date());
+  // Regex meloloskan "2024-13-01" -> mondayOf melempar RangeError; validasi
+  // parse dulu, fallback ke hari ini (cubic P2 timesheet:209).
+  const weekParam = /^\d{4}-\d{2}-\d{2}$/.test(sp.week ?? "") ? sp.week! : null;
+  const weekStart = mondayOf(
+    weekParam && !Number.isNaN(Date.parse(`${weekParam}T00:00:00Z`))
+      ? weekParam
+      : today,
+  );
   const prevWeek = new Date(
     new Date(`${weekStart}T00:00:00Z`).getTime() - 7 * DAY_MS,
   )
@@ -249,7 +264,7 @@ export default async function TimesheetPage({
         </div>
       </div>
       <Suspense fallback={<ViewSkeleton />}>
-        <TimesheetView userId={user.id} orgId={orgId} weekStart={weekStart} />
+        <TimesheetView userId={userId} orgId={orgId} weekStart={weekStart} />
       </Suspense>
     </div>
   );
