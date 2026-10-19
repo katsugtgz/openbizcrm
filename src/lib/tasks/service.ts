@@ -190,11 +190,37 @@ export async function updateTask(
     await assertParent(orgId, task.projectId, input.parentId);
     await assertNotDescendant(orgId, taskId, input.parentId);
   }
-  const [row] = await db
-    .update(tasks)
-    .set(input)
-    .where(and(eq(tasks.id, taskId), eq(tasks.orgId, orgId)))
-    .returning();
+  // Serialize parent mutations per task pair (cubic r4 P2): two concurrent
+  // updates could both pass assertNotDescendant and commit a 2-cycle
+  // (A.parent = B while B.parent = A). Xact advisory lock on the ordered
+  // pair inside the same transaction as the write.
+  let row: Task;
+  if (input.parentId !== undefined && input.parentId !== null) {
+    const parentId: string = input.parentId;
+    const lockA = BigInt("0x" + taskId.replace(/-/g, "").slice(0, 15));
+    const lockB = BigInt("0x" + parentId.replace(/-/g, "").slice(0, 15));
+    const SHIFT = BigInt(64);
+    const lockKey =
+      lockA < lockB ? (lockA << SHIFT) | lockB : (lockB << SHIFT) | lockA;
+    row = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${lockKey})`);
+      await assertParent(orgId, task.projectId, parentId);
+      await assertNotDescendant(orgId, taskId, parentId);
+      const [updated] = await tx
+        .update(tasks)
+        .set(input)
+        .where(and(eq(tasks.id, taskId), eq(tasks.orgId, orgId)))
+        .returning();
+      return updated;
+    });
+  } else {
+    const [updated] = await db
+      .update(tasks)
+      .set(input)
+      .where(and(eq(tasks.id, taskId), eq(tasks.orgId, orgId)))
+      .returning();
+    row = updated;
+  }
   await recordAudit({
     orgId,
     userId,

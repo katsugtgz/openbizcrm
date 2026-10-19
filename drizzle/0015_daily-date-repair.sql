@@ -15,6 +15,16 @@
 -- (a)
 DROP INDEX IF EXISTS "tasks_org_project_daily_title_unique";--> statement-breakpoint
 
+-- (b0) cubic r4 P1 0015:16 — 0014's legacy manual-task backfill repeated
+-- AFTER the index drop: DBs where 0014 aborted early keep source='manual'
+-- rows that were generated daily tasks (due_date set, no daily_for_date).
+-- Re-promote them before dedupe, or the generator re-creates duplicates.
+UPDATE "tasks"
+SET "source" = 'daily', "daily_for_date" = "due_date"
+WHERE "source" = 'manual'
+  AND "daily_for_date" IS NULL
+  AND "due_date" IS NOT NULL;--> statement-breakpoint
+
 -- (b1) pulihkan tanggal generate dari due_date
 UPDATE "tasks"
 SET "daily_for_date" = "due_date"
