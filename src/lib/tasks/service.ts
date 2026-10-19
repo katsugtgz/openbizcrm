@@ -63,12 +63,14 @@ async function assertNotDescendant(
 ): Promise<void> {
   // Recursive CTE (cubic r5 P2): satu query, tanpa N round-trip —
   // keturunan parentId yang menyentuh taskId = cycle.
+  // UNION (bukan ALL — cubic r6 P1 sisa): dedupe node yang sudah
+  // dikunjungi, jadi cycle data lama tak membuat rekursi tak berujung.
   const ancestors = await exec.execute(sql`
     WITH RECURSIVE chain AS (
       SELECT t.id, t.parent_id
       FROM tasks t
       WHERE t.id = ${parentId} AND t.org_id = ${orgId}
-      UNION ALL
+      UNION
       SELECT t.id, t.parent_id
       FROM tasks t
       JOIN chain c ON t.id = c.parent_id
