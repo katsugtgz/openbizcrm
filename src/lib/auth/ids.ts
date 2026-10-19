@@ -83,17 +83,31 @@ async function provision(
 
       let orgId: string | null = null;
       if (user.organizationId) {
+        // Pre-create lookup: org sudah termap WorkOS → pakai langsung tanpa
+        // insert. Insert di bawah membatasi onConflictDoNothing ke
+        // workos_org_id SAJA (cubic P1 ids:71): konflik slug — org lain
+        // kebetulan memakai WorkOS org id ini sebagai slug — tidak boleh
+        // ditelan diam-diam, karena itu meng-commit user tanpa org
+        // (needsOrg=false) dan login berikutnya kehilangan path retry.
+        // Konflik slug melempar error → seluruh transaksi roll back.
         let [org] = await tx
-          .insert(organizations)
-          .values({
-            // WorkOS gives us only the org id here; id doubles as name and
-            // slug fallback until renamed manually.
-            name: user.organizationId,
-            slug: user.organizationId,
-            workosOrgId: user.organizationId,
-          })
-          .onConflictDoNothing()
-          .returning();
+          .select()
+          .from(organizations)
+          .where(eq(organizations.workosOrgId, user.organizationId))
+          .limit(1);
+        if (!org) {
+          [org] = await tx
+            .insert(organizations)
+            .values({
+              // WorkOS gives us only the org id here; id doubles as name and
+              // slug fallback until renamed manually.
+              name: user.organizationId,
+              slug: user.organizationId,
+              workosOrgId: user.organizationId,
+            })
+            .onConflictDoNothing({ target: organizations.workosOrgId })
+            .returning();
+        }
         if (!org) {
           [org] = await tx
             .select()

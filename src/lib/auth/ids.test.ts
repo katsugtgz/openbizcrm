@@ -7,6 +7,17 @@ import { beforeEach, describe, expect, it } from "vitest";
  * seeded org/users (src/db/seed.ts: workos ids "seed-owner-1" … and org
  * workos id "org_contoh-sejahtera").
  */
+/**
+ * cubic P3 ids-test:199 — restore env: variabel yang SEBELUMNYA TIDAK ADA
+ * dihapus (bukan diisi string "undefined" yang mencemari test lain).
+ */
+function restoreEnv(saved: Partial<Record<string, string | undefined>>): void {
+  for (const [key, value] of Object.entries(saved)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+}
+
 describe("resolveSessionIds", () => {
   let resolveSessionIds: typeof import("./ids").resolveSessionIds;
   // The DB-backed cases resolve against seeded rows, so they need the
@@ -196,10 +207,13 @@ describe("resolveSessionIds integration (seeded DB)", () => {
         await db
           .delete(organizations)
           .where(inArray(organizations.id, createdOrgIds));
-        process.env.AUTH_FAKE = prevFake;
-        process.env.WORKOS_API_KEY = prevKey;
-        process.env.WORKOS_CLIENT_ID = prevCid;
-        process.env.WORKOS_COOKIE_PASSWORD = prevPwd;
+
+        restoreEnv({
+          AUTH_FAKE: prevFake,
+          WORKOS_API_KEY: prevKey,
+          WORKOS_CLIENT_ID: prevCid,
+          WORKOS_COOKIE_PASSWORD: prevPwd,
+        });
       }
     },
   );
@@ -290,10 +304,70 @@ describe("resolveSessionIds integration (seeded DB)", () => {
         await db
           .delete(organizations)
           .where(inArray(organizations.id, createdOrgIds));
-        process.env.AUTH_FAKE = prevFake;
-        process.env.WORKOS_API_KEY = prevKey;
-        process.env.WORKOS_CLIENT_ID = prevCid;
-        process.env.WORKOS_COOKIE_PASSWORD = prevPwd;
+
+        restoreEnv({
+          AUTH_FAKE: prevFake,
+          WORKOS_API_KEY: prevKey,
+          WORKOS_CLIENT_ID: prevCid,
+          WORKOS_COOKIE_PASSWORD: prevPwd,
+        });
+      }
+    },
+  );
+
+  itDb(
+    "slug collision: provisioning fails cleanly, user row NOT committed",
+    async () => {
+      // Pin cubic P1 ids:71 — onConflictDoNothing tanpa target menelan
+      // konflik slug: org lain sudah memakai WorkOS org id sebagai slug.
+      // Lama: user di-commit dengan needsOrg=false & orgId=null → retry
+      // path mati permanen. Benar: error slug → tx rollback → null, login
+      // berikutnya mencoba lagi.
+      const { db } = await import("@/db");
+      const { users, organizations } = await import("@/db/schema");
+      const { eq } = await import("drizzle-orm");
+      const collideSlug = `test_slugcollide_${Date.now()}`;
+      const workosUserId = `test_slugcollide_user_${Date.now()}`;
+      // Org "manual" dengan slug = WorkOS org id, workos_org_id NULL.
+      const [collideOrg] = await db
+        .insert(organizations)
+        .values({ name: "Slug Collision Org", slug: collideSlug })
+        .returning();
+      const prevFake = process.env.AUTH_FAKE;
+      const prevKey = process.env.WORKOS_API_KEY;
+      const prevCid = process.env.WORKOS_CLIENT_ID;
+      const prevPwd = process.env.WORKOS_COOKIE_PASSWORD;
+      process.env.AUTH_FAKE = "";
+      process.env.WORKOS_API_KEY = "test";
+      process.env.WORKOS_CLIENT_ID = "test";
+      process.env.WORKOS_COOKIE_PASSWORD = "x".repeat(32);
+      try {
+        const { resolveSessionIds } = await import("./ids");
+        // Konflik slug → seluruh transaksi roll back, resolver null.
+        const resolved = await resolveSessionIds({
+          id: workosUserId,
+          email: `slugcollide-${Date.now()}@contoh.co.id`,
+          sessionId: "authkit-session",
+          organizationId: collideSlug,
+        });
+        expect(resolved).toBeNull();
+        // User TIDAK tertinggal: rollback penuh, bukan commit parsial.
+        const orphans = await db
+          .select()
+          .from(users)
+          .where(eq(users.workosUserId, workosUserId));
+        expect(orphans).toHaveLength(0);
+      } finally {
+        await db
+          .delete(organizations)
+          .where(eq(organizations.id, collideOrg.id));
+
+        restoreEnv({
+          AUTH_FAKE: prevFake,
+          WORKOS_API_KEY: prevKey,
+          WORKOS_CLIENT_ID: prevCid,
+          WORKOS_COOKIE_PASSWORD: prevPwd,
+        });
       }
     },
   );
@@ -345,10 +419,13 @@ describe("resolveSessionIds integration (seeded DB)", () => {
         await db
           .delete(users)
           .where(inArray(users.workosUserId, [workosUserId]));
-        process.env.AUTH_FAKE = prevFake;
-        process.env.WORKOS_API_KEY = prevKey;
-        process.env.WORKOS_CLIENT_ID = prevCid;
-        process.env.WORKOS_COOKIE_PASSWORD = prevPwd;
+
+        restoreEnv({
+          AUTH_FAKE: prevFake,
+          WORKOS_API_KEY: prevKey,
+          WORKOS_CLIENT_ID: prevCid,
+          WORKOS_COOKIE_PASSWORD: prevPwd,
+        });
       }
     },
   );

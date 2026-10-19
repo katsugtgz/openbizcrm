@@ -389,6 +389,14 @@ export async function moveDeal(
 ): Promise<CrmDeal> {
   await requireOrgRole(userId, orgId, "member");
   const deal = await requireDeal(orgId, dealId);
+  // Guard optimis: deal closed adalah terminal (closeDeal tidak bisa
+  // dibatalkan) — move tidak boleh membuka ulang / retarget deal closed
+  // (cubic P1 deals/service:90, race moveDeal vs closeDeal).
+  if (deal.status !== "open") {
+    throw new Error(
+      `Deal sudah ${deal.status}; tidak bisa dipindah atau dibuka ulang.`,
+    );
+  }
   const [stage] = await db
     .select()
     .from(crmStages)
@@ -405,15 +413,43 @@ export async function moveDeal(
       status,
       closedAt: status === "open" ? null : new Date(),
     })
-    .where(and(eq(crmDeals.id, dealId), eq(crmDeals.orgId, orgId)))
+    // Predikat expected-state: closeDeal konkuren yang menulis duluan membuat
+    // update ini match 0 baris — move antrean tidak menimpa deal yang sudah
+    // closed (cubic P1 deals/service:90).
+    .where(
+      and(
+        eq(crmDeals.id, dealId),
+        eq(crmDeals.orgId, orgId),
+        eq(crmDeals.status, deal.status),
+      ),
+    )
     .returning();
+  if (!row) {
+    // Kalah race terhadap close: re-read lalu lempar error basi (Indonesia),
+    // deal tetap closed (cubic P1 deals/service:90).
+    const [current] = await db
+      .select()
+      .from(crmDeals)
+      .where(and(eq(crmDeals.id, dealId), eq(crmDeals.orgId, orgId)))
+      .limit(1);
+    if (!current) throw new NotFoundError("Deal tidak ditemukan.");
+    throw new Error(
+      `Permintaan pindah basi: deal sudah ${current.status}; muat ulang papan.`,
+    );
+  }
   await recordAudit({
     orgId,
     userId,
     action: "crm.deal.move",
     entity: "crm_deal",
     entityId: dealId,
-    metadata: { fromStageId: deal.stageId, toStageId: stageId, status },
+    // Audit pakai status pasca-guard (row), bukan status hasil hitung
+    // pra-tulis (cubic P1 deals/service:90).
+    metadata: {
+      fromStageId: deal.stageId,
+      toStageId: row.stageId,
+      status: row.status,
+    },
   });
   return row;
 }

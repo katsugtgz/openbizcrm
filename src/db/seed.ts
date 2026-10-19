@@ -92,17 +92,31 @@ async function seed() {
     // NULL, which makes resolveSessionIds reject the seeded AuthKit session.
     // Backfill the mapping when missing.
     if (!org.workosOrgId) {
+      // cubic P2 seed:97 — workos_org_id unik. UPDATE buta bisa abort seluruh
+      // seed kalau org lain sudah memegang ORG_WORKOS_ID. Cek pemilik id
+      // dulu: bebas → backfill normal; dibawa org lain → pakai sufiks
+      // deterministik, jangan mencuri / jangan gagal.
+      const [owner] = await tx
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(eq(organizations.workosOrgId, ORG_WORKOS_ID))
+        .limit(1);
+      const target = owner ? `${ORG_WORKOS_ID}-alt` : ORG_WORKOS_ID;
       await tx
         .update(organizations)
-        .set({ workosOrgId: ORG_WORKOS_ID })
+        .set({ workosOrgId: target })
         .where(
           and(
             eq(organizations.slug, ORG_SLUG),
             isNull(organizations.workosOrgId),
           ),
         );
-      org.workosOrgId = ORG_WORKOS_ID;
-      console.log(`~ backfilled workos_org_id on org ${ORG_SLUG}`);
+      org.workosOrgId = target;
+      console.log(
+        owner
+          ? `~ workos_org_id bentrok (org lain); ${ORG_SLUG} pakai ${target}`
+          : `~ backfilled workos_org_id on org ${ORG_SLUG}`,
+      );
     }
 
     // Branches — org-scoped unique constraint makes this conflict-safe.

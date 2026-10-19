@@ -212,10 +212,19 @@ export async function deleteTask(
   taskId: string,
 ): Promise<void> {
   await requireOrgRole(userId, orgId, "member");
-  await requireTask(orgId, taskId);
-  await db
-    .delete(tasks)
-    .where(and(eq(tasks.id, taskId), eq(tasks.orgId, orgId)));
+  const task = await requireTask(orgId, taskId);
+  // Lock project yang sama dengan reorder: delete di-serialize terhadap
+  // reorder, jadi snapshot kolom reorder tidak bisa basi (cubic P2 tasks:277).
+  await db.transaction(async (tx) => {
+    await tx
+      .select({ id: projects.id })
+      .from(projects)
+      .where(and(eq(projects.id, task.projectId), eq(projects.orgId, orgId)))
+      .for("update");
+    await tx
+      .delete(tasks)
+      .where(and(eq(tasks.id, taskId), eq(tasks.orgId, orgId)));
+  });
   await recordAudit({
     orgId,
     userId,
@@ -254,7 +263,7 @@ export async function reorderTask(
   await requireOrgRole(userId, orgId, "member");
   const task = await requireTask(orgId, taskId);
 
-  await db.transaction(async (tx) => {
+  const fromStatus = await db.transaction(async (tx): Promise<TaskStatus> => {
     // Serialisasi reorder dalam satu project.
     await tx
       .select({ id: projects.id })
@@ -263,17 +272,25 @@ export async function reorderTask(
       .for("update");
 
     // Snapshot pre-lock bisa basi: reorder queued lain sudah memindahkan
-    // task. Re-read di dalam lock supaya branch status pakai posisi terkini
-    // (cubic P2 tasks:262) — task hilang = request basi, tolak eksplisit.
+    // task. Re-read + FOR UPDATE baris task di dalam lock — delete konkuren
+    // harus menunggu lock ini, jadi snapshot tidak bisa dibatalkan (cubic
+    // P2 tasks:277) — task hilang = request basi, tolak eksplisit.
     const [current] = await tx
       .select()
       .from(tasks)
       .where(and(eq(tasks.id, taskId), eq(tasks.orgId, orgId)))
-      .limit(1);
+      .limit(1)
+      .for("update");
     if (!current) {
       throw new Error("Permintaan reorder basi; task sudah tidak ada.");
     }
+    // Status sumber di-lock: dipakai untuk branching dan audit 'from'
+    // (cubic P2 tasks:328).
+    const fromStatus: TaskStatus = current.status;
 
+    // FOR UPDATE pada snapshot kolom: baris yang dibaca terkunci sampai tx
+    // commit, jadi delete task manapun di kolom di-serialize (cubic P2
+    // tasks:277) — tidak ada position korup dari snapshot basi.
     const readColumn = (status: TaskStatus) =>
       tx
         .select({ id: tasks.id, position: tasks.position })
@@ -285,7 +302,8 @@ export async function reorderTask(
             eq(tasks.status, status),
           ),
         )
-        .orderBy(asc(tasks.position));
+        .orderBy(asc(tasks.position))
+        .for("update");
 
     if (current.status === toStatus) {
       // WITHIN: kolom tujuan = kolom asal (task masih di dalamnya).
@@ -315,6 +333,7 @@ export async function reorderTask(
         .where(and(eq(tasks.id, taskId), eq(tasks.orgId, orgId)));
       await persistPositions(tx, orgId, [...sourceUpdates, ...updates]);
     }
+    return fromStatus;
   });
 
   // Audit untuk kedua jalur (cubic P2 tasks:210).
@@ -324,9 +343,9 @@ export async function reorderTask(
     action: "task.reorder",
     entity: "task",
     entityId: taskId,
-    metadata: { from: task.status, to: toStatus, toIndex },
-    // task.status = pre-lock snapshot untuk audit only; logika di atas pakai
-    // `current` (re-read in-lock, cubic P2 tasks:262).
+    metadata: { from: fromStatus, to: toStatus, toIndex },
+    // fromStatus = hasil reread in-lock (bukan snapshot pre-lock `task.status`
+    // yang basi — cubic P2 tasks:328).
   });
 }
 

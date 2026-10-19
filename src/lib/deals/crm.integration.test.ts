@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq } from "drizzle-orm";
-import { organizations, users } from "@/db/schema";
+import { organizations, users, crmDeals as dealsTable } from "@/db/schema";
 import { NotFoundError } from "@/lib/org-scope";
 
 // DB-touching modules load ONLY when RUN_DB_TESTS=1 (same lazy-import pattern
@@ -300,9 +300,66 @@ describe("crm integration", () => {
     expect(deal.closedAt).not.toBeNull();
   });
 
+  itDb(
+    "moveDeal on closed deal: stale queued move rejected, deal stays closed",
+    async () => {
+      // Pin cubic P1 deals/service:90 — closeDeal lalu moveDeal yang
+      // pre-read deal open tidak boleh membuka ulang / retarget.
+      const owner = await (
+        await import("@/lib/repos/user-repo")
+      ).createUser({
+        workosUserId: `it-move-closed-${suffix}`,
+        email: `it-move-closed-${suffix}@test.id`,
+      });
+      createdUserIds.push(owner.id);
+      const org = await (
+        await import("@/lib/repos/org-repo")
+      ).createOrg(
+        { name: "Move Closed Org", slug: `it-move-closed-${suffix}` },
+        owner.id,
+      );
+      createdOrgIds.push(org.id);
+
+      const company = await crm.createCompany(owner.id, org.id, {
+        name: `PT MoveClosed ${suffix}`,
+      });
+      const contact = await crm.createContact(owner.id, org.id, {
+        companyId: company.id,
+        name: "Kontak MoveClosed",
+      });
+      const { pipeline, stages } = await crm.getOrCreateDefaultPipeline(
+        org.id,
+        company.id,
+      );
+      const deal = await crm.createDeal(owner.id, org.id, {
+        pipelineId: pipeline.id,
+        stageId: stages[0].id,
+        companyId: company.id,
+        contactId: contact.id,
+        title: "Deal MoveClosed",
+        value: 500_000,
+      });
+      const closed = await deals.closeDeal(owner.id, org.id, deal.id, "won");
+
+      // Simulasi move antrean yang membaca deal sebelum close: ditolak.
+      const target = stages[1];
+      await expect(
+        crm.moveDeal(owner.id, org.id, deal.id, target.id),
+      ).rejects.toThrow(/basi|sudah won/);
+
+      // Deal tetap closed: status + stage hasil close tidak berubah.
+      const [after] = await db
+        .select()
+        .from(dealsTable)
+        .where(eq(dealsTable.id, deal.id))
+        .limit(1);
+      expect(after.status).toBe("won");
+      expect(after.stageId).toBe(closed.stageId);
+      expect(after.closedAt).not.toBeNull();
+    },
+  );
+
   itDb("createDeal menolak kontak dari company lain (org sama)", async () => {
-    // Pin cubic P2 crm-repo:302 — kontak harus milik company deal, bukan
-    // sekadar org yang sama.
     const owner = await (
       await import("@/lib/repos/user-repo")
     ).createUser({
