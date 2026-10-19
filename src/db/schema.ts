@@ -688,3 +688,437 @@ export type CrmPipeline = typeof crmPipelines.$inferSelect;
 export type CrmStage = typeof crmStages.$inferSelect;
 export type CrmDeal = typeof crmDeals.$inferSelect;
 export type CrmActivity = typeof crmActivities.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// Akuntansi (double-entry)
+// ---------------------------------------------------------------------------
+
+export const accountTypeEnum = pgEnum("account_type", [
+  "asset",
+  "liability",
+  "equity",
+  "revenue",
+  "expense",
+]);
+
+export const journalStatusEnum = pgEnum("journal_status", ["draft", "posted"]);
+
+export const journalSourceEnum = pgEnum("journal_source", [
+  "manual",
+  "invoice",
+  "payment",
+  "pos",
+  "payroll",
+  "depreciation",
+]);
+
+/** Sumber dana kas (pos transaksi tunai / transfer / QRIS). */
+export const paymentMethodEnum = pgEnum("payment_method", [
+  "cash",
+  "transfer",
+  "qris",
+]);
+
+export const inventoryReasonEnum = pgEnum("inventory_reason", [
+  "sale",
+  "restock",
+  "adjust",
+]);
+
+export const accounts = pgTable(
+  "accounts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    code: text("code").notNull(),
+    name: text("name").notNull(),
+    type: accountTypeEnum("type").notNull(),
+    /** Parent account (chart of accounts bersarang); null = root. */
+    parentId: uuid("parent_id").references((): AnyPgColumn => accounts.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    // Kode akun unik per org — chart of accounts rapi, filter org+code cepat.
+    unique("accounts_org_code_unique").on(t.orgId, t.code),
+  ],
+);
+
+export const inventoryMovements = pgTable(
+  "inventory_movements",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    productId: uuid("product_id")
+      .notNull()
+      .references((): AnyPgColumn => products.id, { onDelete: "restrict" }),
+    /** Saldo berubah +qty (restock) / -qty (sale). */
+    qtyDelta: integer("qty_delta").notNull(),
+    reason: inventoryReasonEnum("reason").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    // Kartu stok per produk, urut waktu.
+    index("inventory_movements_org_product_idx").on(
+      t.orgId,
+      t.productId,
+      t.createdAt,
+    ),
+  ],
+);
+
+export const journalEntries = pgTable(
+  "journal_entries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    /** Nomor jurnal berurutan per org (max+1 in-tx, service.ts). */
+    entryNumber: integer("entry_number").notNull(),
+    date: date("date").notNull(),
+    description: text("description"),
+    status: journalStatusEnum("status").notNull().default("draft"),
+    source: journalSourceEnum("source").notNull().default("manual"),
+    /** Metode bayar untuk jurnal kas (null kalau bukan transaksi kas). */
+    paymentMethod: paymentMethodEnum("payment_method"),
+    /** Closing adjustment: ini jurnal pos closing yang menjaga rentang per periode */
+    isClosingEntry: boolean("is_closing_entry").notNull().default(false),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    postedAt: timestamp("posted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    unique("journal_entries_org_number_unique").on(t.orgId, t.entryNumber),
+    index("journal_entries_org_date_idx").on(t.orgId, t.date),
+  ],
+);
+
+export const journalLines = pgTable(
+  "journal_lines",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    entryId: uuid("entry_id")
+      .notNull()
+      .references(() => journalEntries.id, { onDelete: "cascade" }),
+    accountId: uuid("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "restrict" }),
+    /** Rupiah integer >= 0 (assertSafeAmount); salah satu dari keduanya 0. */
+    debit: bigint("debit", { mode: "number" }).notNull().default(0),
+    credit: bigint("credit", { mode: "number" }).notNull().default(0),
+    description: text("description"),
+  },
+  (t) => [
+    index("journal_lines_org_account_idx").on(t.orgId, t.accountId),
+    check(
+      "journal_lines_amounts_check",
+      sql`debit >= 0 AND credit >= 0 AND (debit = 0 OR credit = 0)`,
+    ),
+  ],
+);
+
+export type Account = typeof accounts.$inferSelect;
+export type JournalEntry = typeof journalEntries.$inferSelect;
+export type JournalLine = typeof journalLines.$inferSelect;
+export type InventoryMovement = typeof inventoryMovements.$inferSelect;
+
+/** Periode fiskal per org (kalender bulan): closed = tidak bisa posting. */
+export const fiscalPeriods = pgTable(
+  "fiscal_periods",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    periodStart: date("period_start").notNull(),
+    closed: boolean("closed").notNull().default(false),
+    closedBy: uuid("closed_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [unique("fiscal_periods_org_start_unique").on(t.orgId, t.periodStart)],
+);
+
+export type FiscalPeriod = typeof fiscalPeriods.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// Produk / POS
+// ---------------------------------------------------------------------------
+
+export const products = pgTable(
+  "products",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** SKU unik per org. */
+    sku: text("sku").notNull(),
+    /** Harga jual, rupiah integer (assertSafeAmount). */
+    price: bigint("price", { mode: "number" }).notNull(),
+    /** Saldo stok; kartu mutasinya inventory_movements. */
+    stockQty: integer("stock_qty").notNull().default(0),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    unique("products_org_sku_unique").on(t.orgId, t.sku),
+    check("products_stock_nonnegative", sql`stock_qty >= 0`),
+  ],
+);
+
+/** Penjualan POS: header satu transaksi kasir. */
+export const posSales = pgTable(
+  "pos_sales",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    /** Nomor struk per org, "SLS-001" (pola project-code). */
+    saleNumber: text("sale_number").notNull(),
+    /** Item POS dipakai: produk dipakai user, tidak di-link dokumen. */
+    userId: uuid("user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    paymentMethod: paymentMethodEnum("payment_method").notNull(),
+    /** Tax 0..100 persen; default 0 (POS kecil tanpa PPN). */
+    taxPct: integer("tax_pct").notNull().default(0),
+    subtotal: bigint("subtotal", { mode: "number" }).notNull(),
+    taxAmount: bigint("tax_amount", { mode: "number" }).notNull(),
+    total: bigint("total", { mode: "number" }).notNull(),
+    journalEntryId: uuid("journal_entry_id"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    unique("pos_sales_org_number_unique").on(t.orgId, t.saleNumber),
+    index("pos_sales_org_created_idx").on(t.orgId, t.createdAt),
+  ],
+);
+
+export const posSaleItems = pgTable(
+  "pos_sale_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    saleId: uuid("sale_id")
+      .notNull()
+      .references(() => posSales.id, { onDelete: "cascade" }),
+    productId: uuid("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "restrict" }),
+    productName: text("product_name").notNull(),
+    qty: integer("qty").notNull(),
+    unitPrice: bigint("unit_price", { mode: "number" }).notNull(),
+    lineTotal: bigint("line_total", { mode: "number" }).notNull(),
+  },
+  (t) => [index("pos_sale_items_sale_idx").on(t.saleId)],
+);
+
+export type Product = typeof products.$inferSelect;
+export type PosSale = typeof posSales.$inferSelect;
+export type PosSaleItem = typeof posSaleItems.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// Invoice
+// ---------------------------------------------------------------------------
+
+export const invoiceStatusEnum = pgEnum("invoice_status", [
+  "draft",
+  "sent",
+  "paid",
+  "overdue",
+  "cancelled",
+]);
+
+export const invoices = pgTable(
+  "invoices",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    /** "INV-001" per org (pola project-code, advisory lock). */
+    invoiceNumber: text("invoice_number").notNull(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => crmCompanies.id, { onDelete: "restrict" }),
+    contactId: uuid("contact_id").references(() => crmContacts.id, {
+      onDelete: "set null",
+    }),
+    status: invoiceStatusEnum("status").notNull().default("draft"),
+    issueDate: date("issue_date").notNull(),
+    dueDate: date("due_date").notNull(),
+    taxPct: integer("tax_pct").notNull().default(0),
+    subtotal: bigint("subtotal", { mode: "number" }).notNull(),
+    taxAmount: bigint("tax_amount", { mode: "number" }).notNull(),
+    total: bigint("total", { mode: "number" }).notNull(),
+    /** Akumulasi dibayar; overpayment dicek service (recordPayment). */
+    paidAmount: bigint("paid_amount", { mode: "number" }).notNull().default(0),
+    journalEntryId: uuid("journal_entry_id"),
+    notes: text("notes"),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    unique("invoices_org_number_unique").on(t.orgId, t.invoiceNumber),
+    index("invoices_org_status_idx").on(t.orgId, t.status),
+  ],
+);
+
+export const invoiceItems = pgTable(
+  "invoice_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    invoiceId: uuid("invoice_id")
+      .notNull()
+      .references(() => invoices.id, { onDelete: "cascade" }),
+    description: text("description").notNull(),
+    qty: integer("qty").notNull(),
+    unitPrice: bigint("unit_price", { mode: "number" }).notNull(),
+    lineTotal: bigint("line_total", { mode: "number" }).notNull(),
+  },
+  (t) => [index("invoice_items_invoice_idx").on(t.invoiceId)],
+);
+
+/** Pembayaran invoice: satu baris = satu kas masuk + jurnal AR. */
+export const invoicePayments = pgTable(
+  "invoice_payments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    invoiceId: uuid("invoice_id")
+      .notNull()
+      .references(() => invoices.id, { onDelete: "cascade" }),
+    amount: bigint("amount", { mode: "number" }).notNull(),
+    method: paymentMethodEnum("method").notNull(),
+    paidAt: date("paid_at").notNull(),
+    journalEntryId: uuid("journal_entry_id"),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("invoice_payments_invoice_idx").on(t.invoiceId)],
+);
+
+export type Invoice = typeof invoices.$inferSelect;
+export type InvoiceItem = typeof invoiceItems.$inferSelect;
+export type InvoicePayment = typeof invoicePayments.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// Anggaran (budget)
+// ---------------------------------------------------------------------------
+
+export const budgets = pgTable(
+  "budgets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    accountId: uuid("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    /** "YYYY-MM" — bulan anggaran (kalender, WIB-neutral). */
+    period: text("period").notNull(),
+    amount: bigint("amount", { mode: "number" }).notNull(),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    unique("budgets_org_account_period_unique").on(
+      t.orgId,
+      t.accountId,
+      t.period,
+    ),
+    check("budgets_period_format", sql`period ~ '^[0-9]{4}-[0-9]{2}$'`),
+  ],
+);
+
+export type Budget = typeof budgets.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// Aset tetap (fixed assets)
+// ---------------------------------------------------------------------------
+
+export const assetStatusEnum = pgEnum("asset_status", ["active", "disposed"]);
+
+export const fixedAssets = pgTable(
+  "fixed_assets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    cost: bigint("cost", { mode: "number" }).notNull(),
+    salvageValue: bigint("salvage_value", { mode: "number" })
+      .notNull()
+      .default(0),
+    usefulLifeMonths: integer("useful_life_months").notNull(),
+    acquiredDate: date("acquired_date").notNull(),
+    /** Akumulasi penyusutan terbukui (redundansi; sumber: jurnal dep). */
+    totalDepreciated: bigint("total_depreciated", { mode: "number" })
+      .notNull()
+      .default(0),
+    status: assetStatusEnum("status").notNull().default("active"),
+    disposalDate: date("disposal_date"),
+    /** Idempotensi per bulan: period terakhir yang sudah didepresiasikan. */
+    lastDepreciatedPeriod: text("last_depreciated_period"),
+    depreciationExpenseAccountId: uuid("depreciation_expense_account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "restrict" }),
+    accumulatedDepreciationAccountId: uuid(
+      "accumulated_depreciation_account_id",
+    )
+      .notNull()
+      .references(() => accounts.id, { onDelete: "restrict" }),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("fixed_assets_org_status_idx").on(t.orgId, t.status),
+    check(
+      "fixed_assets_depreciable_check",
+      sql`salvage_value <= cost AND useful_life_months >= 1`,
+    ),
+  ],
+);
+
+export type FixedAsset = typeof fixedAssets.$inferSelect;

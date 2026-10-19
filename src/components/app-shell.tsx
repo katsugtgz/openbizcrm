@@ -17,6 +17,8 @@ import {
   Users,
   ClipboardList,
   Fingerprint,
+  FileText,
+  ShoppingCart,
 } from "lucide-react";
 import { cn } from "cn";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -51,7 +53,9 @@ const NAV_ITEMS = [
   { label: "Penggajian", href: "/penggajian", icon: BanknoteIcon },
   { label: "CRM", href: "/crm", icon: Building2 },
   { label: "Proyek", href: "/proyek", icon: ClipboardList },
-  { label: "Akuntansi", href: "#", icon: BanknoteIcon },
+  { label: "Akuntansi", href: "/akuntansi", icon: BanknoteIcon },
+  { label: "Faktur", href: "/faktur", icon: FileText },
+  { label: "POS", href: "/pos", icon: ShoppingCart },
   { label: "Chat", href: "#", icon: MessageSquare },
   { label: "Cloud", href: "#", icon: CloudIcon },
   { label: "Pengaturan", href: "#", icon: Settings },
@@ -189,7 +193,7 @@ export function AppShell({
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-40 flex h-14 items-center gap-3 border-b bg-background/95 px-4 backdrop-blur supports-backdrop-filter:bg-background/75">
+        <header className="app-shell-header sticky top-0 z-40 flex h-14 items-center gap-3 border-b bg-background/95 px-4 backdrop-blur supports-backdrop-filter:bg-background/75">
           {/* Mobile nav */}
           <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
             <SheetTrigger asChild>
