@@ -74,6 +74,17 @@ describe("ai conversation persistence integration", () => {
       const other = await makeOrg();
       expect(await ai.listMessages(other.orgId, conv.id)).toEqual([]);
 
+      // appendMessage org-guard (P1 cubic pr9): org lain dengan ID
+      // conversation yang diketahui tidak bisa menyuntik pesan.
+      await expect(
+        ai.appendMessage(other.orgId, conv.id, "user", "suntik lintas org"),
+      ).rejects.toThrow();
+      // Pun org yang sama tapi ID conversation tidak ada.
+      const fakeId = "00000000-0000-4000-8000-000000000000";
+      await expect(
+        ai.appendMessage(o.orgId, fakeId, "user", "x"),
+      ).rejects.toThrow();
+
       // role enum: nilai lain ditolak DB
       const { sql } = await import("drizzle-orm");
       await expect(

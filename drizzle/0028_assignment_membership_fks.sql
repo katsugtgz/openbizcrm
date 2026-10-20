@@ -1,0 +1,2 @@
+ALTER TABLE "review_assignments" ADD CONSTRAINT "review_assignments_reviewer_member_fk" FOREIGN KEY ("org_id","reviewer_user_id") REFERENCES "public"."org_memberships"("org_id","user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "review_assignments" ADD CONSTRAINT "review_assignments_reviewee_member_fk" FOREIGN KEY ("org_id","reviewee_user_id") REFERENCES "public"."org_memberships"("org_id","user_id") ON DELETE cascade ON UPDATE no action;

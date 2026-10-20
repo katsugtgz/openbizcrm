@@ -1,6 +1,10 @@
 import { requireOrgRole } from "@/lib/org-scope";
 import { listMembers } from "@/lib/repos/member-repo";
-import { listPeriods, listResponsesForPeriod } from "@/lib/review/service";
+import {
+  listForms,
+  listPeriods,
+  listResponsesForPeriod,
+} from "@/lib/review/service";
 import { aggregate360, type Agg360Entry } from "@/lib/review/aggregate";
 import {
   Card,
@@ -21,11 +25,18 @@ export async function AggregateSection({
   orgId: string;
   userId: string;
 }) {
-  await requireOrgRole(userId, orgId, "member");
+  // Agregat penilaian sensitif (rating antar-orang): admin+ saja.
+  await requireOrgRole(userId, orgId, "admin");
   const periods = await listPeriods(orgId);
   const members = await listMembers(userId, orgId);
   const nameById = new Map(
     members.map((m) => [m.user.id, m.user.name ?? m.user.email]),
+  );
+  const numericKeysByPeriod = new Map(
+    (await listForms(orgId)).map((f) => [
+      f.id,
+      new Set(f.fields.filter((x) => x.type === "number").map((x) => x.key)),
+    ]),
   );
 
   const active = periods.filter((p) => p.status !== "draft");
@@ -50,6 +61,7 @@ export async function AggregateSection({
               revieweeUserId: r.assignment.revieweeUserId,
               answers: r.response.answers,
             })),
+            numericKeysByPeriod.get(p.formId),
           );
           return (
             <div key={p.id} className="rounded-md border p-3">

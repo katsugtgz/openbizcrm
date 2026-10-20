@@ -2,7 +2,11 @@ import { redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
 import { requireOrgRole } from "@/lib/org-scope";
-import { listCompletions, listCourses } from "@/lib/review/service";
+import {
+  listCompletions,
+  listCourses,
+  listMaterials,
+} from "@/lib/review/service";
 import {
   Card,
   CardContent,
@@ -26,6 +30,14 @@ export default async function LmsPage() {
     listCompletions(ids.orgId, ids.userId),
   ]);
   const doneIds = new Set(completions.map((c) => c.courseId));
+  // Materi per kursus (cubic lms/page.tsx:5): konten kursus terlihat pembelajar.
+  const materialsByCourse = new Map(
+    await Promise.all(
+      courses.map(
+        async (c) => [c.id, await listMaterials(ids.orgId, c.id)] as const,
+      ),
+    ),
+  );
 
   return (
     <div className="space-y-6">
@@ -49,7 +61,17 @@ export default async function LmsPage() {
                 <CardDescription>{c.description}</CardDescription>
               )}
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-3">
+              {(materialsByCourse.get(c.id) ?? []).map((m) => (
+                <details key={m.id} className="rounded-md border px-3 py-2">
+                  <summary className="cursor-pointer text-sm font-medium">
+                    {m.title}
+                  </summary>
+                  <p className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">
+                    {m.content}
+                  </p>
+                </details>
+              ))}
               {doneIds.has(c.id) ? (
                 <p className="text-xs text-green-700">Selesai ✓</p>
               ) : (

@@ -57,14 +57,18 @@ function requireDriveConfig(): DriveConfig {
     throw new ConfigError(
       "Konfigurasi drive (R2) belum lengkap. Set R2_ACCOUNT_ID, " +
         "R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, dan R2_BUCKET di .env " +
-        "(endpoint: https://<account>.r2.cloudflarestorage.com).",
+        "(endpoint: https://<account>.r2.cloudflarestorage.com, atau " +
+        "S3_ENDPOINT untuk backend S3 lain seperti MinIO).",
     );
   }
   return {
     bucket,
     client: new S3Client({
       region: "auto",
-      endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+      // Backend S3 apa pun (MinIO lokal) via S3_ENDPOINT; default R2.
+      endpoint:
+        process.env.S3_ENDPOINT ??
+        `https://${accountId}.r2.cloudflarestorage.com`,
       credentials: { accessKeyId, secretAccessKey },
     }),
   };
@@ -98,9 +102,11 @@ const PRESIGN_TTL_SECONDS = 900;
 
 /**
  * Presigned PUT untuk unggah langsung klien -> R2. Key = <orgId>/<uuid>/<nama>.
- * Kuota diperiksa saat presign; ukuran aktual diverifikasi ulang setelah
- * unggah lewat confirmUpload (headObject) — sengaja dua tahap agar kuota
- * tidak bisa dilewati lewat size salah saat presign.
+ * Kuota diperiksa saat presign; baris dibuat "pending" (reservasi kuota)
+ * dengan expiresAt — pending kadaluarsa dibersihkan (purgeExpiredPending)
+ * saat presign berikutnya, jadi unggahan ditinggal tidak mengunci kuota
+ * selamanya. confirmUpload verifikasi objek ada + ukurannya sama, lalu
+ * flip ke confirmed.
  */
 export async function presignUpload(
   userId: string,
@@ -132,6 +138,7 @@ export async function presignUpload(
     await tx.execute(
       sql`select pg_advisory_xact_lock(hashtext(${`drive:${orgId}`}))`,
     );
+    await purgeExpiredPending(tx, orgId);
     const [{ used }] = await tx
       .select({
         used: sql<number>`coalesce(sum(${driveFiles.sizeBytes}), 0)::bigint`,
@@ -163,6 +170,9 @@ export async function presignUpload(
         mimeType,
         sizeBytes,
         uploadedBy: userId,
+        status: "pending",
+        // Kelonggaran 2x TTL presign: klien lambat tetap sempat confirm.
+        expiresAt: new Date(Date.now() + PRESIGN_TTL_SECONDS * 2 * 1000),
       })
       .returning();
     await recordAudit(
@@ -185,6 +195,22 @@ export async function presignUpload(
   });
 }
 
+/** Hapus reservasi pending yang kadaluarsa (dipanggil dalam transaksi). */
+async function purgeExpiredPending(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  orgId: string,
+): Promise<void> {
+  await tx
+    .delete(driveFiles)
+    .where(
+      and(
+        eq(driveFiles.orgId, orgId),
+        eq(driveFiles.status, "pending"),
+        sql`${driveFiles.expiresAt} is not null and ${driveFiles.expiresAt} < now()`,
+      ),
+    );
+}
+
 export async function confirmUpload(
   userId: string,
   orgId: string,
@@ -198,10 +224,31 @@ export async function confirmUpload(
     .where(and(eq(driveFiles.id, fileId), eq(driveFiles.orgId, orgId)))
     .limit(1);
   if (!file) throw new NotFoundError("File tidak ditemukan.");
-  // Verifikasi objek benar-benar ada di R2 (unggah sukses).
+  if (file.status === "confirmed") return file; // idempoten
+  // Verifikasi objek ada DAN ukurannya sama dengan reservasi — kalau beda,
+  // kuota enforcement dan tampilan akan berlainan.
   const { HeadObjectCommand } = await import("@aws-sdk/client-s3");
-  await client.send(new HeadObjectCommand({ Bucket: bucket, Key: file.key }));
-  return file;
+  const head = await client.send(
+    new HeadObjectCommand({ Bucket: bucket, Key: file.key }),
+  );
+  if ((head.ContentLength ?? -1) !== file.sizeBytes) {
+    // Beda ukuran: buang objek + reservasi; klien unggah ulang.
+    await client
+      .send(new DeleteObjectCommand({ Bucket: bucket, Key: file.key }))
+      .catch(() => {});
+    await db
+      .delete(driveFiles)
+      .where(and(eq(driveFiles.id, file.id), eq(driveFiles.orgId, orgId)));
+    throw new DriveError(
+      "Ukuran objek tidak sesuai reservasi. Silakan unggah ulang.",
+    );
+  }
+  const [updated] = await db
+    .update(driveFiles)
+    .set({ status: "confirmed", confirmedAt: new Date(), expiresAt: null })
+    .where(and(eq(driveFiles.id, file.id), eq(driveFiles.orgId, orgId)))
+    .returning();
+  return updated;
 }
 
 export async function createFolder(
@@ -301,6 +348,8 @@ export async function listFolder(
       .where(
         and(
           eq(driveFiles.orgId, orgId),
+          // Reservasi pending (belum terkonfirmasi) tidak ditampilkan.
+          eq(driveFiles.status, "confirmed"),
           folderId
             ? eq(driveFiles.folderId, folderId)
             : isNull(driveFiles.folderId),
@@ -362,9 +411,27 @@ export async function deleteFile(
       tx,
     );
   });
-  // Hapus objek R2 SETELAH baris ter-commit (urutan aman: gagal R2 hanya
-  // menyisakan orphan object, bukan metadata tanpa objek).
-  await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: file.key }));
+  // Hapus objek R2 SETELAH baris ter-commit. Gagal R2 tidak dibiarkan jadi
+  // orphan sunyi: catat audit "delete.object.failed" berisi key supaya bisa
+  // dibersihkan/diulang; user tetap melihat file terhapus (metadata hilang).
+  try {
+    await client.send(
+      new DeleteObjectCommand({ Bucket: bucket, Key: file.key }),
+    );
+  } catch (error) {
+    await recordAudit({
+      orgId,
+      userId,
+      action: "drive.file.delete.object_failed",
+      entity: "drive_file",
+      entityId: fileId,
+      metadata: {
+        key: file.key,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    });
+    throw error;
+  }
 }
 
 export async function driveUsageBytes(orgId: string): Promise<number> {
@@ -373,6 +440,8 @@ export async function driveUsageBytes(orgId: string): Promise<number> {
       used: sql<number>`coalesce(sum(${driveFiles.sizeBytes}), 0)::bigint`,
     })
     .from(driveFiles)
+    // Kuota menampilkan pemakaian aktual; reservasi pending dihitung di
+    // presign lewat query sama (semua baris), bukan di sini.
     .where(eq(driveFiles.orgId, orgId));
   return Number(used);
 }

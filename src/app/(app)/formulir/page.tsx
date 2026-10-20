@@ -62,12 +62,12 @@ export default async function FormulirPage() {
             </CardHeader>
             <CardContent className="flex items-center justify-between gap-3">
               {f.slug && f.status === "active" ? (
-                <Link
-                  href={`/r/${f.slug}`}
+                <span
                   className="text-sm text-primary underline underline-offset-4"
+                  title="Pratinjau — pengisian butuh tautan ber-token per penilai (?a=assignmentId) yang dibagikan dari halaman Penilaian"
                 >
-                  /r/{f.slug}
-                </Link>
+                  /r/{f.slug} (pratinjau)
+                </span>
               ) : (
                 <span className="text-xs text-muted-foreground">
                   Tautan publik muncul setelah publish.

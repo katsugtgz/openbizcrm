@@ -35,28 +35,43 @@ export default async function LaporanPage() {
   await requireOrgRole(ids.userId, ids.orgId, "member");
 
   const today = jakartaDateISO(new Date());
+  // Hanya kursus berbeda yang pernah selesai (cubic laporan/page.tsx:77):
+  // jumlah baris completion lintas user membuat kartu "dari N kursus" tak
+  // bermakna; distinct course memberi cakupan kursus.
   const completions = await db
-    .select({ id: courseCompletions.id })
+    .selectDistinct({ courseId: courseCompletions.courseId })
     .from(courseCompletions)
     .where(eq(courseCompletions.orgId, ids.orgId));
   const [attendancesToday, deals, reports, courses, announcements] =
     await Promise.all([
       listAttendances(ids.orgId, { from: today, to: today }),
       listDeals(ids.orgId),
-      financialReports(ids.orgId, today.slice(0, 7)).catch(() => null),
+      // Gagal query akuntansi tetap terlihat (cubic laporan/page.tsx:46):
+      // strip minus + label tidak tersedia, bukan dash yang mirip nol.
+      financialReports(ids.orgId, today.slice(0, 7)).catch(
+        () => "error" as const,
+      ),
       listCourses(ids.orgId),
       listAnnouncements(ids.orgId),
     ]);
-  const revenueMtd = reports
-    ? reports.income.revenue.reduce((s, r) => s + r.balance, 0)
-    : null;
+  const revenueMtd: number | "error" | null =
+    reports === "error"
+      ? "error"
+      : reports
+        ? reports.income.revenue.reduce<number>((s, r) => s + r.balance, 0)
+        : null;
   const openDeals = deals.filter((d) => d.status === "open");
   const openValue = openDeals.reduce((s, d) => s + d.value, 0);
+  // Hadir = status kehadiran nyata (cubic laporan/page.tsx:59) — absent dan
+  // leave bukan hadir.
+  const presentCount = attendancesToday.filter((a) =>
+    ["ontime", "late", "wfh"].includes(a.status),
+  ).length;
 
   const cards = [
     {
       title: "Presensi Hari Ini",
-      value: `${attendancesToday.length}`,
+      value: `${presentCount}`,
       desc: "karyawan tercatat hadir",
       href: "/presensi",
     },
@@ -68,8 +83,16 @@ export default async function LaporanPage() {
     },
     {
       title: "Pendapatan Bulan Ini",
-      value: revenueMtd === null ? "—" : formatIDR(revenueMtd),
-      desc: "akumulasi akun pendapatan (MTD)",
+      value:
+        revenueMtd === "error"
+          ? "Tidak tersedia"
+          : revenueMtd === null
+            ? "—"
+            : formatIDR(revenueMtd),
+      desc:
+        revenueMtd === "error"
+          ? "gagal memuat data akuntansi"
+          : "akumulasi akun pendapatan (MTD)",
       href: "/akuntansi/laporan",
     },
     {

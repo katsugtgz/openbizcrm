@@ -1,0 +1,1 @@
+ALTER TYPE "public"."whatsapp_outbox_status" ADD VALUE 'sending' BEFORE 'sent';

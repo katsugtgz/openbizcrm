@@ -86,4 +86,18 @@ describe("validateAnswers", () => {
     });
     expect(Object.keys(errors)).toEqual([]);
   });
+
+  it("boolean bukan angka: true tidak jadi skor 1", () => {
+    expect(validateAnswers(fields, { skor: true }).skor).toBeTruthy();
+    expect(validateAnswers(fields, { skor: false }).skor).toBeTruthy();
+  });
+
+  it("field `__proto__` tidak merusak map error", () => {
+    const proto: ReviewFormField[] = [
+      { key: "__proto__", label: "Proto", type: "text", required: true },
+    ];
+    const errors = validateAnswers(proto, {});
+    expect(Object.hasOwn(errors, "__proto__")).toBe(true);
+    expect(errors.__proto__).toBeTruthy();
+  });
 });

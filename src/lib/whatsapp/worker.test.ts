@@ -9,6 +9,7 @@ vi.mock("./service", () => ({
     { id: "row-1", phone: "+6281", message: "m1" },
     { id: "row-2", phone: "+6282", message: "m2" },
   ]),
+  claimOutbox: vi.fn(async () => true),
   resolveOutbox: vi.fn(
     async (
       _u: string,
@@ -42,5 +43,44 @@ describe("worker drain (mocked service)", () => {
 
   it("stub sender selalu sukses", async () => {
     expect(await stubSender("x", "y")).toEqual({ ok: true });
+  });
+
+  // Hardening P1: baris yang gagal diklaim TIDAK dikirim & tidak di-resolve.
+  it("baris tidak terklaim (worker lain) dilewati tanpa send/resolve", async () => {
+    resolveCalls.length = 0;
+    // override mock daftar: hanya row yang terklaim yang diproses
+    const { listQueuedOutbox, claimOutbox } = await import("./service");
+    vi.mocked(listQueuedOutbox).mockResolvedValueOnce([
+      {
+        id: "row-1",
+        orgId: "org-1",
+        phone: "+6281",
+        message: "m1",
+        status: "queued",
+        attempts: 0,
+        lastError: null,
+        sentAt: null,
+        createdAt: new Date(),
+      },
+      {
+        id: "row-2",
+        orgId: "org-1",
+        phone: "+6282",
+        message: "m2",
+        status: "queued",
+        attempts: 0,
+        lastError: null,
+        sentAt: null,
+        createdAt: new Date(),
+      },
+    ]);
+    vi.mocked(claimOutbox).mockImplementation(
+      async (_org: string, rowId: string) => rowId === "row-1",
+    );
+    const sender = vi.fn<typeof stubSender>().mockResolvedValue({ ok: true });
+    const n = await drainOutbox("user-1", "org-1", sender);
+    expect(n).toBe(1);
+    expect(sender).toHaveBeenCalledTimes(1);
+    expect(resolveCalls).toEqual([{ id: "row-1", ok: true }]);
   });
 });

@@ -38,21 +38,23 @@ function fail(error: unknown): ActionResult {
 
 export async function openDirectAction(
   formData: FormData,
-): Promise<ActionResult> {
+): Promise<ActionResult & { conversationId?: string }> {
   const { userId, orgId } = await requireSession();
   const otherUserId = String(formData.get("otherUserId") ?? "").trim();
+  let conversationId: string;
   try {
-    await openDirect(userId, orgId, otherUserId);
+    conversationId = (await openDirect(userId, orgId, otherUserId))
+      .conversationId;
   } catch (error) {
     return fail(error);
   }
   revalidatePath("/obrolan");
-  return { ok: true };
+  return { ok: true, conversationId };
 }
 
 export async function createGroupAction(
   formData: FormData,
-): Promise<ActionResult> {
+): Promise<ActionResult & { conversationId?: string }> {
   const { userId, orgId } = await requireSession();
   const name = String(formData.get("name") ?? "").trim();
   let memberUserIds: string[] = [];
@@ -63,13 +65,15 @@ export async function createGroupAction(
   } catch {
     return { ok: false, error: "Daftar anggota tidak valid." };
   }
+  let conversationId: string;
   try {
-    await createGroup(userId, orgId, { name, memberUserIds });
+    conversationId = (await createGroup(userId, orgId, { name, memberUserIds }))
+      .id;
   } catch (error) {
     return fail(error);
   }
   revalidatePath("/obrolan");
-  return { ok: true };
+  return { ok: true, conversationId };
 }
 
 export async function sendMessageAction(

@@ -34,10 +34,13 @@ export interface FileRow {
  */
 export function CloudBrowser({
   folderId,
+  parentFolderId,
   folders,
   files,
 }: {
   folderId: string | null;
+  /** Induk folder aktif (null saat folder aktif = root atau tanpa induk). */
+  parentFolderId?: string | null;
   folders: FolderRow[];
   files: FileRow[];
 }) {
@@ -151,8 +154,10 @@ export function CloudBrowser({
       </div>
       <div className="space-y-1" role="list" aria-label="Isi folder">
         {folderId && (
+          // Naik satu tingkat ke induk (cubic cloud-browser.tsx:155),
+          // bukan langsung root.
           <Link
-            href="/cloud"
+            href={parentFolderId ? `/cloud?f=${parentFolderId}` : "/cloud"}
             className="block rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-accent"
           >
             ← Folder induk

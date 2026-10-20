@@ -2,15 +2,16 @@ import type { ReviewFormField } from "@/db/schema";
 
 /**
  * Validasi jawaban form penilaian (murni): return errors map key -> pesan.
- * Map kosong = valid. Field tak dikenal di jawaban diabaikan (bukan error)
- * supaya form boleh bertambah field tanpa mematahkan jawaban lama.
+ * Map kosong = valid. Key tak dikenal di jawaban diabaikan (agregasi pun
+ * hanya menghitung key field "number" dari definisi form). Error map tanpa
+ * prototype supaya key `__proto__` tetap menjadi entri biasa, bukan
+ * men-set prototype objek.
  */
 export function validateAnswers(
   fields: ReviewFormField[],
   answers: Record<string, unknown>,
 ): Record<string, string> {
-  const errors: Record<string, string> = {};
-  const byKey = new Set(fields.map((f) => f.key));
+  const errors: Record<string, string> = Object.create(null);
 
   for (const f of fields) {
     const raw = answers[f.key];
@@ -34,7 +35,14 @@ export function validateAnswers(
         }
         break;
       case "number": {
-        const n = typeof raw === "number" ? raw : Number(raw);
+        // Hanya number atau string angka; boolean/array/object ditolak
+        // (boolean true bukan skor 1).
+        const n =
+          typeof raw === "number"
+            ? raw
+            : typeof raw === "string"
+              ? Number(raw.trim())
+              : NaN;
         if (!Number.isSafeInteger(n)) {
           errors[f.key] = `${f.label} harus angka bulat.`;
         } else if (
@@ -59,6 +67,5 @@ export function validateAnswers(
         break;
     }
   }
-  void byKey;
   return errors;
 }

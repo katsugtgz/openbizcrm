@@ -18,7 +18,7 @@ import {
   submitResponse,
   updateForm,
 } from "@/lib/review/service";
-import type { ReviewFormField } from "@/db/schema";
+import { parseFieldsJson as parseFieldsJsonLib } from "@/lib/review/fields";
 
 export interface ActionResult {
   ok: boolean;
@@ -42,22 +42,12 @@ function fail(error: unknown): ActionResult {
   };
 }
 
-/** Definisi field dikirim sebagai JSON string dari form (dinamis). */
-function parseFieldsJson(raw: string): ReviewFormField[] | null {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return null;
-    return parsed.filter(
-      (f): f is ReviewFormField =>
-        typeof f === "object" &&
-        f !== null &&
-        typeof (f as ReviewFormField).key === "string" &&
-        typeof (f as ReviewFormField).type === "string",
-    );
-  } catch {
-    return null;
-  }
-}
+/**
+ * Definisi field dikirim sebagai JSON string dari form (dinamis). Seluruh
+ * definisi ditolak bila SATU item pun gagal shape check (cubic
+ * penilaian/actions.ts:50) — lihat src/lib/review/fields.ts.
+ */
+const parseFieldsJson = (raw: string) => parseFieldsJsonLib(raw);
 
 // ---------------- Forms ----------------
 

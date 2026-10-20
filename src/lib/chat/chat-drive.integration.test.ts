@@ -148,10 +148,21 @@ describe("chat + drive integration", () => {
     const { userId, orgId } = await makeOrgWithOwner();
     const other = await makeOrgWithOwner();
 
-    // presign butuh kredensial R2 -> ConfigError (setup), bukan crash
-    await expect(
-      drive.presignUpload(userId, orgId, "a.txt", "text/plain", 10),
-    ).rejects.toThrow(/Konfigurasi drive/);
+    // presign butuh kredensial R2 -> ConfigError (setup), bukan crash.
+    // Asersi HANYA di lingkungan tanpa R2 (cubic chat-drive.test:96):
+    // dengan kredensial valid, presign sukses dan folder-isolation tetap
+    // harus jalan, bukan gagal di assertion ini.
+    const hasR2 = Boolean(
+      process.env.R2_ACCOUNT_ID &&
+      process.env.R2_ACCESS_KEY_ID &&
+      process.env.R2_SECRET_ACCESS_KEY &&
+      process.env.R2_BUCKET,
+    );
+    if (!hasR2) {
+      await expect(
+        drive.presignUpload(userId, orgId, "a.txt", "text/plain", 10),
+      ).rejects.toThrow(/Konfigurasi drive/);
+    }
 
     const root = await drive.createFolder(userId, orgId, "Dokumen");
     const sub = await drive.createFolder(userId, orgId, "Kontrak", root.id);
@@ -199,20 +210,30 @@ describe("chat + drive integration", () => {
         uploadedBy: userId,
       });
       expect(await drive.driveUsageBytes(orgId)).toBe(10 * 1024 * 1024 * 1024);
-      // Presign kedua harus ditolak kuota (kuota dicek SEBELUM kredensial? Tidak —
-      // config dicek dulu, jadi lokal kita uji lewat logika kuota: cek ConfigError
-      // tidak mengalahkan asersi kuota di lingkungan ber-R2; di lokal ini kita
-      // verifikasi usage terhitung, dan asersi kuota diuji di lingkungan ber-R2.)
-      await expect(
-        drive.presignUpload(
-          userId,
-          orgId,
-          "b.bin",
-          "application/octet-stream",
-          1,
-        ),
-      ).rejects.toThrow();
-      expect(await drive.driveUsageBytes(orgId)).toBe(10 * 1024 * 1024 * 1024);
+      // Penolakan kuota diuji HANYA bila konfigurasi R2 ada (cubic
+      // chat-drive.test:102) — tanpa R2, presign berhenti di ConfigError
+      // sebelum query kuota, jadi toThrow() di sini pass palsu. Baris
+      // pending injected di atas tetap membuktikan usage terhitung DB-side.
+      const hasR2 = Boolean(
+        process.env.R2_ACCOUNT_ID &&
+        process.env.R2_ACCESS_KEY_ID &&
+        process.env.R2_SECRET_ACCESS_KEY &&
+        process.env.R2_BUCKET,
+      );
+      if (hasR2) {
+        await expect(
+          drive.presignUpload(
+            userId,
+            orgId,
+            "b.bin",
+            "application/octet-stream",
+            1,
+          ),
+        ).rejects.toThrow(/Kuota drive organisasi penuh/);
+        expect(await drive.driveUsageBytes(orgId)).toBe(
+          10 * 1024 * 1024 * 1024,
+        );
+      }
     },
   );
 

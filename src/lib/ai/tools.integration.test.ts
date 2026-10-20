@@ -80,17 +80,15 @@ describe("ai tools integration (this-month summary)", () => {
         position: 1,
       })
       .returning();
-    await db
-      .insert(schema.crmDeals)
-      .values([
-        {
-          orgId: o.orgId,
-          pipelineId: pipeline[0].id,
-          stageId: stage[0].id,
-          companyId: company[0].id,
-          title: "D1",
-        },
-      ]);
+    await db.insert(schema.crmDeals).values([
+      {
+        orgId: o.orgId,
+        pipelineId: pipeline[0].id,
+        stageId: stage[0].id,
+        companyId: company[0].id,
+        title: "D1",
+      },
+    ]);
     await db.insert(schema.crmContacts).values({
       orgId: other.orgId,
       companyId: (

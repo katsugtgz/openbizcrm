@@ -86,33 +86,39 @@ export async function openDirect(
   await requireOrgRole(userId, orgId, "member");
   await requireOrgRole(otherUserId, orgId, "member");
 
-  // Percakapan direct org ini yang memuat kedua user sebagai anggota,
-  // dan total anggotanya tepat 2.
-  const [existing] = await db
-    .select({ c: chatConversations })
-    .from(chatConversations)
-    .innerJoin(
-      chatConversationMembers,
-      eq(chatConversationMembers.conversationId, chatConversations.id),
-    )
-    .where(
-      and(
-        eq(chatConversations.orgId, orgId),
-        eq(chatConversations.kind, "direct"),
-        inArray(chatConversationMembers.userId, [userId, otherUserId]),
-      ),
-    )
-    .groupBy(chatConversations.id)
-    .having(
-      sql`count(distinct ${chatConversationMembers.userId}) = 2
-          and count(*) = 2`,
-    )
-    .limit(1);
-  if (existing) {
-    return { conversationId: existing.c.id, created: false };
-  }
-
+  // Serialize + recheck di dalam satu tx (P2 cubic pr9 :115): dua openDirect
+  // konkuren untuk pasangan sama tidak bisa buat duplikat — lookup kedua
+  // dilakukan setelah advisory lock per-org.
   return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`chat:${orgId}`}))`,
+    );
+    // Percakapan direct org ini yang memuat kedua user sebagai anggota,
+    // dan total anggotanya tepat 2.
+    const [existing] = await tx
+      .select({ c: chatConversations })
+      .from(chatConversations)
+      .innerJoin(
+        chatConversationMembers,
+        eq(chatConversationMembers.conversationId, chatConversations.id),
+      )
+      .where(
+        and(
+          eq(chatConversations.orgId, orgId),
+          eq(chatConversations.kind, "direct"),
+          inArray(chatConversationMembers.userId, [userId, otherUserId]),
+        ),
+      )
+      .groupBy(chatConversations.id)
+      .having(
+        sql`count(distinct ${chatConversationMembers.userId}) = 2
+            and count(*) = 2`,
+      )
+      .limit(1);
+    if (existing) {
+      return { conversationId: existing.c.id, created: false };
+    }
+
     const [conv] = await tx
       .insert(chatConversations)
       .values({ orgId, kind: "direct", createdBy: userId })
@@ -263,12 +269,17 @@ export async function listMessages(
   await requireOrgRole(userId, orgId, "member");
   await requireConversation(orgId, conversationId);
   await requireMember(conversationId, userId);
-  return db
+  // Window TERBARU (P2 cubic pr9 :270): ambil pesan terbaru dulu (desc),
+  // lalu dibalik jadi urutan kronologis. Tanpa ini percakapan >50 pesan
+  // selalu menampilkan 50 pesan tertua dan pesan baru tak terlihat.
+  const capped = Math.min(Math.max(limit, 1), 200);
+  const rows = await db
     .select()
     .from(chatMessages)
     .where(eq(chatMessages.conversationId, conversationId))
-    .orderBy(asc(chatMessages.createdAt))
-    .limit(Math.min(Math.max(limit, 1), 200));
+    .orderBy(desc(chatMessages.createdAt))
+    .limit(capped);
+  return rows.reverse();
 }
 
 /** Anggota percakapan (untuk UI daftar peserta). */

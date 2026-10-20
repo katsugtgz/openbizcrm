@@ -64,16 +64,27 @@ describe("app shell", () => {
     );
 
     const nav = screen.getByRole("navigation", { name: "Menu utama" });
+    // SEMUA label NAV_ITEMS (cubic ui-smoke.test.tsx:55) — subset membuat
+    // regresi link kolaborasi/bisnis lolos smoke test.
     for (const label of [
       "Dashboard",
       "Karyawan",
       "Presensi",
       "Cuti",
+      "Penggajian",
       "CRM",
       "Proyek",
       "Akuntansi",
+      "Faktur",
+      "POS",
+      "Pelatihan",
+      "LMS",
+      "Penilaian 360",
+      "Formulir",
+      "Pengumuman",
       "Obrolan",
       "Cloud",
+      "Laporan",
       "Pengaturan",
     ]) {
       expect(within(nav).getByText(label)).toBeInTheDocument();

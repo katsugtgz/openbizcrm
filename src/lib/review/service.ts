@@ -1,9 +1,10 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   announcements,
   courseCompletions,
+  orgMemberships,
   courseMaterials,
   courses,
   reviewAssignments,
@@ -40,8 +41,13 @@ export function validateFieldDefs(fields: ReviewFormField[]): string | null {
     seen.add(f.key);
     if (!FIELD_TYPES.includes(f.type))
       return `Tipe field tidak dikenal: ${String(f.type)}`;
-    if (f.type === "select" && (!f.options || f.options.length === 0))
-      return `Field select "${f.key}" wajib punya opsi.`;
+    if (
+      f.type === "select" &&
+      (!Array.isArray(f.options) ||
+        f.options.length === 0 ||
+        f.options.some((o) => typeof o !== "string"))
+    )
+      return `Field select "${f.key}" wajib punya daftar opsi string.`;
   }
   return null;
 }
@@ -52,16 +58,6 @@ function slugify(title: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 60);
-}
-
-async function requireOrgForm(orgId: string, id: string): Promise<ReviewForm> {
-  const [row] = await db
-    .select()
-    .from(reviewForms)
-    .where(and(eq(reviewForms.id, id), eq(reviewForms.orgId, orgId)))
-    .limit(1);
-  if (!row) throw new NotFoundError("Form tidak ditemukan.");
-  return row;
 }
 
 export async function createForm(
@@ -142,8 +138,10 @@ export async function updateForm(
 }
 
 /**
- * draft -> active. Slug unik global (halaman publik memakai slug polos);
- * bentrok ditambah sufiks -2, -3, … di dalam transaksi.
+ * draft -> active. Slug unik GLOBAL (halaman publik memakai slug polos);
+ * alokasi dijaga lock global `review:slug` (bukan per-org) supaya dua org
+ * tidak bisa mengklaim slug sama secara konkuren; bentrok ditambah sufiks
+ * -2, -3, … di dalam transaksi.
  */
 export async function publishForm(
   userId: string,
@@ -153,7 +151,7 @@ export async function publishForm(
   await requireOrgRole(userId, orgId, "member");
   return db.transaction(async (tx) => {
     await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtext(${`review:${orgId}`}))`,
+      sql`SELECT pg_advisory_xact_lock(hashtext(${"review:slug"}))`,
     );
     const [form] = await tx
       .select()
@@ -252,19 +250,6 @@ export async function getFormBySlug(slug: string): Promise<ReviewForm | null> {
 
 // ---------------- Periods ----------------
 
-async function requireOrgPeriod(
-  orgId: string,
-  id: string,
-): Promise<ReviewPeriod> {
-  const [row] = await db
-    .select()
-    .from(reviewPeriods)
-    .where(and(eq(reviewPeriods.id, id), eq(reviewPeriods.orgId, orgId)))
-    .limit(1);
-  if (!row) throw new NotFoundError("Periode tidak ditemukan.");
-  return row;
-}
-
 export async function createPeriod(
   userId: string,
   orgId: string,
@@ -276,29 +261,48 @@ export async function createPeriod(
   },
 ): Promise<ReviewPeriod> {
   await requireOrgRole(userId, orgId, "member");
-  const form = await requireOrgForm(orgId, input.formId);
-  if (form.status !== "active")
-    throw new Error("Periode hanya bisa memakai form aktif.");
-  const [row] = await db
-    .insert(reviewPeriods)
-    .values({
-      orgId,
-      formId: form.id,
-      title: input.title,
-      status: "open",
-      startDate: input.startDate ?? null,
-      endDate: input.endDate ?? null,
-      createdBy: userId,
-    })
-    .returning();
-  await recordAudit({
-    orgId,
-    userId,
-    action: "review.period.create",
-    entity: "review_period",
-    entityId: row.id,
+  // Atomik: cek form aktif + insert dalam satu transaksi (lock org + row
+  // form) supaya publish/close form tidak bisa menyelinap di antara cek
+  // dan insert.
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`review:${orgId}`}))`,
+    );
+    const [form] = await tx
+      .select()
+      .from(reviewForms)
+      .where(
+        and(eq(reviewForms.id, input.formId), eq(reviewForms.orgId, orgId)),
+      )
+      .limit(1)
+      .for("update");
+    if (!form) throw new NotFoundError("Form tidak ditemukan.");
+    if (form.status !== "active")
+      throw new Error("Periode hanya bisa memakai form aktif.");
+    const [row] = await tx
+      .insert(reviewPeriods)
+      .values({
+        orgId,
+        formId: form.id,
+        title: input.title,
+        status: "open",
+        startDate: input.startDate ?? null,
+        endDate: input.endDate ?? null,
+        createdBy: userId,
+      })
+      .returning();
+    await recordAudit(
+      {
+        orgId,
+        userId,
+        action: "review.period.create",
+        entity: "review_period",
+        entityId: row.id,
+      },
+      tx,
+    );
+    return row;
   });
-  return row;
 }
 
 export async function listPeriods(orgId: string): Promise<ReviewPeriod[]> {
@@ -326,15 +330,48 @@ export async function assignReviewers(
   pairs: AutoAssignInput["pairs"],
 ): Promise<ReviewAssignment[]> {
   await requireOrgRole(userId, orgId, "member");
-  const period = await requireOrgPeriod(orgId, periodId);
-  if (period.status !== "open")
-    throw new Error("Periode sudah ditutup, tidak bisa menambah assignment.");
   if (pairs.length === 0) throw new Error("Daftar penilai kosong.");
 
   return db.transaction(async (tx) => {
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtext(${`review:${orgId}`}))`,
     );
+    // Cek ulang periode DI DALAM transaksi (lock baris): closePeriod
+    // konkuren tidak bisa menyelinap di antara cek dan insert.
+    const [period] = await tx
+      .select()
+      .from(reviewPeriods)
+      .where(
+        and(eq(reviewPeriods.id, periodId), eq(reviewPeriods.orgId, orgId)),
+      )
+      .limit(1)
+      .for("update");
+    if (!period) throw new NotFoundError("Periode tidak ditemukan.");
+    if (period.status !== "open")
+      throw new Error("Periode sudah ditutup, tidak bisa menambah assignment.");
+
+    // Semua penilai + yang dinilai wajib anggota organisasi ini — cegah
+    // assignment lintas organisasi.
+    const participantIds = [
+      ...new Set(pairs.flatMap((p) => [p.reviewerUserId, p.revieweeUserId])),
+    ];
+    const memberRows = await tx
+      .select({ userId: orgMemberships.userId })
+      .from(orgMemberships)
+      .where(
+        and(
+          eq(orgMemberships.orgId, orgId),
+          inArray(orgMemberships.userId, participantIds),
+        ),
+      );
+    const memberSet = new Set(memberRows.map((m) => m.userId));
+    for (const id of participantIds) {
+      if (!memberSet.has(id))
+        throw new NotFoundError(
+          "Penilai/reviewee bukan anggota organisasi ini.",
+        );
+    }
+
     const rows = await tx
       .insert(reviewAssignments)
       .values(
@@ -373,7 +410,12 @@ export async function listMyAssignments(
   userId: string,
   orgId: string,
   periodId?: string,
-): Promise<(ReviewAssignment & { revieweeName: string | null })[]> {
+): Promise<
+  (ReviewAssignment & {
+    revieweeName: string | null;
+    fields: ReviewFormField[];
+  })[]
+> {
   await requireOrgRole(userId, orgId, "member");
   const conds = [
     eq(reviewAssignments.orgId, orgId),
@@ -384,12 +426,19 @@ export async function listMyAssignments(
     .select({
       assignment: reviewAssignments,
       revieweeName: users.name,
+      fields: reviewForms.fields,
     })
     .from(reviewAssignments)
     .leftJoin(users, eq(users.id, reviewAssignments.revieweeUserId))
+    .innerJoin(reviewPeriods, eq(reviewPeriods.id, reviewAssignments.periodId))
+    .innerJoin(reviewForms, eq(reviewForms.id, reviewPeriods.formId))
     .where(and(...conds))
     .orderBy(desc(reviewAssignments.createdAt));
-  return rows.map((r) => ({ ...r.assignment, revieweeName: r.revieweeName }));
+  return rows.map((r) => ({
+    ...r.assignment,
+    revieweeName: r.revieweeName,
+    fields: r.fields,
+  }));
 }
 
 /**
@@ -478,14 +527,21 @@ export async function submitPublicResponse(
   assignmentId: string,
   answers: Record<string, unknown>,
 ): Promise<ReviewResponse> {
+  // Lock org sama dengan mutasi review lain: publik tidak boleh lolos
+  // periode ditutup secara konkuren. Lock baris form juga: slug dibaca
+  // sekali, lalu form diverifikasi masih aktif di transaksi yang sama.
   return db.transaction(async (tx) => {
     const [form] = await tx
       .select()
       .from(reviewForms)
       .where(eq(reviewForms.slug, slug))
-      .limit(1);
+      .limit(1)
+      .for("update");
     if (!form || form.status !== "active")
       throw new NotFoundError("Form tidak ditemukan atau sudah ditutup.");
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`review:${form.orgId}`}))`,
+    );
 
     const [assignment] = await tx
       .select()
@@ -506,9 +562,14 @@ export async function submitPublicResponse(
       .select()
       .from(reviewPeriods)
       .where(eq(reviewPeriods.id, assignment.periodId))
-      .limit(1);
+      .limit(1)
+      .for("update");
     if (!period || period.status !== "open")
       throw new Error("Periode penilaian sudah ditutup.");
+    // Assignment wajib milik periode form ini — cegah tautan publik form A
+    // mengisi assignment periode form B di organisasi yang sama.
+    if (period.formId !== form.id)
+      throw new NotFoundError("Tautan tidak valid.");
 
     const errors = validateAnswers(form.fields, answers);
     if (Object.keys(errors).length > 0)
@@ -551,6 +612,17 @@ export async function closePeriod(
     if (!period) throw new NotFoundError("Periode tidak ditemukan.");
     if (period.status === "closed") return period; // idempoten
 
+    // Agregasi hanya key field "number" dari form terkait — key tak dikenal
+    // (mis. `fakeScore`) tidak boleh ikut memanipulasi hasil tersimpan.
+    const [form] = await tx
+      .select({ fields: reviewForms.fields })
+      .from(reviewForms)
+      .where(eq(reviewForms.id, period.formId))
+      .limit(1);
+    const numericKeys = new Set(
+      (form?.fields ?? []).filter((f) => f.type === "number").map((f) => f.key),
+    );
+
     const rows = await tx
       .select({
         revieweeUserId: reviewAssignments.revieweeUserId,
@@ -567,7 +639,9 @@ export async function closePeriod(
           eq(reviewAssignments.orgId, orgId),
         ),
       );
-    const results = Object.fromEntries(aggregate360(rows));
+    const results = Object.fromEntries(
+      aggregate360(rows, numericKeys.size > 0 ? numericKeys : undefined),
+    );
     const [updated] = await tx
       .update(reviewPeriods)
       .set({ status: "closed", results })

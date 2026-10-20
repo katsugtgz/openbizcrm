@@ -22,8 +22,8 @@ import {
 
 export { InvalidWhatsappTransitionError };
 
-/** Sesi org, dibuat lazy (default disconnected). */
-async function requireSession(orgId: string): Promise<WhatsappSession> {
+/** Sesi org, dibuat lazy (default disconnected). Dipakai actions (GET). */
+export async function requireSession(orgId: string): Promise<WhatsappSession> {
   const [existing] = await db
     .select()
     .from(whatsappSessions)
@@ -119,12 +119,6 @@ export async function enqueueWhatsappMessage(
   input: EnqueueOutboxInput,
 ): Promise<WhatsappOutboxRow> {
   await requireOrgRole(userId, orgId, "member");
-  const session = await requireSession(orgId);
-  if (session.status !== "connected") {
-    throw new Error(
-      "Sesi WhatsApp belum tersambung — hubungkan dulu sebelum mengirim.",
-    );
-  }
   if (!input.phone.trim() || !input.message.trim()) {
     throw new Error("Nomor dan isi pesan wajib diisi.");
   }
@@ -132,6 +126,38 @@ export async function enqueueWhatsappMessage(
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtext(${`wa:${orgId}`}))`,
     );
+    // Validasi sesi DI DALAM tx ber-lock (P1): transisi disconnect konkuren
+    // tidak bisa commit di antara cek dan insert.
+    let [session] = await tx
+      .select()
+      .from(whatsappSessions)
+      .where(eq(whatsappSessions.orgId, orgId))
+      .limit(1)
+      .for("update");
+    if (!session) {
+      // Lazy-create di tx yang sama; konflik konkuren -> re-read (P2).
+      const [created] = await tx
+        .insert(whatsappSessions)
+        .values({ orgId })
+        .onConflictDoNothing({ target: whatsappSessions.orgId })
+        .returning();
+      if (created) {
+        session = created;
+      } else {
+        const [raced] = await tx
+          .select()
+          .from(whatsappSessions)
+          .where(eq(whatsappSessions.orgId, orgId))
+          .limit(1);
+        if (!raced) throw new NotFoundError("Sesi WhatsApp tidak ditemukan.");
+        session = raced;
+      }
+    }
+    if (session.status !== "connected") {
+      throw new Error(
+        "Sesi WhatsApp belum tersambung — hubungkan dulu sebelum mengirim.",
+      );
+    }
     const [row] = await tx
       .insert(whatsappOutbox)
       .values({
@@ -171,6 +197,35 @@ export async function listQueuedOutbox(
     .limit(limit);
 }
 
+/**
+ * Klaim atomik sebelum send (hardening worker): UPDATE ... WHERE status =
+ * 'queued' di dalam advisory lock per-org, jadi dua worker (atau crash
+ * sebelum resolve) tidak pernah mengirim pesan yang sama dua kali. Baris
+ * yang gagal diklaim (sudah diambil worker lain) dilewati.
+ */
+export async function claimOutbox(
+  orgId: string,
+  rowId: string,
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`wa:${orgId}`}))`,
+    );
+    const updated = await tx
+      .update(whatsappOutbox)
+      .set({ status: "sending" })
+      .where(
+        and(
+          eq(whatsappOutbox.id, rowId),
+          eq(whatsappOutbox.orgId, orgId),
+          eq(whatsappOutbox.status, "queued"),
+        ),
+      )
+      .returning();
+    return updated.length > 0;
+  });
+}
+
 export interface OutboxResult {
   id: string;
   ok: boolean;
@@ -200,7 +255,9 @@ export async function resolveOutbox(
       .limit(1)
       .for("update");
     if (!row) return null;
-    if (row.status !== "queued") return row; // terminal: idempoten
+    // "sending" berarti worker pemiliknya masih memanggil sender; resolve
+    // dari worker itu sendiri tetap diterima (idempoten terminal di bawah).
+    if (row.status === "sent" || row.status === "failed") return row;
     const [updated] = await tx
       .update(whatsappOutbox)
       .set({

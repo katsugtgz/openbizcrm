@@ -43,6 +43,44 @@ describe("aggregate360", () => {
     expect(out.get("u1")).toEqual({ count: 2, average: 3.5 });
   });
 
+  it("optional number kosong, checkbox, boolean, null tidak jadi skor", () => {
+    const out = aggregate360([
+      {
+        revieweeUserId: "u1",
+        answers: {
+          skor: 4,
+          komentar: "x",
+          perbaikan: "", // optional textarea kosong -> bukan 0
+          setuju: true, // checkbox -> bukan 1
+          tambahan: null, // optional number kosong -> bukan 0
+          lain: ["a"], // array -> bukan koersi aneh
+        },
+      },
+      { revieweeUserId: "u1", answers: { skor: 2 } },
+    ]);
+    expect(out.get("u1")).toEqual({ count: 2, average: 3 });
+  });
+
+  it("numericKeys: key tak dikenal (fakeScore) diabaikan", () => {
+    const keys = new Set(["skor"]);
+    const out = aggregate360(
+      [
+        { revieweeUserId: "u1", answers: { skor: 2, fakeScore: 100 } },
+        { revieweeUserId: "u1", answers: { skor: 4, fakeScore: 100 } },
+      ],
+      keys,
+    );
+    expect(out.get("u1")).toEqual({ count: 2, average: 3 });
+  });
+
+  it("whitespace-only string angka dihitung, kosong tidak", () => {
+    const out = aggregate360([
+      { revieweeUserId: "u1", answers: { skor: "  4  " } },
+      { revieweeUserId: "u1", answers: { skor: "   " } },
+    ]);
+    expect(out.get("u1")).toEqual({ count: 1, average: 4 });
+  });
+
   it("kosong -> map kosong", () => {
     expect(aggregate360([]).size).toBe(0);
   });

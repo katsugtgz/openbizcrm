@@ -19,6 +19,9 @@ import {
 } from "@/lib/ai/tools";
 import { requireOrgRole } from "@/lib/org-scope";
 
+/** Batas panjang pesan (cubic route.ts:37). */
+const MAX_MESSAGE_LENGTH = 4000;
+
 export async function POST(request: Request) {
   const user = await session.getSession();
   if (!user) {
@@ -32,14 +35,29 @@ export async function POST(request: Request) {
   await requireOrgRole(userId, orgId, "member");
 
   let message: string;
+  let requestedConversationId: string | null;
   try {
-    const body = (await request.json()) as { message?: unknown };
+    const body = (await request.json()) as {
+      message?: unknown;
+      conversationId?: unknown;
+    };
     message = typeof body.message === "string" ? body.message.trim() : "";
+    requestedConversationId =
+      typeof body.conversationId === "string" && body.conversationId
+        ? body.conversationId
+        : null;
   } catch {
     return Response.json({ error: "Body JSON tidak valid." }, { status: 400 });
   }
   if (!message) {
     return Response.json({ error: "Pesan wajib diisi." }, { status: 400 });
+  }
+  // Batas ukuran (cubic route.ts:37): DB dan biaya provider.
+  if (message.length > MAX_MESSAGE_LENGTH) {
+    return Response.json(
+      { error: `Pesan maksimal ${MAX_MESSAGE_LENGTH} karakter.` },
+      { status: 413 },
+    );
   }
 
   // Config error diperiksa SEBELUM menulis DB — tidak ada conversation
@@ -54,13 +72,27 @@ export async function POST(request: Request) {
     throw e;
   }
 
-  const conversation = await createConversation(userId, orgId);
-  await appendMessage(orgId, conversation.id, "user", message);
+  // Lanjutkan percakapan ada bila conversationId dikirim dan milik org ini
+  // (cubic route.ts:57) — tanpa itu setiap POST jadi giliran satu-turn.
+  let conversationId: string;
+  if (requestedConversationId) {
+    const existing = await listMessages(orgId, requestedConversationId);
+    if (existing.length === 0) {
+      return Response.json(
+        { error: "Percakapan tidak ditemukan." },
+        { status: 404 },
+      );
+    }
+    conversationId = requestedConversationId;
+  } else {
+    conversationId = (await createConversation(userId, orgId)).id;
+  }
+  await appendMessage(orgId, conversationId, "user", message);
 
   const summary = formatMonthSummary(
     await computeThisMonthSummary(orgId, currentMonthStart()),
   );
-  const history = await listMessages(orgId, conversation.id);
+  const history = await listMessages(orgId, conversationId);
 
   let reply: string;
   try {
@@ -81,7 +113,7 @@ export async function POST(request: Request) {
       {
         error:
           "Gagal memanggil AI: " + (e instanceof Error ? e.message : String(e)),
-        conversationId: conversation.id,
+        conversationId,
       },
       { status: 502 },
     );
@@ -89,12 +121,12 @@ export async function POST(request: Request) {
 
   const assistant = await appendMessage(
     orgId,
-    conversation.id,
+    conversationId,
     "assistant",
     reply,
   );
   return Response.json({
-    conversationId: conversation.id,
+    conversationId,
     reply: assistant.content,
     summary,
   });

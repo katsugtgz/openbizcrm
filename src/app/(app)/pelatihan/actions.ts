@@ -87,5 +87,8 @@ export async function completeCourseAction(
     return fail(error);
   }
   revalidatePath("/pelatihan");
+  // /lms juga (cubic lms/page.tsx:56): tombol "Tandai Selesai" di /lms
+  // harus hilang segera setelah sukses, tanpa navigasi manual.
+  revalidatePath("/lms");
   return { ok: true, message: "Kursus ditandai selesai." };
 }

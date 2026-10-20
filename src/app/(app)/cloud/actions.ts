@@ -56,7 +56,9 @@ export async function presignUploadAction(
       sizeBytes,
       folderIdRaw || null,
     );
-    revalidatePath("/cloud");
+    // Tidak revalidate di sini (cubic cloud/actions.ts:59): baris masih
+    // pending, listFolder hanya menampilkan confirmed. Halaman segar setelah
+    // confirmUploadAction sukses.
     return { ok: true, uploadUrl: result.uploadUrl, fileId: result.fileId };
   } catch (error) {
     return fail(error);

@@ -1,5 +1,6 @@
 "use client";
 
+import React from "react";
 import { useRouter } from "next/navigation";
 import { useTransition } from "react";
 import { toast } from "sonner";
@@ -29,18 +30,29 @@ export function ChatRoom({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
 
+  // Fallback realtime (cubic chat-room.tsx:50): polling ringan saat fokus —
+  // realtime Ably belum ada subscriber di klien, jadi router.refresh() tiap
+  // 5 dtk menjaga pesan masuk terlihat tanpa navigasi.
+  React.useEffect(() => {
+    const id = setInterval(() => router.refresh(), 5000);
+    return () => clearInterval(id);
+  }, [router]);
+
   function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const fd = new FormData(e.currentTarget);
+    const form = e.currentTarget;
+    const fd = new FormData(form);
     fd.set("conversationId", conversationId);
     if (!String(fd.get("body") ?? "").trim()) return;
-    e.currentTarget.reset();
     startTransition(async () => {
       const result = await sendMessageAction(fd);
       if (!result.ok) {
         toast.error(result.error ?? "Gagal mengirim.");
         return;
       }
+      // Reset HANYA setelah sukses (cubic chat-room.tsx:37) — teks user
+      // tidak hilang saat pengiriman ditolak.
+      form.reset();
       router.refresh();
     });
   }

@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
 import { requireOrgRole } from "@/lib/org-scope";
+import { listMembers } from "@/lib/repos/member-repo";
 import {
   listForms,
   listMyAssignments,
@@ -19,6 +20,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { NewFormDialog, NewPeriodDialog } from "./new-form-dialog";
 import { AggregateSection } from "./aggregate-section";
+import { AssignReviewersDialog } from "./assign-reviewers-dialog";
 import {
   PeriodActions,
   ReviewFormActions,
@@ -98,12 +100,18 @@ async function PeriodsSection({
   orgId: string;
   userId: string;
 }) {
-  await requireOrgRole(userId, orgId, "member");
-  const [periods, allForms] = await Promise.all([
+  const membership = await requireOrgRole(userId, orgId, "member");
+  const isAdmin = membership.role === "admin" || membership.role === "owner";
+  const [periods, allForms, members] = await Promise.all([
     listPeriods(orgId),
     listForms(orgId),
+    listMembers(userId, orgId),
   ]);
   const forms = allForms.filter((f) => f.status === "active");
+  const memberOptions = members.map((m) => ({
+    id: m.user.id,
+    label: m.user.name ?? m.user.email,
+  }));
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
@@ -129,7 +137,17 @@ async function PeriodsSection({
               <p className="truncate text-sm font-medium">{p.title}</p>
               <div className="flex items-center gap-2">
                 <StatusBadge status={p.status} />
-                {p.status === "open" && <PeriodActions period={{ id: p.id }} />}
+                {p.status === "open" && (
+                  <>
+                    {isAdmin && (
+                      <AssignReviewersDialog
+                        periodId={p.id}
+                        members={memberOptions}
+                      />
+                    )}
+                    <PeriodActions period={{ id: p.id }} />
+                  </>
+                )}
               </div>
             </div>
             {p.status === "closed" && p.results ? (
@@ -217,7 +235,9 @@ async function MyAssignmentsSection({
                 {a.status === "pending" ? "Menunggu diisi" : "Sudah dikirim"}
               </p>
             </div>
-            {a.status === "pending" && <SubmitReviewForm assignmentId={a.id} />}
+            {a.status === "pending" && (
+              <SubmitReviewForm assignmentId={a.id} fields={a.fields} />
+            )}
           </div>
         ))}
       </CardContent>

@@ -51,7 +51,9 @@ function DirectDialog({ members }: { members: MemberOption[] }) {
       const result = await openDirectAction(fd);
       if (result.ok) {
         setOpen(false);
-        router.refresh();
+        // Langsung buka percakapan barunya (cubic new-chat-dialogs:54) —
+        // refresh saja bisa meninggalkan percakapan lama saat ?c ada.
+        router.push(`/obrolan?c=${result.conversationId}`);
       } else {
         toast.error(result.error ?? "Gagal.");
       }
@@ -131,7 +133,7 @@ function GroupDialog({
       if (result.ok) {
         setOpen(false);
         toast.success("Grup dibuat.");
-        router.refresh();
+        router.push(`/obrolan?c=${result.conversationId}`);
       } else {
         toast.error(result.error ?? "Gagal.");
       }

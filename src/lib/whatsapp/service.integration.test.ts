@@ -148,6 +148,34 @@ describe("whatsapp service integration", () => {
     },
   );
 
+  itDb(
+    "hardening cubic: enqueue lazy-create race aman; validasi sesi dalam tx ber-lock; claim atomik outbox",
+    async () => {
+      const o = await makeOrg();
+
+      // P2: enqueue pada org tanpa sesi tetap sukses (lazy-create dengan
+      // onConflictDoNothing + re-read), tidak melempar NotFoundError.
+      await wa.transitionWhatsappSession(o.userId, o.orgId, "qr");
+      await wa.transitionWhatsappSession(o.userId, o.orgId, "connecting");
+      await wa.transitionWhatsappSession(o.userId, o.orgId, "connected");
+      const m = await wa.enqueueWhatsappMessage(o.userId, o.orgId, {
+        phone: "+628555",
+        message: "claim test",
+      });
+
+      // P1: klaim atomik — pertama sukses, kedua gagal (status bukan queued).
+      expect(await wa.claimOutbox(o.orgId, m.id)).toBe(true);
+      expect(await wa.claimOutbox(o.orgId, m.id)).toBe(false);
+
+      // resolve dari status "sending" tetap sah (worker pemiliknya).
+      const r = await wa.resolveOutbox(o.userId, o.orgId, {
+        id: m.id,
+        ok: true,
+      });
+      expect(r?.status).toBe("sent");
+    },
+  );
+
   itDb("enqueue saat belum connected melempar", async () => {
     const o = await makeOrg();
     await expect(

@@ -84,14 +84,15 @@ describe("review 360 integration", () => {
 
   afterAll(async () => {
     if (process.env.RUN_DB_TESTS !== "1") return;
-    // Track-based cleanup: hapus org (cascade) lalu user tersisa.
+    // Track-based cleanup: hapus org (cascade) dulu, lalu user TETAP
+    // dihapus eksplisit (cubic service.integration.test.ts:94) — org
+    // cascade tidak menghapus users, cabang kedua tak boleh bersyarat.
     if (createdOrgIds.length > 0) {
       await db
         .delete(organizations)
         .where(inArray(organizations.id, createdOrgIds));
     }
-    // Semua user test dibuat lewat org test (cascade) atau dihapus eksplisit.
-    if (createdUserIds.length > 0 && createdOrgIds.length === 0) {
+    if (createdUserIds.length > 0) {
       await db.delete(users).where(inArray(users.id, createdUserIds));
     }
   });
@@ -257,6 +258,73 @@ describe("review 360 integration", () => {
         komentar: "x",
       }),
     ).rejects.toThrow(NotFoundError);
+  });
+
+  itDb(
+    "publik: tautan form A tidak bisa isi assignment periode form B",
+    async () => {
+      // Form + periode kedua (form beda) di org sama.
+      const formB = await svc.createForm(owner.id, orgA.id, {
+        title: `Form B ${suffix}`,
+        fields: FIELDS,
+      });
+      const publishedB = await svc.publishForm(owner.id, orgA.id, formB.id);
+      const periodB = await svc.createPeriod(owner.id, orgA.id, {
+        formId: publishedB.id,
+        title: `Periode B ${suffix}`,
+      });
+      const assignmentB = await svc.assignReviewers(
+        owner.id,
+        orgA.id,
+        periodB.id,
+        [
+          {
+            revieweeUserId: peer1.id,
+            reviewerUserId: peer1.id,
+            relation: "self",
+          },
+        ],
+      );
+      expect(assignmentB).toHaveLength(1);
+
+      // Slug form A (periodId pertama) + assignment milik periode form B.
+      await expect(
+        svc.submitPublicResponse(slug, assignmentB[0].id, {
+          skor: 5,
+          komentar: "salah form",
+        }),
+      ).rejects.toThrow(NotFoundError);
+      // Assignment B tetap pending.
+      const mine = await svc.listMyAssignments(peer1.id, orgA.id, periodB.id);
+      expect(mine[0].status).toBe("pending");
+    },
+  );
+
+  itDb("assignReviewers menolak user lintas organisasi", async () => {
+    const outsider = await createUser({
+      email: `rev-xorg-${suffix}@test.local`,
+      name: "XOrg",
+    });
+    createdUserIds.push(outsider.id);
+    await expect(
+      svc.assignReviewers(owner.id, orgA.id, periodId, [
+        {
+          revieweeUserId: outsider.id,
+          reviewerUserId: peer1.id,
+          relation: "peer",
+        },
+      ]),
+    ).rejects.toThrow("bukan anggota");
+    // Juga reviewer yang bukan anggota.
+    await expect(
+      svc.assignReviewers(owner.id, orgA.id, periodId, [
+        {
+          revieweeUserId: peer1.id,
+          reviewerUserId: outsider.id,
+          relation: "peer",
+        },
+      ]),
+    ).rejects.toThrow("bukan anggota");
   });
 
   itDb("closePeriod -> agregat rata-rata per reviewee", async () => {

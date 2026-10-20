@@ -1,4 +1,5 @@
 <!-- cubic:review-summary:start -->
+
 **60 issues found** across 69 files
 <!-- cubic:review-summary:end -->
 
@@ -301,3 +302,71 @@ P2: `parseFieldsJson` silently drops malformed entries and accepts fields withou
 <sub>Reply with feedback, questions, or to request a fix.<br /><br />[View guided diff](https://www.cubic.dev/pr/katsugtgz/openbizcrm/pull/9?utm_source=github&utm_medium=review_footer) | [Turn on auto-fix](https://www.cubic.dev/action/auto-fix/pr/katsugtgz/openbizcrm/9?returnTo=https%3A%2F%2Fgithub.com%2Fkatsugtgz%2Fopenbizcrm%2Fpull%2F9) | [Re-trigger cubic](https://www.cubic.dev/action/re-review/pr/katsugtgz/openbizcrm/9/ai_pr_review_github_delivery_6815dd6708d65440717ab7e6259864a575ef9fe1c1829cbbd25454f53a8cc81d?returnTo=https%3A%2F%2Fgithub.com%2Fkatsugtgz%2Fopenbizcrm%2Fpull%2F9)</sub>
 
 <!-- cubic:review-post:ai_pr_review_github_delivery_6815dd6708d65440717ab7e6259864a575ef9fe1c1829cbbd25454f53a8cc81d:7742ee607fd876f9b3b66ffc7be597c1934a060c:13ebc298-961a-5922-a641-1973dd5f55ce -->
+
+## Resolution status
+
+Verified 2026-10-20 on `feat/collaboration` @ e42f536 + working tree. **60/60 FIXED.** Gates: lint, tsc, `env -u DATABASE_URL bun run build`, `RUN_DB_TESTS=1 bun run test:coverage` (41 files / 343 tests green), `bun run db:generate` clean (no schema drift; migrations 0023–0028 present, incl. tenant composite FKs and assignment membership FKs).
+
+| #          | File:line (cubic)                     | Severity    | Status                                                                                                                        |
+| ---------- | ------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| wa-1       | whatsapp/worker.ts:29                 | P1          | FIXED — `claimOutbox` flips `queued`→`sending` atomically before send; concurrent worker/crash cannot double-send.            |
+| wa-2       | whatsapp/worker.ts:70                 | P0          | FIXED — guarded main fail-closed when `NODE_ENV !== "development"` without a real sender.                                     |
+| rev-ui-1   | review-controls.tsx:112               | P1          | FIXED — `SubmitReviewForm` renders stored field defs, builds `answers` per type.                                              |
+| rt-1       | chat/realtime.ts:32                   | P2          | FIXED (this pass) — one `Ably.Rest` cached per process (`cachedClient`).                                                      |
+| rt-2       | chat/realtime.ts:42                   | P1          | FIXED — conversation-scoped channel `chat:conv:<id>`; membership enforced at token authorization.                             |
+| agg-1      | review/aggregate.ts:20                | P1          | FIXED — `numericKeys` allowlist; unknown keys (`fakeScore`) ignored; closePeriod now derives it from form fields (this pass). |
+| agg-2      | review/aggregate.ts:21                | P1          | FIXED — `toScore` accepts number / nonblank numeric string only; null/bool/blank skipped.                                     |
+| agg-ui-1   | aggregate-section.tsx:24              | P1          | FIXED — `requireOrgRole(userId, orgId, "admin")` guard.                                                                       |
+| svc-1      | review/service.ts:43                  | P2          | FIXED — `validateFieldDefs` requires string-array `options` for select.                                                       |
+| svc-2      | review/service.ts:156                 | P2          | FIXED — global `review:slug` lock + suffix allocation in-tx.                                                                  |
+| svc-3      | review/service.ts:279                 | P2          | FIXED — form locked/re-read inside period-create tx under `review:<orgId>`.                                                   |
+| svc-4      | review/service.ts:329                 | P2          | FIXED — period re-read `for update` inside assign tx under org lock.                                                          |
+| svc-5      | review/service.ts:341                 | P2          | FIXED — both participants validated against `orgMemberships` in-tx; DB FKs too (0028).                                        |
+| svc-6      | review/service.ts:430                 | P1          | FIXED — public submit: `period.formId !== form.id` rejected; period re-read locked.                                           |
+| svc-7      | review/service.ts:487                 | P2          | FIXED — public submit acquires `review:<orgId>` lock before period check + insert.                                            |
+| pen-1      | penilaian/page.tsx:132                | P1          | FIXED — `AssignReviewersDialog` rendered for open periods (admin).                                                            |
+| ai-1       | ai/conversation.ts:47                 | P1          | FIXED — `appendMessage` checks conversation org via `exec` before insert.                                                     |
+| chat-1     | obrolan/chat-room.tsx:37              | P2          | FIXED — `form.reset()` only after `result.ok`.                                                                                |
+| chat-2     | obrolan/chat-room.tsx:50              | P1          | FIXED — 5s focused `router.refresh()` polling fallback.                                                                       |
+| mig-1      | 0022_smooth_bloodstrike.sql:101       | P1          | FIXED — composite membership FKs on `review_assignments` (0028) + in-service validation.                                      |
+| dr-1       | drive/service.ts:67                   | P2          | FIXED — `S3_ENDPOINT` override for MinIO; R2 default only.                                                                    |
+| dr-2       | drive/service.ts:164                  | P1          | FIXED — pending rows with `expiresAt`, `purgeExpiredPending` on next presign.                                                 |
+| dr-3       | drive/service.ts:203                  | P1          | FIXED — HEAD `ContentLength` compared to reservation; mismatch deletes object + row.                                          |
+| dr-4       | drive/service.ts:367                  | P2          | FIXED — R2 delete after commit; failure recorded as `drive.file.delete.object.failed` audit with key for retry.               |
+| wasvc-1    | whatsapp/service.ts:78                | P2          | FIXED — conflict path re-reads existing session row.                                                                          |
+| wasvc-2    | whatsapp/service.ts:122               | P1          | FIXED — session locked/re-validated inside `wa:<orgId>` tx before enqueue.                                                    |
+| pel-1      | pelatihan/course-dialog.tsx:97        | P2          | FIXED — `AddMaterialButton` rendered per course card.                                                                         |
+| dlg-1      | obrolan/new-chat-dialogs.tsx:54       | P2          | FIXED — actions return `conversationId`; dialogs push `/obrolan?c=<id>`.                                                      |
+| chat-svc-1 | chat/service.ts:115                   | P2          | FIXED — serialize + recheck inside one tx under `chat:<orgId>`.                                                               |
+| chat-svc-2 | chat/service.ts:270                   | P2          | FIXED — newest window (desc, limit) reversed to chronological.                                                                |
+| ai-2       | ai/tools.ts:46                        | P2          | FIXED — direct DB aggregation (`computeThisMonthSummary`), no HTTP fetch.                                                     |
+| ai-3       | ai/tools.ts:68                        | P2          | FIXED — WIB boundaries `00:00:00.000+07:00`.                                                                                  |
+| ai-4       | ai/tools.ts:84                        | P2          | FIXED — unpaid counts `sent`/`overdue` only.                                                                                  |
+| ai-5       | ai/tools.ts:91                        | P2          | FIXED — exclusive next-month upper bound on all aggregates.                                                                   |
+| lap-1      | laporan/page.tsx:46                   | P2          | FIXED — accounting failure surfaces explicit "error" state, not zero-like dash.                                               |
+| lap-2      | laporan/page.tsx:59                   | P2          | FIXED — presence counts `ontime`/`late`/`wfh` only.                                                                           |
+| lap-3      | laporan/page.tsx:77                   | P2          | FIXED — `selectDistinct` courseId; KPI = courses covered.                                                                     |
+| sch-1      | db/schema.ts:1198                     | P1          | FIXED — tenant composite FKs across new tables (0025/0026/0027) + membership FKs (0028).                                      |
+| pel-2      | pelatihan/page.tsx:53                 | P2          | FIXED — `listMaterials` loaded/rendered per course.                                                                           |
+| cl-1       | cloud/actions.ts:59                   | P2          | FIXED — no revalidate on presign; only after confirmUpload.                                                                   |
+| val-1      | review/validate.ts:12                 | P2          | FIXED — null-prototype error map (`Object.create(null)`); reserved-key test.                                                  |
+| val-2      | review/validate.ts:37                 | P2          | FIXED — number coercion restricted to number/string.                                                                          |
+| form-1     | formulir/page.tsx:66                  | P2          | FIXED — link labeled preview with explanation; tokenized links from Penilaian.                                                |
+| it-1       | chat-drive.integration.test.ts:96     | P2          | FIXED — R2-credential-conditional assertion.                                                                                  |
+| it-2       | chat-drive.integration.test.ts:102    | P2          | FIXED — quota rejection asserted only with R2 config; DB-side usage proven by injected row.                                   |
+| ps-1       | r/[slug]/public-submit.tsx:37         | P2          | FIXED — blank optional number stays empty, no `Number("")`.                                                                   |
+| ps-2       | r/[slug]/public-submit.tsx:69         | P2          | FIXED — `required={f.required}` on checkboxes.                                                                                |
+| obl-1      | obrolan/page.tsx:82                   | P2          | FIXED — direct chats labeled with counterpart name.                                                                           |
+| cld-1      | cloud-browser.tsx:155                 | P2          | FIXED — `parentFolderId` prop; back link targets immediate parent.                                                            |
+| it-3       | review/service.integration.test.ts:94 | P2          | FIXED — tracked users deleted unconditionally after orgs.                                                                     |
+| ai-route-1 | api/ai/chat/route.ts:37               | P2          | FIXED — 4000-char max, 413 on overflow.                                                                                       |
+| ai-route-2 | api/ai/chat/route.ts:57               | P2          | FIXED — accepts authorized `conversationId`; creates only when starting.                                                      |
+| shell-1    | app-shell.tsx:66                      | P2          | FIXED — `overflow-y-auto` on mobile sheet + desktop sidebar.                                                                  |
+| lms-1      | lms/page.tsx:5                        | P2          | FIXED — materials loaded/rendered.                                                                                            |
+| lms-2      | lms/page.tsx:56                       | P2          | FIXED — `completeCourseAction` revalidates `/pelatihan` and `/lms`.                                                           |
+| seed-1     | db/seed.ts:844                        | P2          | FIXED — self-assignment filter includes `revieweeUserId` + `relation: "self"`.                                                |
+| aggt-1     | review/aggregate.test.ts:31           | P2          | FIXED — covers empty optional number, checkbox/bool, null non-coercion.                                                       |
+| smoke-1    | ui-smoke.test.tsx:55                  | P2          | FIXED — asserts every `NAV_ITEMS` label.                                                                                      |
+| cld-2      | cloud/page.tsx:10                     | P2          | FIXED — 1024-based formatter (KiB/MiB/GiB) matching 10 GiB quota.                                                             |
+| pen-2      | penilaian/actions.ts:50               | P2          | FIXED — `parseFieldsJson` rejects whole definition on any malformed item.                                                     |
+| extra      | review/service.ts (closePeriod)       | P1-adjacent | FIXED (this pass) — stored results aggregate only declared number-field keys.                                                 |

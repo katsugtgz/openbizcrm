@@ -34,7 +34,9 @@ export function PublicSubmit({
       const raw = fd.get(f.key);
       if (f.type === "checkbox") answers[f.key] = raw === "on";
       else if (f.type === "number")
-        answers[f.key] = raw === null ? "" : Number(raw);
+        // Kosong tetap kosong (cubic public-submit.tsx:37) — Number("") = 0
+        // menyimpan jawaban palsu atau gagal validasi min.
+        answers[f.key] = raw === null || raw === "" ? "" : Number(raw);
       else answers[f.key] = raw ?? "";
     }
     const payload = new FormData();
@@ -69,6 +71,7 @@ export function PublicSubmit({
               <input
                 type="checkbox"
                 name={f.key}
+                required={f.required}
                 aria-label={f.label}
                 className="h-4 w-4"
               />

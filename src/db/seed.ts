@@ -835,13 +835,18 @@ async function seed() {
       console.log("+ review assignments (2)");
 
       // 1 respons terisi (self review member), kalau belum ada.
+      const seededSelf = member[0]?.id ?? owner.id;
       const selfAssignment = await tx
         .select()
         .from(reviewAssignments)
         .where(
           and(
             eq(reviewAssignments.periodId, period!.id),
-            eq(reviewAssignments.reviewerUserId, member[0]?.id ?? owner.id),
+            eq(reviewAssignments.reviewerUserId, seededSelf),
+            // Filter reviewee + relation (cubic seed.ts:844): tanpa itu
+            // assignment milik reviewee lain bisa menerima jawaban self.
+            eq(reviewAssignments.revieweeUserId, seededSelf),
+            eq(reviewAssignments.relation, "self"),
           ),
         )
         .limit(1);

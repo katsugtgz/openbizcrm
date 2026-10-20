@@ -11,6 +11,7 @@ import {
   type AiConversation,
   type AiMessage,
 } from "@/db/schema";
+import { NotFoundError } from "@/lib/org-scope";
 import { recordAudit } from "@/lib/repos/audit-repo";
 
 /** Buat conversation baru org-scoped + audit. */
@@ -44,6 +45,19 @@ export async function appendMessage(
   content: string,
   exec: Parameters<Parameters<typeof db.transaction>[0]>[0] | typeof db = db,
 ): Promise<AiMessage> {
+  // Guard org dulu (P1 cubic pr9): conversation milik org lain tidak boleh
+  // disuntik pesan — sama seperti listMessages di bawah.
+  const [conv] = await exec
+    .select({ id: aiConversations.id })
+    .from(aiConversations)
+    .where(
+      and(
+        eq(aiConversations.id, conversationId),
+        eq(aiConversations.orgId, orgId),
+      ),
+    )
+    .limit(1);
+  if (!conv) throw new NotFoundError("Percakapan tidak ditemukan.");
   const [row] = await exec
     .insert(aiMessages)
     .values({ conversationId, role, content })

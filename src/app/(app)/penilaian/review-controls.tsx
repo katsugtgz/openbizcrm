@@ -15,6 +15,8 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import type { ReviewFormField } from "@/db/schema";
 import {
   closeFormAction,
   closePeriodAction,
@@ -98,22 +100,31 @@ export function PeriodActions({ period }: { period: { id: string } }) {
 }
 
 /**
- * Dialog isi penilaian: field dikirim sesuai definisi form (disederhanakan:
- * setiap field textarea tunggal + skor number; definisi penuh di form JSON).
- * Jawaban dikirim sebagai JSON ke action.
+ * Dialog isi penilaian: field dirender sesuai definisi form terkait
+ * (text/textarea/number/select/checkbox), jawaban dikumpulkan sebagai JSON
+ * ke action. Skor number dibaca Number(); checkbox boolean.
  */
-export function SubmitReviewForm({ assignmentId }: { assignmentId: string }) {
+export function SubmitReviewForm({
+  assignmentId,
+  fields,
+}: {
+  assignmentId: string;
+  fields: ReviewFormField[];
+}) {
   const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
 
   function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
-    const answers = {
-      skor: Number(fd.get("skor") ?? 0),
-      kekuatan: String(fd.get("kekuatan") ?? ""),
-      perbaikan: String(fd.get("perbaikan") ?? ""),
-    };
+    const answers: Record<string, unknown> = {};
+    for (const f of fields) {
+      const raw = fd.get(f.key);
+      if (f.type === "checkbox") answers[f.key] = raw === "on";
+      else if (f.type === "number")
+        answers[f.key] = raw === null || raw === "" ? "" : Number(raw);
+      else answers[f.key] = raw ?? "";
+    }
     const payload = new FormData();
     payload.set("assignmentId", assignmentId);
     payload.set("answers", JSON.stringify(answers));
@@ -138,39 +149,77 @@ export function SubmitReviewForm({ assignmentId }: { assignmentId: string }) {
           <DialogHeader>
             <DialogTitle>Isi Penilaian</DialogTitle>
             <DialogDescription>
-              Skor 1-5 dan catatan kualitatif.
+              Isi semua pertanyaan sesuai form penilaian.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-2">
-            <Label htmlFor={`skor-${assignmentId}`}>Skor (1-5)</Label>
-            <input
-              id={`skor-${assignmentId}`}
-              name="skor"
-              type="number"
-              min={1}
-              max={5}
-              required
-              aria-label="Skor keseluruhan"
-              className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor={`kekuatan-${assignmentId}`}>Kekuatan</Label>
-            <Textarea
-              id={`kekuatan-${assignmentId}`}
-              name="kekuatan"
-              required
-              aria-label="Kekuatan"
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor={`perbaikan-${assignmentId}`}>Area Perbaikan</Label>
-            <Textarea
-              id={`perbaikan-${assignmentId}`}
-              name="perbaikan"
-              aria-label="Area perbaikan"
-            />
-          </div>
+          {fields.map((f) => (
+            <div key={f.key} className="space-y-2">
+              {f.type === "checkbox" ? (
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    name={f.key}
+                    aria-label={f.label}
+                    className="h-4 w-4"
+                  />
+                  {f.label}
+                  {f.required && <span className="text-red-600">*</span>}
+                </label>
+              ) : (
+                <>
+                  <Label htmlFor={`${f.key}-${assignmentId}`}>
+                    {f.label}
+                    {f.required && <span className="text-red-600"> *</span>}
+                  </Label>
+                  {f.type === "textarea" && (
+                    <Textarea
+                      id={`${f.key}-${assignmentId}`}
+                      name={f.key}
+                      required={f.required}
+                      aria-label={f.label}
+                      rows={4}
+                    />
+                  )}
+                  {f.type === "text" && (
+                    <Input
+                      id={`${f.key}-${assignmentId}`}
+                      name={f.key}
+                      required={f.required}
+                      aria-label={f.label}
+                    />
+                  )}
+                  {f.type === "number" && (
+                    <Input
+                      id={`${f.key}-${assignmentId}`}
+                      name={f.key}
+                      type="number"
+                      min={f.min}
+                      max={f.max}
+                      required={f.required}
+                      aria-label={f.label}
+                      className="tabular-nums"
+                    />
+                  )}
+                  {f.type === "select" && (
+                    <select
+                      id={`${f.key}-${assignmentId}`}
+                      name={f.key}
+                      required={f.required}
+                      aria-label={f.label}
+                      className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+                    >
+                      <option value="">— Pilih —</option>
+                      {(f.options ?? []).map((o) => (
+                        <option key={o} value={o}>
+                          {o}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </>
+              )}
+            </div>
+          ))}
           <DialogFooter>
             <Button
               type="button"

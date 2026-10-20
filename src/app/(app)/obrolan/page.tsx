@@ -3,7 +3,11 @@ import { redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
 import { requireOrgRole } from "@/lib/org-scope";
-import { listConversations, listMessages } from "@/lib/chat/service";
+import {
+  listConversations,
+  listMembers as listConvMembers,
+  listMessages,
+} from "@/lib/chat/service";
 import { listMembers } from "@/lib/repos/member-repo";
 import { cn } from "@/lib/utils";
 import { ChatRoom } from "./chat-room";
@@ -14,6 +18,23 @@ export const metadata = { title: "Obrolan" };
 function formatWIB(date: Date): string {
   const shifted = new Date(date.getTime() + 7 * 60 * 60_000);
   return shifted.toISOString().replace("T", " ").slice(0, 16) + " WIB";
+}
+
+/**
+ * Label percakapan direct (cubic obrolan/page.tsx:82): pakai nama lawan
+ * bicara, bukan "Percakapan langsung" generik yang tidak bisa dibedakan.
+ * `othersByConv` = userId anggota lain per percakapan direct.
+ */
+function directLabel(
+  conversationId: string,
+  othersByConv: Map<string, string[]>,
+  nameById: Map<string, string>,
+): string {
+  for (const uid of othersByConv.get(conversationId) ?? []) {
+    const name = nameById.get(uid);
+    if (name) return name;
+  }
+  return "Percakapan langsung";
 }
 
 export default async function ObrolanPage({
@@ -34,6 +55,20 @@ export default async function ObrolanPage({
   ]);
   const nameById = new Map(
     members.map((m) => [m.user.id, m.user.name ?? m.user.email]),
+  );
+  // Anggota lain per percakapan direct — untuk label lawan bicara.
+  const directIds = new Set(
+    conversations.filter((c) => c.kind === "direct").map((c) => c.id),
+  );
+  const othersByConv = new Map<string, string[]>();
+  await Promise.all(
+    [...directIds].map(async (convId) => {
+      const ms = await listConvMembers(ids.userId, ids.orgId, convId);
+      othersByConv.set(
+        convId,
+        ms.map((m) => m.userId).filter((u) => u !== ids.userId),
+      );
+    }),
   );
   const active =
     conversations.find((c) => c.id === requestedId) ?? conversations[0] ?? null;
@@ -79,10 +114,12 @@ export default async function ObrolanPage({
               <span className="block truncate font-medium">
                 {c.kind === "group"
                   ? (c.name ?? "Grup")
-                  : (c.name ?? "Percakapan langsung")}
+                  : directLabel(c.id, othersByConv, nameById)}
               </span>
               <span className="text-xs text-muted-foreground">
-                {c.memberCount} anggota
+                {c.kind === "group"
+                  ? `${c.memberCount} anggota`
+                  : "Percakapan langsung"}
               </span>
             </Link>
           ))}
