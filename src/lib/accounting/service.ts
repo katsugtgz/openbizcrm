@@ -8,11 +8,7 @@ import {
   type JournalEntry,
   type JournalLine,
 } from "@/db/schema";
-import {
-  NotFoundError,
-  OrgScopeError,
-  requireOrgRole,
-} from "@/lib/org-scope";
+import { NotFoundError, requireOrgRole } from "@/lib/org-scope";
 import { recordAudit } from "@/lib/repos/audit-repo";
 import {
   AccountingError,

@@ -141,6 +141,27 @@
       "when": 1792445760013,
       "tag": "0019_bouncy_xorn",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1792450813904,
+      "tag": "0020_whatsapp_ai",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1792450899575,
+      "tag": "0021_unusual_fallen_one",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1792452303587,
+      "tag": "0022_smooth_bloodstrike",
+      "breakpoints": true
     }
   ]
 }

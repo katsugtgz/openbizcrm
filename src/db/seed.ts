@@ -2,8 +2,12 @@ import "dotenv/config";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
+  announcements,
   auditLogs,
   branches,
+  courseCompletions,
+  courseMaterials,
+  courses,
   crmActivities,
   crmCompanies,
   crmContacts,
@@ -13,6 +17,10 @@ import {
   organizations,
   orgMemberships,
   projects,
+  reviewAssignments,
+  reviewForms,
+  reviewPeriods,
+  reviewResponses,
   taskTemplates,
   tasks,
   timesheets,
@@ -641,6 +649,226 @@ async function seed() {
         });
       }
       console.log("+ timesheet rows (3)");
+    }
+
+    // ----- LMS + Pengumuman + Review 360 (idempoten) -----
+
+    // 1 kursus + 1 materi + 1 completion.
+    let [seedCourse] = await tx
+      .select()
+      .from(courses)
+      .where(
+        and(
+          eq(courses.orgId, org.id),
+          eq(courses.title, "Onboarding Karyawan"),
+        ),
+      )
+      .limit(1);
+    if (!seedCourse) {
+      [seedCourse] = await tx
+        .insert(courses)
+        .values({
+          orgId: org.id,
+          title: "Onboarding Karyawan",
+          description: "Kursus wajib karyawan baru.",
+          createdBy: owner.id,
+        })
+        .onConflictDoNothing({ target: [courses.orgId, courses.title] })
+        .returning();
+      console.log("+ course Onboarding Karyawan");
+    }
+    if (seedCourse) {
+      const [mat] = await tx
+        .select()
+        .from(courseMaterials)
+        .where(eq(courseMaterials.courseId, seedCourse.id))
+        .limit(1);
+      if (!mat) {
+        await tx.insert(courseMaterials).values({
+          orgId: org.id,
+          courseId: seedCourse.id,
+          title: "Modul 1: Budaya Kerja",
+          content: "Selamat datang! Modul ini membahas nilai dan ritme kerja.",
+        });
+        console.log("+ course material Modul 1");
+      }
+      const done = await tx
+        .select()
+        .from(courseCompletions)
+        .where(
+          and(
+            eq(courseCompletions.courseId, seedCourse.id),
+            eq(courseCompletions.userId, member[0]?.id ?? owner.id),
+          ),
+        )
+        .limit(1);
+      if (done.length === 0) {
+        await tx.insert(courseCompletions).values({
+          orgId: org.id,
+          courseId: seedCourse.id,
+          userId: member[0]?.id ?? owner.id,
+        });
+        console.log("+ course completion (member)");
+      }
+    }
+
+    // 1 pengumuman.
+    const [ann] = await tx
+      .select()
+      .from(announcements)
+      .where(eq(announcements.orgId, org.id))
+      .limit(1);
+    if (!ann) {
+      await tx.insert(announcements).values({
+        orgId: org.id,
+        title: "Selamat Datang di OpenBizCRM",
+        body: "Portal internal: HRM, CRM, keuangan, dan penilaian 360 dalam satu tempat.",
+        createdBy: owner.id,
+      });
+      console.log("+ announcement");
+    }
+
+    // Review 360: 1 form aktif + periode + assignment + respons.
+    let [rform] = await tx
+      .select()
+      .from(reviewForms)
+      .where(
+        and(
+          eq(reviewForms.orgId, org.id),
+          eq(reviewForms.title, "Review Kinerja 360"),
+        ),
+      )
+      .limit(1);
+    if (!rform) {
+      [rform] = await tx
+        .insert(reviewForms)
+        .values({
+          orgId: org.id,
+          title: "Review Kinerja 360",
+          description:
+            "Penilaian dua arah: atasan, rekan, bawahan, diri sendiri.",
+          status: "active",
+          slug: `review-kinerja-360-${org.id.slice(0, 8)}`,
+          fields: [
+            {
+              key: "skor",
+              label: "Skor keseluruhan (1-5)",
+              type: "number",
+              required: true,
+              min: 1,
+              max: 5,
+            },
+            {
+              key: "kekuatan",
+              label: "Kekuatan",
+              type: "textarea",
+              required: true,
+            },
+            {
+              key: "perbaikan",
+              label: "Area perbaikan",
+              type: "textarea",
+              required: false,
+            },
+          ],
+          createdBy: owner.id,
+        })
+        .onConflictDoNothing({ target: reviewForms.slug })
+        .returning();
+      console.log("+ review form Review Kinerja 360 (aktif)");
+    }
+    if (rform) {
+      let [period] = await tx
+        .select()
+        .from(reviewPeriods)
+        .where(
+          and(
+            eq(reviewPeriods.orgId, org.id),
+            eq(reviewPeriods.formId, rform.id),
+          ),
+        )
+        .limit(1);
+      if (!period) {
+        [period] = await tx
+          .insert(reviewPeriods)
+          .values({
+            orgId: org.id,
+            formId: rform.id,
+            title: "Review Kinerja Q4",
+            status: "open",
+            createdBy: owner.id,
+          })
+          .returning();
+        console.log("+ review period Q4 (open)");
+      }
+      // 2 assignment: member self-review + owner menilai member.
+      const pairRows = [
+        {
+          revieweeUserId: member[0]?.id ?? owner.id,
+          reviewerUserId: member[0]?.id ?? owner.id,
+          relation: "self" as const,
+        },
+        {
+          revieweeUserId: member[0]?.id ?? owner.id,
+          reviewerUserId: owner.id,
+          relation: "supervisor" as const,
+        },
+      ];
+      await tx
+        .insert(reviewAssignments)
+        .values(
+          pairRows.map((p) => ({
+            orgId: org.id,
+            periodId: period!.id,
+            reviewerUserId: p.reviewerUserId,
+            revieweeUserId: p.revieweeUserId,
+            relation: p.relation,
+          })),
+        )
+        .onConflictDoNothing({
+          target: [
+            reviewAssignments.periodId,
+            reviewAssignments.reviewerUserId,
+            reviewAssignments.revieweeUserId,
+          ],
+        });
+      console.log("+ review assignments (2)");
+
+      // 1 respons terisi (self review member), kalau belum ada.
+      const selfAssignment = await tx
+        .select()
+        .from(reviewAssignments)
+        .where(
+          and(
+            eq(reviewAssignments.periodId, period!.id),
+            eq(reviewAssignments.reviewerUserId, member[0]?.id ?? owner.id),
+          ),
+        )
+        .limit(1);
+      if (selfAssignment[0] && selfAssignment[0].status === "pending") {
+        const existing = await tx
+          .select()
+          .from(reviewResponses)
+          .where(eq(reviewResponses.assignmentId, selfAssignment[0].id))
+          .limit(1);
+        if (existing.length === 0) {
+          await tx.insert(reviewResponses).values({
+            orgId: org.id,
+            assignmentId: selfAssignment[0].id,
+            answers: {
+              skor: 4,
+              kekuatan: "Konsisten menyelesaikan task tepat waktu.",
+              perbaikan: "Komunikasi lintas tim bisa lebih proaktif.",
+            },
+            submittedByUserId: member[0]?.id ?? owner.id,
+          });
+          await tx
+            .update(reviewAssignments)
+            .set({ status: "submitted" })
+            .where(eq(reviewAssignments.id, selfAssignment[0].id));
+          console.log("+ review response (self, submitted)");
+        }
+      }
     }
   });
 

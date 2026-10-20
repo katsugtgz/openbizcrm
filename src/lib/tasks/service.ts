@@ -36,7 +36,7 @@ async function assertParent(
   parentId: string,
   exec: Tx | typeof db = db,
 ): Promise<void> {
-  const [parent] = await db
+  const [parent] = await exec
     .select()
     .from(tasks)
     .where(and(eq(tasks.id, parentId), eq(tasks.orgId, orgId)))

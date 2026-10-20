@@ -52,7 +52,7 @@ describe("app shell", () => {
   beforeAll(() => setFakeUser(user));
   afterAll(() => setFakeUser(null));
 
-  it("renders all 10 nav items, org display, and user menu with Keluar", async () => {
+  it("renders all nav items, org display, and user menu with Keluar", async () => {
     const { AppShell } = await import("@/components/app-shell");
 
     render(
@@ -72,7 +72,7 @@ describe("app shell", () => {
       "CRM",
       "Proyek",
       "Akuntansi",
-      "Chat",
+      "Obrolan",
       "Cloud",
       "Pengaturan",
     ]) {

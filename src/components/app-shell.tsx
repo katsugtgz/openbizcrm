@@ -56,8 +56,14 @@ const NAV_ITEMS = [
   { label: "Akuntansi", href: "/akuntansi", icon: BanknoteIcon },
   { label: "Faktur", href: "/faktur", icon: FileText },
   { label: "POS", href: "/pos", icon: ShoppingCart },
-  { label: "Chat", href: "#", icon: MessageSquare },
-  { label: "Cloud", href: "#", icon: CloudIcon },
+  { label: "Pelatihan", href: "/pelatihan", icon: ClipboardList },
+  { label: "LMS", href: "/lms", icon: ClipboardList },
+  { label: "Penilaian 360", href: "/penilaian", icon: ClipboardList },
+  { label: "Formulir", href: "/formulir", icon: FileText },
+  { label: "Pengumuman", href: "/pengumuman", icon: MessageSquare },
+  { label: "Obrolan", href: "/obrolan", icon: MessageSquare },
+  { label: "Cloud", href: "/cloud", icon: CloudIcon },
+  { label: "Laporan", href: "/laporan", icon: FileText },
   { label: "Pengaturan", href: "#", icon: Settings },
 ] as const;
 
