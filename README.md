@@ -125,11 +125,14 @@ src/
 ## Roadmap
 
 - [x] Project skeleton (Next.js 16 + TypeScript + Tailwind v4 + shadcn/ui + Drizzle)
-- [ ] App shell (auth, navigation, multi-company switcher)
-- [ ] HRM track (attendance, payroll, leave, feedback, LMS, recruitment)
-- [ ] CRM + Projects track (pipeline, kanban, gantt, timesheet)
-- [ ] Finance track (ledger, invoicing, POS)
-- [ ] Collaboration track (chat, cloud drive, meet)
+- [x] App shell (auth, navigation, multi-company switcher)
+- [x] HRM track (attendance, payroll with PPh 21 TER + BPJS, leave, 360 feedback, LMS, recruitment)
+- [x] CRM + Projects track (pipeline, kanban, gantt, timesheet, quotations)
+- [x] Finance track (double-entry ledger, invoicing with PPN, AR/AP, budgeting, fixed assets, POS)
+- [x] Collaboration track (chat, cloud drive, forms, WhatsApp seam, AI assistant seam, 360 reports)
+- [ ] WhatsApp Baileys socket wiring (outbox contract + worker seam ready)
+- [ ] Jitsi Meet embed (self-host)
+- [ ] Production WhatsApp session + public AI gateway URL
 
 ## Contributing
 
