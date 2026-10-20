@@ -56,8 +56,14 @@ const NAV_ITEMS = [
   { label: "Akuntansi", href: "/akuntansi", icon: BanknoteIcon },
   { label: "Faktur", href: "/faktur", icon: FileText },
   { label: "POS", href: "/pos", icon: ShoppingCart },
-  { label: "Chat", href: "#", icon: MessageSquare },
-  { label: "Cloud", href: "#", icon: CloudIcon },
+  { label: "Pelatihan", href: "/pelatihan", icon: ClipboardList },
+  { label: "LMS", href: "/lms", icon: ClipboardList },
+  { label: "Penilaian 360", href: "/penilaian", icon: ClipboardList },
+  { label: "Formulir", href: "/formulir", icon: FileText },
+  { label: "Pengumuman", href: "/pengumuman", icon: MessageSquare },
+  { label: "Obrolan", href: "/obrolan", icon: MessageSquare },
+  { label: "Cloud", href: "/cloud", icon: CloudIcon },
+  { label: "Laporan", href: "/laporan", icon: FileText },
   { label: "Pengaturan", href: "#", icon: Settings },
 ] as const;
 
@@ -187,7 +193,7 @@ export function AppShell({
   return (
     <div className="flex min-h-dvh">
       {/* Desktop sidebar */}
-      <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 flex-col gap-6 border-r bg-card p-4 lg:flex">
+      <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 flex-col gap-6 overflow-y-auto border-r bg-card p-4 lg:flex">
         <Brand />
         <NavLinks />
       </aside>
@@ -216,7 +222,7 @@ export function AppShell({
                 </svg>
               </Button>
             </SheetTrigger>
-            <SheetContent side="left" className="w-64">
+            <SheetContent side="left" className="w-64 overflow-y-auto">
               <SheetHeader>
                 <SheetTitle asChild>
                   <div>

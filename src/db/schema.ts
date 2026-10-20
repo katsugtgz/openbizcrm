@@ -1169,3 +1169,523 @@ export const fixedAssets = pgTable(
 );
 
 export type FixedAsset = typeof fixedAssets.$inferSelect;
+
+// ---------------- WhatsApp + AI (track: AI WhatsApp) ----------------
+
+export const whatsappStatusEnum = pgEnum("whatsapp_status", [
+  "disconnected",
+  "qr",
+  "connecting",
+  "connected",
+]);
+
+export const whatsappOutboxStatusEnum = pgEnum("whatsapp_outbox_status", [
+  "queued",
+  /** Diklaim worker (atomik) sebelum sender dipanggil — cegah kirim ganda. */
+  "sending",
+  "sent",
+  "failed",
+]);
+
+export const aiMessageRoleEnum = pgEnum("ai_message_role", [
+  "user",
+  "assistant",
+]);
+
+/** Satu sesi WhatsApp per org; status dikendalikan state machine murni. */
+export const whatsappSessions = pgTable(
+  "whatsapp_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    status: whatsappStatusEnum("status").notNull().default("disconnected"),
+    /** Payload QR terakhir saat status "qr". */
+    qrCode: text("qr_code"),
+    /** Nomor telepon tersambung saat status "connected". */
+    phone: text("phone"),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [unique("whatsapp_sessions_org_unique").on(t.orgId)],
+);
+
+/** Antrean kirim WA; worker (src/lib/whatsapp/worker.ts) menguras baris queued. */
+export const whatsappOutbox = pgTable(
+  "whatsapp_outbox",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    phone: text("phone").notNull(),
+    message: text("message").notNull(),
+    status: whatsappOutboxStatusEnum("status").notNull().default("queued"),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error"),
+    sentAt: timestamp("sent_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [index("whatsapp_outbox_org_status_idx").on(t.orgId, t.status)],
+);
+
+export const aiConversations = pgTable(
+  "ai_conversations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    userId: uuid("user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [index("ai_conversations_org_user_idx").on(t.orgId, t.userId)],
+);
+
+export const aiMessages = pgTable(
+  "ai_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    conversationId: uuid("conversation_id")
+      .notNull()
+      .references(() => aiConversations.id, { onDelete: "cascade" }),
+    role: aiMessageRoleEnum("role").notNull(),
+    content: text("content").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    index("ai_messages_conversation_idx").on(t.conversationId, t.createdAt),
+  ],
+);
+
+export type WhatsappSession = typeof whatsappSessions.$inferSelect;
+export type WhatsappOutboxRow = typeof whatsappOutbox.$inferSelect;
+export type AiConversation = typeof aiConversations.$inferSelect;
+export type AiMessage = typeof aiMessages.$inferSelect;
+
+// ---------------- Team Chat + Drive (track: chat/drive) ----------------
+
+/** chat_conversations.kind: saluran grup atau percakapan langsung 1:1. */
+export const chatKindEnum = pgEnum("chat_kind", ["group", "direct"]);
+
+export const chatConversations = pgTable(
+  "chat_conversations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    kind: chatKindEnum("kind").notNull().default("group"),
+    name: text("name"),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    // Target FK komposit (id, org_id) — dirujuk chat_messages.
+    unique("chat_conversations_id_org_key").on(t.id, t.orgId),
+    index("chat_conversations_org_idx").on(t.orgId),
+  ],
+);
+
+export const chatConversationMembers = pgTable(
+  "chat_conversation_members",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    conversationId: uuid("conversation_id")
+      .notNull()
+      .references(() => chatConversations.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    joinedAt: timestamp("joined_at").defaultNow().notNull(),
+  },
+  (t) => [
+    unique("chat_conv_members_conv_user_unique").on(t.conversationId, t.userId),
+    index("chat_conv_members_user_idx").on(t.userId),
+  ],
+);
+
+export const chatMessages = pgTable(
+  "chat_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    conversationId: uuid("conversation_id").notNull(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    // Pesan harus satu org dengan percakapannya (cubic schema.ts:1198).
+    foreignKey({
+      name: "chat_messages_conversation_org_fk",
+      columns: [t.conversationId, t.orgId],
+      foreignColumns: [chatConversations.id, chatConversations.orgId],
+    }).onDelete("cascade"),
+    index("chat_messages_conv_created_idx").on(t.conversationId, t.createdAt),
+  ],
+);
+
+export const driveFolders = pgTable(
+  "drive_folders",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    parentId: uuid("parent_id").references((): AnyPgColumn => driveFolders.id, {
+      onDelete: "cascade",
+    }),
+    name: text("name").notNull(),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    // Target FK komposit (id, org_id) — dirujuk drive_files.
+    unique("drive_folders_id_org_key").on(t.id, t.orgId),
+    // Nama folder unik per induk (root = parent NULL). Enforce app-side untuk
+    // NULL parent; index berikut mendukung pencarian.
+    unique("drive_folders_org_parent_name_unique").on(
+      t.orgId,
+      t.parentId,
+      t.name,
+    ),
+    index("drive_folders_org_parent_idx").on(t.orgId, t.parentId),
+  ],
+);
+
+/** Status unggah drive: pending (reservasi kuota) -> confirmed. */
+export const driveFileStatus = pgEnum("drive_file_status", [
+  "pending",
+  "confirmed",
+]);
+
+export const driveFiles = pgTable(
+  "drive_files",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    folderId: uuid("folder_id"),
+    key: text("key").notNull(),
+    fileName: text("file_name").notNull(),
+    mimeType: text("mime_type").notNull(),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+    uploadedBy: uuid("uploaded_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** Pending: presigned tapi belum dikonfirmasi (quota reservation). */
+    status: driveFileStatus().notNull().default("pending"),
+    confirmedAt: timestamp("confirmed_at"),
+    /** Deadline unggah; pending lewat ini dianggap kadaluarsa. */
+    expiresAt: timestamp("expires_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    // Folder harus satu org dengan file-nya (cubic schema.ts:1198); NULL
+    // folderId = root, FK tetap lolos (MATCH SIMPLE).
+    foreignKey({
+      name: "drive_files_folder_org_fk",
+      columns: [t.folderId, t.orgId],
+      foreignColumns: [driveFolders.id, driveFolders.orgId],
+    }).onDelete("cascade"),
+    unique("drive_files_key_unique").on(t.key),
+    index("drive_files_org_folder_idx").on(t.orgId, t.folderId),
+  ],
+);
+
+export type ChatConversation = typeof chatConversations.$inferSelect;
+export type ChatConversationMember =
+  typeof chatConversationMembers.$inferSelect;
+export type ChatMessage = typeof chatMessages.$inferSelect;
+export type DriveFolder = typeof driveFolders.$inferSelect;
+export type DriveFile = typeof driveFiles.$inferSelect;
+export type DriveFileStatus = (typeof driveFileStatus.enumValues)[number];
+
+// ---------------- LMS + Pengumuman + Review 360 ----------------
+
+/** LMS: kursus pelatihan per org. */
+export const courses = pgTable(
+  "courses",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    description: text("description"),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    unique("courses_org_title_unique").on(t.orgId, t.title),
+    // Target FK komposit (id, org_id) — dirujuk materials & completions.
+    unique("courses_id_org_key").on(t.id, t.orgId),
+    index("courses_org_idx").on(t.orgId, t.createdAt),
+  ],
+);
+
+export const courseMaterials = pgTable(
+  "course_materials",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    courseId: uuid("course_id").notNull(),
+    title: text("title").notNull(),
+    content: text("content").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    // Materi harus satu org dengan kursus-nya (cubic schema.ts:1198).
+    foreignKey({
+      name: "course_materials_course_org_fk",
+      columns: [t.courseId, t.orgId],
+      foreignColumns: [courses.id, courses.orgId],
+    }).onDelete("cascade"),
+    index("course_materials_course_idx").on(t.courseId),
+  ],
+);
+
+/** Penyelesaian kursus: satu kali per (org, kursus, user). */
+export const courseCompletions = pgTable(
+  "course_completions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    courseId: uuid("course_id").notNull(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    completedAt: timestamp("completed_at").defaultNow().notNull(),
+  },
+  (t) => [
+    // Kursus harus satu org dengan completion-nya (cubic schema.ts:1198).
+    foreignKey({
+      name: "course_completions_course_org_fk",
+      columns: [t.courseId, t.orgId],
+      foreignColumns: [courses.id, courses.orgId],
+    }).onDelete("cascade"),
+    unique("course_completions_org_course_user_unique").on(
+      t.orgId,
+      t.courseId,
+      t.userId,
+    ),
+  ],
+);
+
+export const announcements = pgTable(
+  "announcements",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [index("announcements_org_created_idx").on(t.orgId, t.createdAt)],
+);
+
+export const reviewFormStatusEnum = pgEnum("review_form_status", [
+  "draft",
+  "active",
+  "closed",
+]);
+
+export const reviewPeriodStatusEnum = pgEnum("review_period_status", [
+  "draft",
+  "open",
+  "closed",
+]);
+
+/** Hubungan penilai -> yang dinilai. */
+export const reviewRelationEnum = pgEnum("review_relation", [
+  "peer",
+  "subordinate",
+  "self",
+  "supervisor",
+]);
+
+export const reviewAssignmentStatusEnum = pgEnum("review_assignment_status", [
+  "pending",
+  "submitted",
+]);
+
+export interface ReviewFormField {
+  key: string;
+  label: string;
+  type: "text" | "textarea" | "number" | "select" | "checkbox";
+  required?: boolean;
+  /** Wajib untuk type "select". */
+  options?: string[];
+  min?: number;
+  max?: number;
+}
+
+/** Form penilaian. slug diisi saat publish; dipakai halaman publik. */
+export const reviewForms = pgTable(
+  "review_forms",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    description: text("description"),
+    status: reviewFormStatusEnum("status").notNull().default("draft"),
+    slug: text("slug").unique(),
+    fields: jsonb("fields").$type<ReviewFormField[]>().notNull().default([]),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    // Target FK komposit (id, org_id) — dirujuk review_periods.
+    unique("review_forms_id_org_key").on(t.id, t.orgId),
+    index("review_forms_org_status_idx").on(t.orgId, t.status),
+  ],
+);
+
+export const reviewPeriods = pgTable(
+  "review_periods",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    formId: uuid("form_id").notNull(),
+    title: text("title").notNull(),
+    status: reviewPeriodStatusEnum("status").notNull().default("draft"),
+    startDate: date("start_date"),
+    endDate: date("end_date"),
+    /** Hasil agregat rata-rata per reviewee, ditulis saat closePeriod. */
+    results: jsonb("results"),
+    createdBy: uuid("created_by").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    // Form harus satu org dengan period-nya (cubic schema.ts:1198).
+    foreignKey({
+      name: "review_periods_form_org_fk",
+      columns: [t.formId, t.orgId],
+      foreignColumns: [reviewForms.id, reviewForms.orgId],
+    }).onDelete("cascade"),
+    // Target FK komposit (id, org_id) — dirujuk review_assignments.
+    unique("review_periods_id_org_key").on(t.id, t.orgId),
+    index("review_periods_org_status_idx").on(t.orgId, t.status),
+  ],
+);
+
+export const reviewAssignments = pgTable(
+  "review_assignments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    // FK komposit (period_id, org_id) -> review_periods(org_id, id): baris
+    // assignment dijamin satu org dengan period-nya (cubic schema.ts:1198).
+    periodId: uuid("period_id").notNull(),
+    reviewerUserId: uuid("reviewer_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    revieweeUserId: uuid("reviewee_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    // Keanggotaan penilai & yang dinilai di org yang sama (cubic 0022:101):
+    // FK komposit ke org_memberships(org_id, user_id) — DB menolak anggota
+    // lintas-org tanpa andal cek aplikasi.
+    relation: reviewRelationEnum("relation").notNull().default("peer"),
+    status: reviewAssignmentStatusEnum("status").notNull().default("pending"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    // Period harus satu org dengan assignment (cubic schema.ts:1198).
+    foreignKey({
+      name: "review_assignments_period_org_fk",
+      columns: [t.periodId, t.orgId],
+      foreignColumns: [reviewPeriods.id, reviewPeriods.orgId],
+    }).onDelete("cascade"),
+    // Penilai & yang dinilai wajib anggota org ini (cubic 0022:101): FK
+    // komposit ke org_memberships(org_id, user_id) — DB menolak lintas-org.
+    foreignKey({
+      name: "review_assignments_reviewer_member_fk",
+      columns: [t.orgId, t.reviewerUserId],
+      foreignColumns: [orgMemberships.orgId, orgMemberships.userId],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "review_assignments_reviewee_member_fk",
+      columns: [t.orgId, t.revieweeUserId],
+      foreignColumns: [orgMemberships.orgId, orgMemberships.userId],
+    }).onDelete("cascade"),
+    unique("review_assignments_triple_unique").on(
+      t.periodId,
+      t.reviewerUserId,
+      t.revieweeUserId,
+    ),
+    // Target FK komposit (id, org_id) — dirujuk review_responses.
+    unique("review_assignments_id_org_key").on(t.id, t.orgId),
+    index("review_assignments_org_period_idx").on(t.orgId, t.periodId),
+  ],
+);
+
+/** Satu respons per assignment (unique assignment_id + status flip). */
+export const reviewResponses = pgTable(
+  "review_responses",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    assignmentId: uuid("assignment_id").notNull(),
+    answers: jsonb("answers").$type<Record<string, unknown>>().notNull(),
+    /** Null = submit anonim lewat link publik. */
+    submittedByUserId: uuid("submitted_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    submittedAt: timestamp("submitted_at").defaultNow().notNull(),
+  },
+  (t) => [
+    // Response harus satu org dengan assignment-nya (cubic schema.ts:1198).
+    foreignKey({
+      name: "review_responses_assignment_org_fk",
+      columns: [t.assignmentId, t.orgId],
+      foreignColumns: [reviewAssignments.id, reviewAssignments.orgId],
+    }).onDelete("cascade"),
+    unique("review_responses_assignment_unique").on(t.assignmentId),
+  ],
+);
+
+export type Course = typeof courses.$inferSelect;
+export type CourseMaterial = typeof courseMaterials.$inferSelect;
+export type CourseCompletion = typeof courseCompletions.$inferSelect;
+export type Announcement = typeof announcements.$inferSelect;
+export type ReviewForm = typeof reviewForms.$inferSelect;
+export type ReviewPeriod = typeof reviewPeriods.$inferSelect;
+export type ReviewAssignment = typeof reviewAssignments.$inferSelect;
+export type ReviewResponse = typeof reviewResponses.$inferSelect;

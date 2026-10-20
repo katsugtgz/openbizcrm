@@ -52,7 +52,7 @@ describe("app shell", () => {
   beforeAll(() => setFakeUser(user));
   afterAll(() => setFakeUser(null));
 
-  it("renders all 10 nav items, org display, and user menu with Keluar", async () => {
+  it("renders all nav items, org display, and user menu with Keluar", async () => {
     const { AppShell } = await import("@/components/app-shell");
 
     render(
@@ -64,16 +64,27 @@ describe("app shell", () => {
     );
 
     const nav = screen.getByRole("navigation", { name: "Menu utama" });
+    // SEMUA label NAV_ITEMS (cubic ui-smoke.test.tsx:55) — subset membuat
+    // regresi link kolaborasi/bisnis lolos smoke test.
     for (const label of [
       "Dashboard",
       "Karyawan",
       "Presensi",
       "Cuti",
+      "Penggajian",
       "CRM",
       "Proyek",
       "Akuntansi",
-      "Chat",
+      "Faktur",
+      "POS",
+      "Pelatihan",
+      "LMS",
+      "Penilaian 360",
+      "Formulir",
+      "Pengumuman",
+      "Obrolan",
       "Cloud",
+      "Laporan",
       "Pengaturan",
     ]) {
       expect(within(nav).getByText(label)).toBeInTheDocument();
