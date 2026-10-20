@@ -3,14 +3,15 @@
 import { redirect } from "next/navigation";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
-import {
-  approvalRequests,
-  leaveRequests as leaveRequestsTable,
-} from "@/db/schema";
+import { leaveRequests as leaveRequestsTable } from "@/db/schema";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
-import { hasRole, requireOrgRole } from "@/lib/org-scope";
-import { saveApprovalRequest } from "@/lib/approval/store";
+import { hasRole, OrgScopeError, requireOrgRole } from "@/lib/org-scope";
+import {
+  saveApprovalRequest,
+  getApprovalRequestByRowIdForUpdate,
+  saveApprovalRequestTx,
+} from "@/lib/approval/store";
 import {
   approve as approveApproval,
   reject as rejectApproval,
@@ -23,7 +24,7 @@ import {
 import {
   createLeave,
   getOrCreateBalance,
-  debitBalance,
+  debitBalanceChecked,
   getEmployeeByUser,
 } from "@/lib/leave/repo";
 import { listMembers } from "@/lib/repos/member-repo";
@@ -36,6 +37,28 @@ async function requireSession() {
   const ids = await resolveSessionIds(user);
   if (!ids) throw new Error("Tidak ada organisasi aktif.");
   return ids;
+}
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Pesan aman untuk ?error= di URL redirect: hanya string validasi statis
+ * yang direfleksikan. Error driver PG (code 22/23/42/53…: detail constraint
+ * + nilai) dan OrgScopeError dipetakan ke fallback generik agar tidak masuk
+ * history browser, log, atau header Referer.
+ */
+function safeRedirectError(error: unknown, fallback: string): string {
+  if (error instanceof OrgScopeError) return "Akses ditolak.";
+  if (error instanceof Error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "string" && /^(22|23|42|53)/.test(code)) {
+      return fallback;
+    }
+    if (error.message.length > 200) return fallback;
+    return error.message;
+  }
+  return fallback;
 }
 
 /**
@@ -119,14 +142,19 @@ export async function submitLeaveAction(formData: FormData): Promise<void> {
       metadata: { type, startDate, endDate, days },
     });
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Terjadi kesalahan.";
+    const message = safeRedirectError(error, "Pengajuan gagal disimpan.");
     redirect(`/cuti?error=${encodeURIComponent(message)}`);
   }
   redirect(`/cuti?ok=${encodeURIComponent("Pengajuan cuti/izin terkirim.")}`);
 }
 
-/** Setujui atau tolak permintaan (approver saat ini di rantai). */
+/**
+ * Setujui atau tolak permintaan (approver saat ini di rantai).
+ *
+ * Atomik dalam satu transaksi: baris approval dikunci (FOR UPDATE) supaya
+ * dua keputusan konkuren terserialisasi — yang kalah melihat status
+ * terminal dan engine menolaknya, bukan menimpa + debit ganda.
+ */
 export async function actLeaveAction(formData: FormData): Promise<void> {
   const { userId, orgId } = await requireSession();
   await requireOrgRole(userId, orgId, "member");
@@ -135,66 +163,82 @@ export async function actLeaveAction(formData: FormData): Promise<void> {
   const decision = String(formData.get("decision") ?? "");
   const note = String(formData.get("note") ?? "").trim() || undefined;
   try {
-    if (!approvalRowId || (decision !== "approve" && decision !== "reject")) {
+    // Bentuk UUID dicek dulu: nilai liar jadi "tidak valid", bukan error
+    // cast uuid PG 22P02.
+    if (
+      !UUID_RE.test(approvalRowId) ||
+      (decision !== "approve" && decision !== "reject")
+    ) {
       throw new Error("Keputusan tidak valid.");
     }
 
-    const [row] = await db
-      .select({
-        state: approvalRequests.state,
-        requestId: approvalRequests.requestId,
-        employeeId: leaveRequestsTable.employeeId,
-        leaveType: leaveRequestsTable.type,
-        startDate: leaveRequestsTable.startDate,
-        endDate: leaveRequestsTable.endDate,
-      })
-      .from(approvalRequests)
-      .leftJoin(
-        leaveRequestsTable,
-        eq(leaveRequestsTable.approvalId, approvalRequests.id),
-      )
-      .where(
-        and(
-          eq(approvalRequests.id, approvalRowId),
-          eq(approvalRequests.organizationId, orgId),
-        ),
-      )
-      .limit(1);
-    if (!row) throw new Error("Permintaan tidak ditemukan.");
-
-    const nextApproval =
-      decision === "approve"
-        ? approveApproval(row.state, userId, note)
-        : rejectApproval(row.state, userId, note);
-
-    await saveApprovalRequest(orgId, nextApproval);
-
-    // Approved cuti/izin: debit saldo tahun mulai.
-    if (nextApproval.status === "approved" && row.employeeId && row.startDate) {
-      const year = Number(row.startDate.slice(0, 4));
-      const days = computeDuration(row.startDate, row.endDate ?? row.startDate);
-      await getOrCreateBalance(userId, orgId, row.employeeId, year);
-      await debitBalance(
-        userId,
+    await db.transaction(async (tx) => {
+      const approval = await getApprovalRequestByRowIdForUpdate(
+        tx,
         orgId,
-        row.employeeId,
-        year,
-        row.leaveType === "izin" ? "izinRemaining" : "cutiRemaining",
-        days,
+        approvalRowId,
       );
-    }
+      const [leave] = await tx
+        .select({
+          employeeId: leaveRequestsTable.employeeId,
+          leaveType: leaveRequestsTable.type,
+          startDate: leaveRequestsTable.startDate,
+          endDate: leaveRequestsTable.endDate,
+        })
+        .from(leaveRequestsTable)
+        .where(
+          and(
+            eq(leaveRequestsTable.approvalId, approvalRowId),
+            eq(leaveRequestsTable.orgId, orgId),
+          ),
+        )
+        .limit(1);
 
-    await recordAudit({
-      orgId,
-      userId: userId,
-      action: `leave.${decision}`,
-      entity: "leave_request",
-      entityId: row.requestId,
-      metadata: { note },
+      const nextApproval =
+        decision === "approve"
+          ? approveApproval(approval.state, userId, note)
+          : rejectApproval(approval.state, userId, note);
+
+      await saveApprovalRequestTx(tx, orgId, nextApproval);
+
+      // Approved cuti/izin: debit saldo tahun mulai. Bersyarat
+      // (remaining >= days): overdraft melempar, bukan clamp diam.
+      if (
+        nextApproval.status === "approved" &&
+        leave?.employeeId &&
+        leave?.startDate
+      ) {
+        const year = Number(leave.startDate.slice(0, 4));
+        const days = computeDuration(
+          leave.startDate,
+          leave.endDate ?? leave.startDate,
+        );
+        await getOrCreateBalance(userId, orgId, leave.employeeId, year, tx);
+        await debitBalanceChecked(
+          userId,
+          orgId,
+          leave.employeeId,
+          year,
+          leave.leaveType === "izin" ? "izinRemaining" : "cutiRemaining",
+          days,
+          tx,
+        );
+      }
+
+      await recordAudit(
+        {
+          orgId,
+          userId: userId,
+          action: `leave.${decision}`,
+          entity: "leave_request",
+          entityId: approval.state.requestId,
+          metadata: { note },
+        },
+        tx,
+      );
     });
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Terjadi kesalahan.";
+    const message = safeRedirectError(error, "Keputusan gagal disimpan.");
     redirect(`/cuti?error=${encodeURIComponent(message)}`);
   }
   redirect(

@@ -1092,21 +1092,21 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
+        "course_completions_course_id_courses_id_fk": {
+          "name": "course_completions_course_id_courses_id_fk",
+          "tableFrom": "course_completions",
+          "tableTo": "courses",
+          "columnsFrom": ["course_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
         "course_completions_user_id_users_id_fk": {
           "name": "course_completions_user_id_users_id_fk",
           "tableFrom": "course_completions",
           "tableTo": "users",
           "columnsFrom": ["user_id"],
           "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "course_completions_course_org_fk": {
-          "name": "course_completions_course_org_fk",
-          "tableFrom": "course_completions",
-          "tableTo": "courses",
-          "columnsFrom": ["course_id", "org_id"],
-          "columnsTo": ["id", "org_id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1193,12 +1193,12 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "course_materials_course_org_fk": {
-          "name": "course_materials_course_org_fk",
+        "course_materials_course_id_courses_id_fk": {
+          "name": "course_materials_course_id_courses_id_fk",
           "tableFrom": "course_materials",
           "tableTo": "courses",
-          "columnsFrom": ["course_id", "org_id"],
-          "columnsTo": ["id", "org_id"],
+          "columnsFrom": ["course_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1301,6 +1301,11 @@
           "name": "courses_org_title_unique",
           "nullsNotDistinct": false,
           "columns": ["org_id", "title"]
+        },
+        "courses_id_org_key": {
+          "name": "courses_id_org_key",
+          "nullsNotDistinct": false,
+          "columns": ["id", "org_id"]
         }
       },
       "policies": {},
@@ -1996,10 +2001,16 @@
           "primaryKey": false,
           "notNull": true
         },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
         "status": {
           "name": "status",
           "type": "drive_file_status",
-          "typeSchema": "public",
           "primaryKey": false,
           "notNull": true,
           "default": "'pending'"
@@ -2015,13 +2026,6 @@
           "type": "timestamp",
           "primaryKey": false,
           "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
         }
       },
       "indexes": {
@@ -4467,6 +4471,15 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
+        "review_assignments_period_id_review_periods_id_fk": {
+          "name": "review_assignments_period_id_review_periods_id_fk",
+          "tableFrom": "review_assignments",
+          "tableTo": "review_periods",
+          "columnsFrom": ["period_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
         "review_assignments_reviewer_user_id_users_id_fk": {
           "name": "review_assignments_reviewer_user_id_users_id_fk",
           "tableFrom": "review_assignments",
@@ -4484,15 +4497,6 @@
           "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
-        },
-        "review_assignments_period_org_fk": {
-          "name": "review_assignments_period_org_fk",
-          "tableFrom": "review_assignments",
-          "tableTo": "review_periods",
-          "columnsFrom": ["period_id", "org_id"],
-          "columnsTo": ["id", "org_id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -4501,6 +4505,11 @@
           "name": "review_assignments_triple_unique",
           "nullsNotDistinct": false,
           "columns": ["period_id", "reviewer_user_id", "reviewee_user_id"]
+        },
+        "review_assignments_id_org_key": {
+          "name": "review_assignments_id_org_key",
+          "nullsNotDistinct": false,
+          "columns": ["id", "org_id"]
         }
       },
       "policies": {},
@@ -4620,6 +4629,11 @@
           "name": "review_forms_slug_unique",
           "nullsNotDistinct": false,
           "columns": ["slug"]
+        },
+        "review_forms_id_org_key": {
+          "name": "review_forms_id_org_key",
+          "nullsNotDistinct": false,
+          "columns": ["id", "org_id"]
         }
       },
       "policies": {},
@@ -4728,6 +4742,15 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
+        "review_periods_form_id_review_forms_id_fk": {
+          "name": "review_periods_form_id_review_forms_id_fk",
+          "tableFrom": "review_periods",
+          "tableTo": "review_forms",
+          "columnsFrom": ["form_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
         "review_periods_created_by_users_id_fk": {
           "name": "review_periods_created_by_users_id_fk",
           "tableFrom": "review_periods",
@@ -4736,19 +4759,16 @@
           "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
-        },
-        "review_periods_form_org_fk": {
-          "name": "review_periods_form_org_fk",
-          "tableFrom": "review_periods",
-          "tableTo": "review_forms",
-          "columnsFrom": ["form_id", "org_id"],
-          "columnsTo": ["id", "org_id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "review_periods_id_org_key": {
+          "name": "review_periods_id_org_key",
+          "nullsNotDistinct": false,
+          "columns": ["id", "org_id"]
+        }
+      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -4807,6 +4827,15 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
+        "review_responses_assignment_id_review_assignments_id_fk": {
+          "name": "review_responses_assignment_id_review_assignments_id_fk",
+          "tableFrom": "review_responses",
+          "tableTo": "review_assignments",
+          "columnsFrom": ["assignment_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
         "review_responses_submitted_by_user_id_users_id_fk": {
           "name": "review_responses_submitted_by_user_id_users_id_fk",
           "tableFrom": "review_responses",
@@ -4814,15 +4843,6 @@
           "columnsFrom": ["submitted_by_user_id"],
           "columnsTo": ["id"],
           "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "review_responses_assignment_org_fk": {
-          "name": "review_responses_assignment_org_fk",
-          "tableFrom": "review_responses",
-          "tableTo": "review_assignments",
-          "columnsFrom": ["assignment_id", "org_id"],
-          "columnsTo": ["id", "org_id"],
-          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -5591,11 +5611,6 @@
       "schema": "public",
       "values": ["draft", "sent", "accepted", "rejected"]
     },
-    "public.drive_file_status": {
-      "name": "drive_file_status",
-      "schema": "public",
-      "values": ["pending", "confirmed"]
-    },
     "public.employee_status": {
       "name": "employee_status",
       "schema": "public",
@@ -5702,6 +5717,11 @@
       "name": "whatsapp_status",
       "schema": "public",
       "values": ["disconnected", "qr", "connecting", "connected"]
+    },
+    "public.drive_file_status": {
+      "name": "drive_file_status",
+      "schema": "public",
+      "values": ["pending", "confirmed"]
     }
   },
   "schemas": {},

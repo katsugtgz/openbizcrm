@@ -19,6 +19,7 @@ import {
   updateForm,
 } from "@/lib/review/service";
 import { parseFieldsJson as parseFieldsJsonLib } from "@/lib/review/fields";
+import { checkThrottle } from "@/app/r/[slug]/guard";
 
 export interface ActionResult {
   ok: boolean;
@@ -48,6 +49,41 @@ function fail(error: unknown): ActionResult {
  * penilaian/actions.ts:50) — lihat src/lib/review/fields.ts.
  */
 const parseFieldsJson = (raw: string) => parseFieldsJsonLib(raw);
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const RELATIONS = new Set(["peer", "subordinate", "self", "supervisor"]);
+
+/**
+ * Shape-check pasangan assign 360 sebelum ke service: array berisi
+ * {revieweeUserId, reviewerUserId} UUID + relation allowlist. Tanpa ini
+ * JSON liar jadi TypeError (bukan array) atau error enum/uuid PG.
+ */
+function parsePairs(raw: string): Parameters<typeof assignReviewers>[3] {
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed)) throw new Error("Data penilai tidak valid.");
+  for (const item of parsed) {
+    if (typeof item !== "object" || item === null) {
+      throw new Error("Data penilai tidak valid.");
+    }
+    const { revieweeUserId, reviewerUserId, relation } = item as Record<
+      string,
+      unknown
+    >;
+    if (
+      typeof revieweeUserId !== "string" ||
+      !UUID_RE.test(revieweeUserId) ||
+      typeof reviewerUserId !== "string" ||
+      !UUID_RE.test(reviewerUserId) ||
+      typeof relation !== "string" ||
+      !RELATIONS.has(relation)
+    ) {
+      throw new Error("Data penilai tidak valid.");
+    }
+  }
+  return parsed as Parameters<typeof assignReviewers>[3];
+}
 
 // ---------------- Forms ----------------
 
@@ -145,9 +181,7 @@ export async function assignReviewersAction(
   const { userId, orgId } = await requireSession();
   try {
     const periodId = String(formData.get("periodId") ?? "");
-    const pairs = JSON.parse(
-      String(formData.get("pairs") ?? "[]"),
-    ) as Parameters<typeof assignReviewers>[3];
+    const pairs = parsePairs(String(formData.get("pairs") ?? "[]"));
     await assignReviewers(userId, orgId, periodId, pairs);
   } catch (error) {
     return fail(error);
@@ -195,15 +229,18 @@ export async function submitPublicResponseAction(
   formData: FormData,
 ): Promise<ActionResult> {
   try {
+    const slug = String(formData.get("slug") ?? "");
+    const assignmentId = String(formData.get("assignmentId") ?? "");
+    // Submit publik tanpa login: throttle per tautan (10/menit) supaya
+    // flood anonim tidak membanjiri DB + revalidatePath.
+    if (!checkThrottle(`public-submit:${slug}:${assignmentId}`, 10)) {
+      return { ok: false, error: "Terlalu banyak percobaan. Coba lagi." };
+    }
     const { submitPublicResponse } = await import("@/lib/review/service");
     const answers = JSON.parse(
       String(formData.get("answers") ?? "{}"),
     ) as Record<string, unknown>;
-    await submitPublicResponse(
-      String(formData.get("slug") ?? ""),
-      String(formData.get("assignmentId") ?? ""),
-      answers,
-    );
+    await submitPublicResponse(slug, assignmentId, answers);
   } catch (error) {
     return fail(error);
   }

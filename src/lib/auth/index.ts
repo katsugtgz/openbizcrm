@@ -5,6 +5,7 @@
  * (dev without WorkOS, jsdom tests).
  */
 import { SessionFake } from "./fake";
+import { isWorkosSessionEnvReady } from "./config";
 import type { AuthSession } from "./types";
 
 export type { AuthSession, SessionUser } from "./types";
@@ -36,14 +37,7 @@ function pick(): Promise<AuthSession> {
  */
 function allowFake(): boolean {
   if (process.env.NODE_ENV === "production") return false;
-  return (
-    process.env.AUTH_FAKE === "1" ||
-    !(
-      !!process.env.WORKOS_API_KEY &&
-      !!process.env.WORKOS_CLIENT_ID &&
-      !!process.env.WORKOS_COOKIE_PASSWORD
-    )
-  );
+  return process.env.AUTH_FAKE === "1" || !isWorkosSessionEnvReady();
 }
 
 /**

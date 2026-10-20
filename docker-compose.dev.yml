@@ -4,10 +4,10 @@ services:
     container_name: openbizcrm-postgres
     restart: unless-stopped
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: openbizcrm
     volumes:
       - openbizcrm-pgdata:/var/lib/postgresql/data

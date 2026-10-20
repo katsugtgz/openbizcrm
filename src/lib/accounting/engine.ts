@@ -108,7 +108,23 @@ export function validateEntry(lines: JournalLineInput[]): string[] {
  * direpresentasikan aman sebagai number (cubic pr8 engine:114/:134) —
  * rounded totals bisa membuat balanced salah. API tetap number.
  */
-function sumExact(values: Iterable<number | bigint>): number {
+export function assertISODate(dateISO: string, label = "Tanggal"): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateISO)) {
+    throw new AccountingError(`${label} harus format YYYY-MM-DD.`);
+  }
+  const [y, m, d] = dateISO.split("-").map(Number);
+  const roundTrip = new Date(Date.UTC(y, m - 1, d));
+  if (
+    roundTrip.getUTCFullYear() !== y ||
+    roundTrip.getUTCMonth() !== m - 1 ||
+    roundTrip.getUTCDate() !== d
+  ) {
+    throw new AccountingError(`${label} bukan tanggal kalender valid.`);
+  }
+  return dateISO;
+}
+
+export function sumExact(values: Iterable<number | bigint>): number {
   let acc = 0n;
   for (const v of values) {
     acc += BigInt(v);

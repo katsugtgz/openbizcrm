@@ -30,12 +30,23 @@ export function ChatRoom({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
 
-  // Fallback realtime (cubic chat-room.tsx:50): polling ringan saat fokus —
+  // Fallback realtime (cubic chat-room.tsx:50): polling ringan saat terlihat —
   // realtime Ably belum ada subscriber di klien, jadi router.refresh() tiap
-  // 5 dtk menjaga pesan masuk terlihat tanpa navigasi.
+  // 5 dtk menjaga pesan masuk terlihat tanpa navigasi. Tab tersembunyi tidak
+  // ikut refetch (visibility check); refresh sekali saat tab kembali tampak.
   React.useEffect(() => {
-    const id = setInterval(() => router.refresh(), 5000);
-    return () => clearInterval(id);
+    const id = setInterval(() => {
+      if (document.hidden) return;
+      router.refresh();
+    }, 5000);
+    const onVisible = () => {
+      if (!document.hidden) router.refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [router]);
 
   function submit(e: React.FormEvent<HTMLFormElement>) {

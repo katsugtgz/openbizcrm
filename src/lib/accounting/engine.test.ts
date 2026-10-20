@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   accountBalance,
+  assertISODate,
+  sumExact,
   trialBalance,
   validateEntry,
   type JournalLineInput,
@@ -261,6 +263,39 @@ describe("BigInt aggregation (cubic pr8 engine:114/:134)", () => {
     );
     expect(tb.totalDebit).toBe(3 * MAXLINE);
     expect(tb.balanced).toBe(true);
+  });
+});
+
+describe("assertISODate", () => {
+  it("tanggal valid lolos dan dikembalikan", () => {
+    expect(assertISODate("2026-02-28", "Tanggal")).toBe("2026-02-28");
+    expect(assertISODate("2024-02-29", "Tanggal")).toBe("2024-02-29");
+  });
+
+  it("format non-YYYY-MM-DD ditolak", () => {
+    expect(() => assertISODate("2026-2-3", "Tanggal")).toThrow(/YYYY-MM-DD/);
+    expect(() => assertISODate("not-a-date", "Tanggal")).toThrow(/YYYY-MM-DD/);
+    expect(() => assertISODate("", "Tanggal")).toThrow(/YYYY-MM-DD/);
+  });
+
+  it("hari tak nyata ditolak (2026-02-30 lolos Date.parse)", () => {
+    expect(Number.isNaN(Date.parse("2026-02-30"))).toBe(false);
+    expect(() => assertISODate("2026-02-30", "Tanggal")).toThrow(/kalender/);
+    expect(() => assertISODate("2026-13-01", "Tanggal")).toThrow(/kalender/);
+    expect(() => assertISODate("2026-04-31", "Tanggal")).toThrow(/kalender/);
+  });
+});
+
+describe("sumExact (dipakai akumulator service)", () => {
+  it("menjumlah tepat", () => {
+    expect(sumExact([1, 2, 3])).toBe(6);
+    expect(sumExact([])).toBe(0);
+    expect(sumExact([10, -4])).toBe(6);
+  });
+
+  it("overflow melebihi MAX_SAFE_INTEGER ditolak eksplisit", () => {
+    const big = 4_503_599_627_370_495; // 2^52-1
+    expect(() => sumExact([big, big, 2])).toThrow(/MAX_SAFE/);
   });
 });
 

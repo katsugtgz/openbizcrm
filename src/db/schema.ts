@@ -50,7 +50,11 @@ export const branches = pgTable(
   // this constraint instead of racing a select-then-insert (cubic P2 seed:33).
   // The (org_id, name) unique index also backs org-scoped branch lists
   // (filter org_id, order name — cubic P2 0000:13); no separate index needed.
-  (t) => [unique("branches_org_name_unique").on(t.orgId, t.name)],
+  (t) => [
+    unique("branches_org_name_unique").on(t.orgId, t.name),
+    // Parent key for tenant-aware composite FKs (bughunt data-tenant).
+    unique("branches_id_org_key").on(t.id, t.orgId),
+  ],
 );
 
 export const users = pgTable("users", {
@@ -132,53 +136,83 @@ export const leaveTypeEnum = pgEnum("leave_type", [
   "wfh",
 ]);
 
-export const departments = pgTable("departments", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  orgId: uuid("org_id")
-    .notNull()
-    .references(() => organizations.id, { onDelete: "cascade" }),
-  name: text("name").notNull(),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+export const departments = pgTable(
+  "departments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  // Parent key for tenant-aware composite FKs (bughunt data-tenant).
+  (t) => [unique("departments_id_org_key").on(t.id, t.orgId)],
+);
 
-export const positions = pgTable("positions", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  orgId: uuid("org_id")
-    .notNull()
-    .references(() => organizations.id, { onDelete: "cascade" }),
-  name: text("name").notNull(),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+export const positions = pgTable(
+  "positions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  // Parent key for tenant-aware composite FKs (bughunt data-tenant).
+  (t) => [unique("positions_id_org_key").on(t.id, t.orgId)],
+);
 
-export const employees = pgTable("employees", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  orgId: uuid("org_id")
-    .notNull()
-    .references(() => organizations.id, { onDelete: "cascade" }),
-  branchId: uuid("branch_id").references(() => branches.id, {
-    onDelete: "set null",
-  }),
-  userId: uuid("user_id").references(() => users.id, {
-    onDelete: "set null",
-  }),
-  departmentId: uuid("department_id").references(() => departments.id, {
-    onDelete: "set null",
-  }),
-  positionId: uuid("position_id").references(() => positions.id, {
-    onDelete: "set null",
-  }),
-  employeeNo: text("employee_no").notNull(),
-  name: text("name").notNull(),
-  status: employeeStatusEnum("status").notNull().default("active"),
-  taxStatus: taxStatusEnum("tax_status").notNull().default("TK0"),
-  /** Gaji pokok bulanan, rupiah integer (assertSafeAmount). */
-  baseSalary: integer("base_salary").notNull(),
-  /** Data rekening untuk export transfer bank (opsional). */
-  bankName: text("bank_name"),
-  bankAccount: text("bank_account"),
-  hireDate: date("hire_date"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+export const employees = pgTable(
+  "employees",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    branchId: uuid("branch_id"),
+    userId: uuid("user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    departmentId: uuid("department_id"),
+    positionId: uuid("position_id"),
+    employeeNo: text("employee_no").notNull(),
+    name: text("name").notNull(),
+    status: employeeStatusEnum("status").notNull().default("active"),
+    taxStatus: taxStatusEnum("tax_status").notNull().default("TK0"),
+    /** Gaji pokok bulanan, rupiah integer (assertSafeAmount). */
+    // bigint: validation allows up to MAX_SAFE_INTEGER; int4 overflows past
+    // Rp2,1 miliar incl. THR (bughunt data-tenant).
+    baseSalary: bigint("base_salary", { mode: "number" }).notNull(),
+    /** Data rekening untuk export transfer bank (opsional). */
+    bankName: text("bank_name"),
+    bankAccount: text("bank_account"),
+    hireDate: date("hire_date"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    // Parent key for tenant-aware composite FKs (bughunt data-tenant).
+    unique("employees_id_org_key").on(t.id, t.orgId),
+    unique("employees_org_no_unique").on(t.orgId, t.employeeNo),
+    check("employees_base_salary_check", sql`base_salary >= 0`),
+    foreignKey({
+      name: "employees_branch_org_fk",
+      columns: [t.branchId, t.orgId],
+      foreignColumns: [branches.id, branches.orgId],
+    }).onDelete("set null"),
+    foreignKey({
+      name: "employees_department_org_fk",
+      columns: [t.departmentId, t.orgId],
+      foreignColumns: [departments.id, departments.orgId],
+    }).onDelete("set null"),
+    foreignKey({
+      name: "employees_position_org_fk",
+      columns: [t.positionId, t.orgId],
+      foreignColumns: [positions.id, positions.orgId],
+    }).onDelete("set null"),
+  ],
+);
 
 export const shifts = pgTable("shifts", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -191,17 +225,25 @@ export const shifts = pgTable("shifts", {
   endTime: text("end_time").notNull(),
 });
 
-export const officeWifi = pgTable("office_wifi", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  orgId: uuid("org_id")
-    .notNull()
-    .references(() => organizations.id, { onDelete: "cascade" }),
-  branchId: uuid("branch_id")
-    .notNull()
-    .references(() => branches.id, { onDelete: "cascade" }),
-  ssid: text("ssid").notNull(),
-  notes: text("notes"),
-});
+export const officeWifi = pgTable(
+  "office_wifi",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    branchId: uuid("branch_id").notNull(),
+    ssid: text("ssid").notNull(),
+    notes: text("notes"),
+  },
+  (t) => [
+    foreignKey({
+      name: "office_wifi_branch_org_fk",
+      columns: [t.branchId, t.orgId],
+      foreignColumns: [branches.id, branches.orgId],
+    }).onDelete("cascade"),
+  ],
+);
 
 export const attendances = pgTable(
   "attendances",
@@ -210,9 +252,7 @@ export const attendances = pgTable(
     orgId: uuid("org_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    employeeId: uuid("employee_id")
-      .notNull()
-      .references(() => employees.id, { onDelete: "cascade" }),
+    employeeId: uuid("employee_id").notNull(),
     date: date("date").notNull(),
     checkInAt: timestamp("check_in_at", { withTimezone: true }),
     checkOutAt: timestamp("check_out_at", { withTimezone: true }),
@@ -224,27 +264,41 @@ export const attendances = pgTable(
   },
   (table) => [
     unique("attendances_employee_date_unique").on(table.employeeId, table.date),
+    foreignKey({
+      name: "attendances_employee_org_fk",
+      columns: [table.employeeId, table.orgId],
+      foreignColumns: [employees.id, employees.orgId],
+    }).onDelete("cascade"),
   ],
 );
 
-export const leaveRequests = pgTable("leave_requests", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  orgId: uuid("org_id")
-    .notNull()
-    .references(() => organizations.id, { onDelete: "cascade" }),
-  employeeId: uuid("employee_id")
-    .notNull()
-    .references(() => employees.id, { onDelete: "cascade" }),
-  type: leaveTypeEnum("type").notNull(),
-  startDate: date("start_date").notNull(),
-  endDate: date("end_date").notNull(),
-  reason: text("reason"),
-  attachmentUrl: text("attachment_url"),
-  /** approval_requests.id — rantai persetujuan (approval store). */
-  // ponytail: FK tanpa .references — integritas dijaga repo layer.
-  approvalId: uuid("approval_id"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+export const leaveRequests = pgTable(
+  "leave_requests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    employeeId: uuid("employee_id").notNull(),
+    type: leaveTypeEnum("type").notNull(),
+    startDate: date("start_date").notNull(),
+    endDate: date("end_date").notNull(),
+    reason: text("reason"),
+    attachmentUrl: text("attachment_url"),
+    /** approval_requests.id — rantai persetujuan (approval store). */
+    // ponytail: FK tanpa .references — integritas dijaga repo layer.
+    approvalId: uuid("approval_id"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    check("leave_requests_dates_check", sql`end_date >= start_date`),
+    foreignKey({
+      name: "leave_requests_employee_org_fk",
+      columns: [t.employeeId, t.orgId],
+      foreignColumns: [employees.id, employees.orgId],
+    }).onDelete("cascade"),
+  ],
+);
 
 export const leaveBalances = pgTable(
   "leave_balances",
@@ -253,9 +307,7 @@ export const leaveBalances = pgTable(
     orgId: uuid("org_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    employeeId: uuid("employee_id")
-      .notNull()
-      .references(() => employees.id, { onDelete: "cascade" }),
+    employeeId: uuid("employee_id").notNull(),
     year: integer("year").notNull(),
     /** Jatah cuti & izin per tahun (hari). */
     cutiRemaining: integer("cuti_remaining").notNull().default(12),
@@ -266,6 +318,11 @@ export const leaveBalances = pgTable(
       table.employeeId,
       table.year,
     ),
+    foreignKey({
+      name: "leave_balances_employee_org_fk",
+      columns: [table.employeeId, table.orgId],
+      foreignColumns: [employees.id, employees.orgId],
+    }).onDelete("cascade"),
   ],
 );
 
@@ -273,9 +330,11 @@ export const auditLogs = pgTable(
   "audit_logs",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    orgId: uuid("org_id").references(() => organizations.id, {
-      onDelete: "cascade",
-    }),
+    // NOT NULL: every writer (recordAudit, seed) attributes an org; org-less
+    // rows are unattributable (bughunt data-tenant).
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
     userId: uuid("user_id").references(() => users.id, {
       onDelete: "set null",
     }),
@@ -348,6 +407,8 @@ export const payrollRuns = pgTable(
       table.year,
       table.month,
     ),
+    // Parent key for tenant-aware composite FKs (bughunt data-tenant).
+    unique("payroll_runs_id_org_key").on(table.id, table.orgId),
   ],
 );
 
@@ -358,19 +419,26 @@ export const payslips = pgTable(
     orgId: uuid("org_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    runId: uuid("run_id")
-      .notNull()
-      .references(() => payrollRuns.id, { onDelete: "cascade" }),
-    employeeId: uuid("employee_id")
-      .notNull()
-      .references(() => employees.id, { onDelete: "cascade" }),
+    runId: uuid("run_id").notNull(),
+    employeeId: uuid("employee_id").notNull(),
     /** Hasil computePayslip (engine.ts) — bruto, potongan, net, breakdown. */
     breakdown: jsonb("breakdown").$type<PayslipBreakdown>().notNull(),
     /** Redundansi kueri cepat; sumber kebenaran tetap breakdown.net. */
-    netAmount: integer("net_amount").notNull(),
+    // bigint: int4 overflows past Rp2,1 miliar incl. THR (bughunt data-tenant).
+    netAmount: bigint("net_amount", { mode: "number" }).notNull(),
   },
   (table) => [
     unique("payslips_run_employee_unique").on(table.runId, table.employeeId),
+    foreignKey({
+      name: "payslips_run_org_fk",
+      columns: [table.runId, table.orgId],
+      foreignColumns: [payrollRuns.id, payrollRuns.orgId],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "payslips_employee_org_fk",
+      columns: [table.employeeId, table.orgId],
+      foreignColumns: [employees.id, employees.orgId],
+    }).onDelete("cascade"),
   ],
 );
 
@@ -412,10 +480,7 @@ export const projects = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
     // FK real: crm_companies sudah ada di schema (modul CRM).
-    clientCompanyId: uuid("client_company_id").references(
-      () => crmCompanies.id,
-      { onDelete: "set null" },
-    ),
+    clientCompanyId: uuid("client_company_id"),
     name: text("name").notNull(),
     /** Auto-gen "PRJ-001" per org (project-repo.createProject). */
     code: text("code").notNull(),
@@ -423,7 +488,16 @@ export const projects = pgTable(
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   // Backstop race auto-gen code; juga mempercepat filter org+code.
-  (t) => [unique("projects_org_code_unique").on(t.orgId, t.code)],
+  (t) => [
+    unique("projects_org_code_unique").on(t.orgId, t.code),
+    // Parent key for tenant-aware composite FKs (bughunt data-tenant).
+    unique("projects_id_org_key").on(t.id, t.orgId),
+    foreignKey({
+      name: "projects_company_org_fk",
+      columns: [t.clientCompanyId, t.orgId],
+      foreignColumns: [crmCompanies.id, crmCompanies.orgId],
+    }).onDelete("set null"),
+  ],
 );
 
 export const tasks = pgTable(
@@ -433,12 +507,8 @@ export const tasks = pgTable(
     orgId: uuid("org_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    projectId: uuid("project_id")
-      .notNull()
-      .references(() => projects.id, { onDelete: "cascade" }),
-    parentId: uuid("parent_id").references((): AnyPgColumn => tasks.id, {
-      onDelete: "set null",
-    }),
+    projectId: uuid("project_id").notNull(),
+    parentId: uuid("parent_id"),
     title: text("title").notNull(),
     description: text("description"),
     status: taskStatusEnum("status").notNull().default("todo"),
@@ -473,6 +543,18 @@ export const tasks = pgTable(
       "tasks_daily_date_required",
       sql`source <> 'daily' OR daily_for_date IS NOT NULL`,
     ),
+    // Parent key for tenant-aware composite FKs (bughunt data-tenant).
+    unique("tasks_id_org_key").on(t.id, t.orgId),
+    foreignKey({
+      name: "tasks_project_org_fk",
+      columns: [t.projectId, t.orgId],
+      foreignColumns: [projects.id, projects.orgId],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "tasks_parent_org_fk",
+      columns: [t.parentId, t.orgId],
+      foreignColumns: [t.id, t.orgId],
+    }).onDelete("set null"),
   ],
 );
 
@@ -493,9 +575,7 @@ export const timesheets = pgTable(
     orgId: uuid("org_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    taskId: uuid("task_id")
-      .notNull()
-      .references(() => tasks.id, { onDelete: "cascade" }),
+    taskId: uuid("task_id").notNull(),
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
@@ -511,6 +591,11 @@ export const timesheets = pgTable(
       .on(t.userId)
       .where(sql`ended_at IS NULL`),
     index("timesheets_org_task_idx").on(t.orgId, t.taskId),
+    foreignKey({
+      name: "timesheets_task_org_fk",
+      columns: [t.taskId, t.orgId],
+      foreignColumns: [tasks.id, tasks.orgId],
+    }).onDelete("cascade"),
   ],
 );
 
@@ -562,6 +647,14 @@ export const crmCompanies = pgTable(
     // unique (org, name) sudah memenuhi filter/order org+name — index polos
     // duplikat hanya menambah biaya tulis (cubic P3 schema:525).
     unique("crm_companies_org_name_unique").on(t.orgId, t.name),
+    // Parent key for tenant-aware composite FKs (bughunt data-tenant).
+    unique("crm_companies_id_org_key").on(t.id, t.orgId),
+    // Case-variant dupes ("Acme" vs "ACME") bypass the byte-exact unique
+    // above (bughunt data-tenant).
+    uniqueIndex("crm_companies_org_lower_name_unique").on(
+      t.orgId,
+      sql`lower(${t.name})`,
+    ),
   ],
 );
 
@@ -572,16 +665,28 @@ export const crmContacts = pgTable(
     orgId: uuid("org_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    companyId: uuid("company_id")
-      .notNull()
-      .references(() => crmCompanies.id, { onDelete: "cascade" }),
+    companyId: uuid("company_id").notNull(),
     name: text("name").notNull(),
     email: text("email"),
     phone: text("phone"),
     position: text("position"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
-  (t) => [index("crm_contacts_org_company_idx").on(t.orgId, t.companyId)],
+  (t) => [
+    index("crm_contacts_org_company_idx").on(t.orgId, t.companyId),
+    // Parent key for tenant-aware composite FKs (bughunt data-tenant).
+    unique("crm_contacts_id_org_key").on(t.id, t.orgId),
+    // One email per org, case-insensitive; NULL emails unrestricted
+    // (bughunt data-tenant).
+    uniqueIndex("crm_contacts_org_lower_email_unique")
+      .on(t.orgId, sql`lower(${t.email})`)
+      .where(sql`email IS NOT NULL`),
+    foreignKey({
+      name: "crm_contacts_company_org_fk",
+      columns: [t.companyId, t.orgId],
+      foreignColumns: [crmCompanies.id, crmCompanies.orgId],
+    }).onDelete("cascade"),
+  ],
 );
 
 export const crmPipelines = pgTable(
@@ -591,9 +696,7 @@ export const crmPipelines = pgTable(
     orgId: uuid("org_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    companyId: uuid("company_id")
-      .notNull()
-      .references(() => crmCompanies.id, { onDelete: "cascade" }),
+    companyId: uuid("company_id").notNull(),
     name: text("name").notNull(),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
@@ -603,6 +706,13 @@ export const crmPipelines = pgTable(
       t.companyId,
       t.name,
     ),
+    // Parent key for tenant-aware composite FKs (bughunt data-tenant).
+    unique("crm_pipelines_id_org_key").on(t.id, t.orgId),
+    foreignKey({
+      name: "crm_pipelines_company_org_fk",
+      columns: [t.companyId, t.orgId],
+      foreignColumns: [crmCompanies.id, crmCompanies.orgId],
+    }).onDelete("cascade"),
   ],
 );
 
@@ -613,15 +723,20 @@ export const crmStages = pgTable(
     orgId: uuid("org_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    pipelineId: uuid("pipeline_id")
-      .notNull()
-      .references(() => crmPipelines.id, { onDelete: "cascade" }),
+    pipelineId: uuid("pipeline_id").notNull(),
     name: text("name").notNull(),
     /** Urutan tampil kanban; 0 pertama. */
     position: integer("position").notNull(),
   },
   (t) => [
     unique("crm_stages_pipeline_position_unique").on(t.pipelineId, t.position),
+    // Parent key for tenant-aware composite FKs (bughunt data-tenant).
+    unique("crm_stages_id_org_key").on(t.id, t.orgId),
+    foreignKey({
+      name: "crm_stages_pipeline_org_fk",
+      columns: [t.pipelineId, t.orgId],
+      foreignColumns: [crmPipelines.id, crmPipelines.orgId],
+    }).onDelete("cascade"),
   ],
 );
 
@@ -632,18 +747,15 @@ export const crmDeals = pgTable(
     orgId: uuid("org_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    pipelineId: uuid("pipeline_id")
-      .notNull()
-      .references(() => crmPipelines.id, { onDelete: "cascade" }),
+    pipelineId: uuid("pipeline_id").notNull(),
     // restrict: deal = catatan penjualan, stage berisi deal tidak boleh
     // terhapus diam-diam (cubic P2 schema:604).
-    stageId: uuid("stage_id")
-      .notNull()
-      .references(() => crmStages.id, { onDelete: "restrict" }),
-    companyId: uuid("company_id")
-      .notNull()
-      .references(() => crmCompanies.id, { onDelete: "cascade" }),
-    contactId: uuid("contact_id").references(() => crmContacts.id, {
+    stageId: uuid("stage_id").notNull(),
+    companyId: uuid("company_id").notNull(),
+    contactId: uuid("contact_id"),
+    // Deal owner; NULL = unassigned. Write-path authorization stays in the
+    // service layer (bughunt data-tenant).
+    ownerUserId: uuid("owner_user_id").references(() => users.id, {
       onDelete: "set null",
     }),
     title: text("title").notNull(),
@@ -659,7 +771,32 @@ export const crmDeals = pgTable(
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   // Kanban board: ambil deals per org + pipeline, urut stage.
-  (t) => [index("crm_deals_org_pipeline_idx").on(t.orgId, t.pipelineId)],
+  (t) => [
+    index("crm_deals_org_pipeline_idx").on(t.orgId, t.pipelineId),
+    // Parent key for tenant-aware composite FKs (bughunt data-tenant).
+    unique("crm_deals_id_org_key").on(t.id, t.orgId),
+    check("crm_deals_value_check", sql`value >= 0`),
+    foreignKey({
+      name: "crm_deals_pipeline_org_fk",
+      columns: [t.pipelineId, t.orgId],
+      foreignColumns: [crmPipelines.id, crmPipelines.orgId],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "crm_deals_stage_org_fk",
+      columns: [t.stageId, t.orgId],
+      foreignColumns: [crmStages.id, crmStages.orgId],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "crm_deals_company_org_fk",
+      columns: [t.companyId, t.orgId],
+      foreignColumns: [crmCompanies.id, crmCompanies.orgId],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "crm_deals_contact_org_fk",
+      columns: [t.contactId, t.orgId],
+      foreignColumns: [crmContacts.id, crmContacts.orgId],
+    }).onDelete("set null"),
+  ],
 );
 
 export const crmActivities = pgTable(
@@ -669,9 +806,7 @@ export const crmActivities = pgTable(
     orgId: uuid("org_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    dealId: uuid("deal_id")
-      .notNull()
-      .references(() => crmDeals.id, { onDelete: "cascade" }),
+    dealId: uuid("deal_id").notNull(),
     userId: uuid("user_id").references(() => users.id, {
       onDelete: "set null",
     }),
@@ -680,7 +815,14 @@ export const crmActivities = pgTable(
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   // Timeline deal: filter deal_id, sort created_at desc.
-  (t) => [index("crm_activities_deal_created_idx").on(t.dealId, t.createdAt)],
+  (t) => [
+    index("crm_activities_deal_created_idx").on(t.dealId, t.createdAt),
+    foreignKey({
+      name: "crm_activities_deal_org_fk",
+      columns: [t.dealId, t.orgId],
+      foreignColumns: [crmDeals.id, crmDeals.orgId],
+    }).onDelete("cascade"),
+  ],
 );
 
 export type CrmCompany = typeof crmCompanies.$inferSelect;
@@ -737,9 +879,7 @@ export const accounts = pgTable(
     name: text("name").notNull(),
     type: accountTypeEnum("type").notNull(),
     /** Parent account (chart of accounts bersarang); null = root. */
-    parentId: uuid("parent_id").references((): AnyPgColumn => accounts.id, {
-      onDelete: "set null",
-    }),
+    parentId: uuid("parent_id"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => [
@@ -748,6 +888,11 @@ export const accounts = pgTable(
     // Parent key utk FK komposit tenant-aware dari journal_lines (cubic pr8
     // schema:813): akun tidak bisa dikaitkan lintas org.
     unique("accounts_org_id_unique").on(t.orgId, t.id),
+    foreignKey({
+      name: "accounts_parent_org_fk",
+      columns: [t.orgId, t.parentId],
+      foreignColumns: [t.orgId, t.id],
+    }).onDelete("set null"),
   ],
 );
 
@@ -899,6 +1044,9 @@ export const products = pgTable(
   (t) => [
     unique("products_org_sku_unique").on(t.orgId, t.sku),
     check("products_stock_nonnegative", sql`stock_qty >= 0`),
+    // Parent key for tenant-aware composite FKs (bughunt data-tenant).
+    unique("products_id_org_key").on(t.id, t.orgId),
+    check("products_price_check", sql`price >= 0`),
   ],
 );
 
@@ -938,6 +1086,11 @@ export const posSales = pgTable(
       foreignColumns: [journalEntries.orgId, journalEntries.id],
     }),
     index("pos_sales_org_created_idx").on(t.orgId, t.createdAt),
+    check("pos_sales_tax_pct_check", sql`tax_pct >= 0 AND tax_pct <= 100`),
+    check(
+      "pos_sales_amounts_check",
+      sql`subtotal >= 0 AND tax_amount >= 0 AND total >= 0`,
+    ),
   ],
 );
 
@@ -948,18 +1101,31 @@ export const posSaleItems = pgTable(
     orgId: uuid("org_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    saleId: uuid("sale_id")
-      .notNull()
-      .references(() => posSales.id, { onDelete: "cascade" }),
-    productId: uuid("product_id")
-      .notNull()
-      .references(() => products.id, { onDelete: "restrict" }),
+    saleId: uuid("sale_id").notNull(),
+    productId: uuid("product_id").notNull(),
     productName: text("product_name").notNull(),
     qty: integer("qty").notNull(),
     unitPrice: bigint("unit_price", { mode: "number" }).notNull(),
     lineTotal: bigint("line_total", { mode: "number" }).notNull(),
   },
-  (t) => [index("pos_sale_items_sale_idx").on(t.saleId)],
+  (t) => [
+    index("pos_sale_items_sale_idx").on(t.saleId),
+    check("pos_sale_items_qty_check", sql`qty >= 1`),
+    check(
+      "pos_sale_items_amounts_check",
+      sql`unit_price >= 0 AND line_total >= 0`,
+    ),
+    foreignKey({
+      name: "pos_sale_items_sale_org_fk",
+      columns: [t.orgId, t.saleId],
+      foreignColumns: [posSales.orgId, posSales.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "pos_sale_items_product_org_fk",
+      columns: [t.productId, t.orgId],
+      foreignColumns: [products.id, products.orgId],
+    }).onDelete("restrict"),
+  ],
 );
 
 export type Product = typeof products.$inferSelect;
@@ -987,12 +1153,8 @@ export const invoices = pgTable(
       .references(() => organizations.id, { onDelete: "cascade" }),
     /** "INV-001" per org (pola project-code, advisory lock). */
     invoiceNumber: text("invoice_number").notNull(),
-    companyId: uuid("company_id")
-      .notNull()
-      .references(() => crmCompanies.id, { onDelete: "restrict" }),
-    contactId: uuid("contact_id").references(() => crmContacts.id, {
-      onDelete: "set null",
-    }),
+    companyId: uuid("company_id").notNull(),
+    contactId: uuid("contact_id"),
     status: invoiceStatusEnum("status").notNull().default("draft"),
     issueDate: date("issue_date").notNull(),
     dueDate: date("due_date").notNull(),
@@ -1021,6 +1183,21 @@ export const invoices = pgTable(
       foreignColumns: [journalEntries.orgId, journalEntries.id],
     }),
     index("invoices_org_status_idx").on(t.orgId, t.status),
+    check("invoices_tax_pct_check", sql`tax_pct >= 0 AND tax_pct <= 100`),
+    check(
+      "invoices_amounts_check",
+      sql`subtotal >= 0 AND tax_amount >= 0 AND total >= 0 AND paid_amount >= 0`,
+    ),
+    foreignKey({
+      name: "invoices_company_org_fk",
+      columns: [t.companyId, t.orgId],
+      foreignColumns: [crmCompanies.id, crmCompanies.orgId],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "invoices_contact_org_fk",
+      columns: [t.contactId, t.orgId],
+      foreignColumns: [crmContacts.id, crmContacts.orgId],
+    }).onDelete("set null"),
   ],
 );
 
@@ -1031,15 +1208,25 @@ export const invoiceItems = pgTable(
     orgId: uuid("org_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    invoiceId: uuid("invoice_id")
-      .notNull()
-      .references(() => invoices.id, { onDelete: "cascade" }),
+    invoiceId: uuid("invoice_id").notNull(),
     description: text("description").notNull(),
     qty: integer("qty").notNull(),
     unitPrice: bigint("unit_price", { mode: "number" }).notNull(),
     lineTotal: bigint("line_total", { mode: "number" }).notNull(),
   },
-  (t) => [index("invoice_items_invoice_idx").on(t.invoiceId)],
+  (t) => [
+    index("invoice_items_invoice_idx").on(t.invoiceId),
+    check("invoice_items_qty_check", sql`qty >= 1`),
+    check(
+      "invoice_items_amounts_check",
+      sql`unit_price >= 0 AND line_total >= 0`,
+    ),
+    foreignKey({
+      name: "invoice_items_invoice_org_fk",
+      columns: [t.orgId, t.invoiceId],
+      foreignColumns: [invoices.orgId, invoices.id],
+    }).onDelete("cascade"),
+  ],
 );
 
 /** Pembayaran invoice: satu baris = satu kas masuk + jurnal AR. */
@@ -1050,9 +1237,7 @@ export const invoicePayments = pgTable(
     orgId: uuid("org_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    invoiceId: uuid("invoice_id")
-      .notNull()
-      .references(() => invoices.id, { onDelete: "cascade" }),
+    invoiceId: uuid("invoice_id").notNull(),
     amount: bigint("amount", { mode: "number" }).notNull(),
     method: paymentMethodEnum("method").notNull(),
     paidAt: date("paid_at").notNull(),
@@ -1073,6 +1258,12 @@ export const invoicePayments = pgTable(
       foreignColumns: [journalEntries.orgId, journalEntries.id],
     }),
     index("invoice_payments_invoice_idx").on(t.invoiceId),
+    check("invoice_payments_amount_check", sql`amount >= 0`),
+    foreignKey({
+      name: "invoice_payments_invoice_org_fk",
+      columns: [t.orgId, t.invoiceId],
+      foreignColumns: [invoices.orgId, invoices.id],
+    }).onDelete("cascade"),
   ],
 );
 
@@ -1091,9 +1282,7 @@ export const budgets = pgTable(
     orgId: uuid("org_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    accountId: uuid("account_id")
-      .notNull()
-      .references(() => accounts.id, { onDelete: "cascade" }),
+    accountId: uuid("account_id").notNull(),
     /** "YYYY-MM" — bulan anggaran (kalender, WIB-neutral). */
     period: text("period").notNull(),
     amount: bigint("amount", { mode: "number" }).notNull(),
@@ -1111,6 +1300,12 @@ export const budgets = pgTable(
       t.period,
     ),
     check("budgets_period_format", sql`period ~ '^[0-9]{4}-[0-9]{2}$'`),
+    check("budgets_amount_check", sql`amount >= 0`),
+    foreignKey({
+      name: "budgets_account_org_fk",
+      columns: [t.orgId, t.accountId],
+      foreignColumns: [accounts.orgId, accounts.id],
+    }).onDelete("cascade"),
   ],
 );
 
@@ -1144,14 +1339,12 @@ export const fixedAssets = pgTable(
     disposalDate: date("disposal_date"),
     /** Idempotensi per bulan: period terakhir yang sudah didepresiasikan. */
     lastDepreciatedPeriod: text("last_depreciated_period"),
-    depreciationExpenseAccountId: uuid("depreciation_expense_account_id")
-      .notNull()
-      .references(() => accounts.id, { onDelete: "restrict" }),
+    depreciationExpenseAccountId: uuid(
+      "depreciation_expense_account_id",
+    ).notNull(),
     accumulatedDepreciationAccountId: uuid(
       "accumulated_depreciation_account_id",
-    )
-      .notNull()
-      .references(() => accounts.id, { onDelete: "restrict" }),
+    ).notNull(),
     createdBy: uuid("created_by").references(() => users.id, {
       onDelete: "set null",
     }),
@@ -1165,6 +1358,20 @@ export const fixedAssets = pgTable(
       "fixed_assets_depreciable_check",
       sql`salvage_value <= cost AND useful_life_months >= 1`,
     ),
+    check(
+      "fixed_assets_amounts_check",
+      sql`cost >= 0 AND salvage_value >= 0 AND total_depreciated >= 0`,
+    ),
+    foreignKey({
+      name: "fixed_assets_expense_account_org_fk",
+      columns: [t.orgId, t.depreciationExpenseAccountId],
+      foreignColumns: [accounts.orgId, accounts.id],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "fixed_assets_accum_account_org_fk",
+      columns: [t.orgId, t.accumulatedDepreciationAccountId],
+      foreignColumns: [accounts.orgId, accounts.id],
+    }).onDelete("restrict"),
   ],
 );
 
@@ -1242,7 +1449,11 @@ export const aiConversations = pgTable(
     }),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
-  (t) => [index("ai_conversations_org_user_idx").on(t.orgId, t.userId)],
+  (t) => [
+    index("ai_conversations_org_user_idx").on(t.orgId, t.userId),
+    // Parent key for tenant-aware composite FKs (bughunt data-tenant).
+    unique("ai_conversations_id_org_key").on(t.id, t.orgId),
+  ],
 );
 
 export const aiMessages = pgTable(
@@ -1252,12 +1463,20 @@ export const aiMessages = pgTable(
     conversationId: uuid("conversation_id")
       .notNull()
       .references(() => aiConversations.id, { onDelete: "cascade" }),
+    // Tenant binding (bughunt data-tenant). Nullable: existing writers
+    // predate it; rows carrying org_id are enforced by the composite FK.
+    orgId: uuid("org_id"),
     role: aiMessageRoleEnum("role").notNull(),
     content: text("content").notNull(),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => [
     index("ai_messages_conversation_idx").on(t.conversationId, t.createdAt),
+    foreignKey({
+      name: "ai_messages_conversation_org_fk",
+      columns: [t.conversationId, t.orgId],
+      foreignColumns: [aiConversations.id, aiConversations.orgId],
+    }).onDelete("cascade"),
   ],
 );
 
@@ -1302,11 +1521,24 @@ export const chatConversationMembers = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
+    // Tenant binding (bughunt data-tenant). Nullable: existing writers
+    // predate it; rows carrying org_id are enforced by the composite FKs.
+    orgId: uuid("org_id"),
     joinedAt: timestamp("joined_at").defaultNow().notNull(),
   },
   (t) => [
     unique("chat_conv_members_conv_user_unique").on(t.conversationId, t.userId),
     index("chat_conv_members_user_idx").on(t.userId),
+    foreignKey({
+      name: "chat_conv_members_conversation_org_fk",
+      columns: [t.conversationId, t.orgId],
+      foreignColumns: [chatConversations.id, chatConversations.orgId],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "chat_conv_members_member_org_fk",
+      columns: [t.orgId, t.userId],
+      foreignColumns: [orgMemberships.orgId, orgMemberships.userId],
+    }).onDelete("cascade"),
   ],
 );
 
@@ -1342,9 +1574,7 @@ export const driveFolders = pgTable(
     orgId: uuid("org_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "cascade" }),
-    parentId: uuid("parent_id").references((): AnyPgColumn => driveFolders.id, {
-      onDelete: "cascade",
-    }),
+    parentId: uuid("parent_id"),
     name: text("name").notNull(),
     createdBy: uuid("created_by").references(() => users.id, {
       onDelete: "set null",
@@ -1362,6 +1592,11 @@ export const driveFolders = pgTable(
       t.name,
     ),
     index("drive_folders_org_parent_idx").on(t.orgId, t.parentId),
+    foreignKey({
+      name: "drive_folders_parent_org_fk",
+      columns: [t.parentId, t.orgId],
+      foreignColumns: [t.id, t.orgId],
+    }).onDelete("cascade"),
   ],
 );
 

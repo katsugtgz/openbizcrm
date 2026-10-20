@@ -111,6 +111,29 @@ describe("e2e-dry-run", () => {
     expect(ok).toBe(false);
   });
 
+  it("ignores commented-out markers (comments mentioning them must not pass)", () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const spoofed = [
+      "jobs:",
+      "  build:",
+      "    steps: []",
+      "  e2e-dry-run:",
+      "    steps:",
+      "      - run: echo hello",
+      "# name: next-build",
+      "# npx --no-install next start -p 3000",
+      "# curl -fsS -o /dev/null http://localhost:3000",
+    ].join("\n");
+    const { ok, checks } = dryRun(makeInput({ readFile: () => spoofed }));
+    expect(ok).toBe(false);
+    expect(checks.find((c) => c.name.includes("next-build"))?.pass).toBe(
+      false,
+    );
+    expect(
+      checks.find((c) => c.name.includes("boots"))?.pass,
+    ).toBe(false);
+  });
+
   it("aggregates multiple failures into one failed result", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     const { ok, checks } = dryRun(
@@ -127,7 +150,7 @@ describe("e2e-dry-run", () => {
 
   it("main() returns 0 and prints the dry-run banner when all checks pass", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    expect(main()).toBe(0);
+    expect(main(makeInput())).toBe(0);
     expect(logSpy).toHaveBeenCalledWith(
       expect.stringContaining("e2e-dry-run — DRY RUN"),
     );

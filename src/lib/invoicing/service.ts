@@ -16,7 +16,7 @@ import {
 import { NotFoundError, OrgScopeError, requireOrgRole } from "@/lib/org-scope";
 import { recordAudit } from "@/lib/repos/audit-repo";
 import { assertSafeAmount } from "@/lib/money";
-import { AccountingError } from "@/lib/accounting/engine";
+import { AccountingError, assertISODate } from "@/lib/accounting/engine";
 import { computeLineTotals, floorTax } from "./totals";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -230,6 +230,8 @@ export async function createInvoice(
       .limit(1);
     if (!contact) throw new NotFoundError("Kontak tidak ditemukan.");
   }
+  assertISODate(input.issueDate, "Tanggal terbit");
+  assertISODate(input.dueDate, "Jatuh tempo");
   if (input.dueDate < input.issueDate) {
     throw new InvoiceError("Jatuh tempo tidak boleh sebelum tanggal terbit.");
   }
@@ -312,7 +314,11 @@ export async function createInvoice(
 
 // ---------------- sendInvoice ----------------
 
-/** draft -> sent. Jurnal: debit AR, credit Revenue (posted langsung). */
+/**
+ * draft -> sent. Jurnal: debit AR, credit Revenue (posted langsung).
+ * Total 0 (item gratis): tanpa jurnal — baris (0,0) melanggar CHECK
+ * journal_lines_amounts_check — dan langsung paid (tak ada yang ditagih).
+ */
 export async function sendInvoice(
   userId: string,
   orgId: string,
@@ -330,29 +336,42 @@ export async function sendInvoice(
       );
     }
     await assertPeriodOpen(tx, orgId, invoice.issueDate);
-    const arId = await accountByCode(orgId, "1-1300", tx); // Piutang usaha
-    const revId = await accountByCode(orgId, "4-1000", tx); // Pendapatan
-    // PPN keluaran = liability, BUKAN pendapatan (cubic P1 invoicing:312):
-    // debit AR gross, credit Revenue subtotal, credit PPN keluaran tax.
-    const lines: { accountId: string; debit: number; credit: number }[] = [
-      { accountId: arId, debit: invoice.total, credit: 0 },
-      { accountId: revId, debit: 0, credit: invoice.subtotal },
-    ];
-    if (invoice.taxAmount > 0) {
-      const ppnId = await ppnOutAccountId(tx, orgId);
-      lines.push({ accountId: ppnId, debit: 0, credit: invoice.taxAmount });
+    // Guard defensi: total negatif tak valid (tak bisa dibuat lewat
+    // createInvoice, tapi baris lama/manual wajib ditolak tegas).
+    if (invoice.total < 0 || invoice.subtotal < 0 || invoice.taxAmount < 0) {
+      throw new InvoiceError("Total invoice tidak valid (negatif).");
     }
-    const journalEntryId = await postJournal(tx, orgId, userId, {
-      date: invoice.issueDate,
-      description: `Invoice ${invoice.invoiceNumber}`,
-      source: "invoice",
-      paymentMethod: "transfer",
-      lines,
-    });
+    let journalEntryId: string | null = null;
+    let status: "sent" | "paid" = "sent";
+    if (invoice.total === 0) {
+      // Invoice Rp0: tak ada piutang/pendapatan untuk dijurnal; kirim =
+      // lunas (tak ada yang bisa dibayar/ditagih).
+      status = "paid";
+    } else {
+      const arId = await accountByCode(orgId, "1-1300", tx); // Piutang usaha
+      const revId = await accountByCode(orgId, "4-1000", tx); // Pendapatan
+      // PPN keluaran = liability, BUKAN pendapatan (cubic P1 invoicing:312):
+      // debit AR gross, credit Revenue subtotal, credit PPN keluaran tax.
+      const lines: { accountId: string; debit: number; credit: number }[] = [
+        { accountId: arId, debit: invoice.total, credit: 0 },
+        { accountId: revId, debit: 0, credit: invoice.subtotal },
+      ];
+      if (invoice.taxAmount > 0) {
+        const ppnId = await ppnOutAccountId(tx, orgId);
+        lines.push({ accountId: ppnId, debit: 0, credit: invoice.taxAmount });
+      }
+      journalEntryId = await postJournal(tx, orgId, userId, {
+        date: invoice.issueDate,
+        description: `Invoice ${invoice.invoiceNumber}`,
+        source: "invoice",
+        paymentMethod: "transfer",
+        lines,
+      });
+    }
     // Expected-state predicate: status masih draft saat UPDATE.
     const [updated] = await tx
       .update(invoices)
-      .set({ status: "sent", journalEntryId })
+      .set({ status, journalEntryId })
       .where(
         and(
           eq(invoices.id, invoiceId),
@@ -374,6 +393,7 @@ export async function sendInvoice(
         metadata: {
           invoiceNumber: invoice.invoiceNumber,
           total: invoice.total,
+          status,
         },
       },
       tx,
@@ -403,6 +423,10 @@ export async function recordPayment(
   if (input.amount === 0) {
     throw new InvoiceError("Pembayaran tidak boleh 0.");
   }
+  if (!["cash", "transfer", "qris"].includes(input.method)) {
+    throw new InvoiceError("Metode pembayaran tidak valid.");
+  }
+  assertISODate(input.paidAt, "Tanggal bayar");
   return db.transaction(async (tx) => {
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtext(${`acct:${orgId}`}))`,

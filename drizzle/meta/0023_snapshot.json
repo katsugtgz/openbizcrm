@@ -1,5 +1,5 @@
 {
-  "id": "15d8778f-4ac0-4dfa-af32-0fc8f180bda2",
+  "id": "52f31700-5a71-457c-b343-08a805da9e0e",
   "prevId": "8bab7d02-0d66-4559-9df4-55367c9a6517",
   "version": "7",
   "dialect": "postgresql",
@@ -2002,25 +2002,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "status": {
-          "name": "status",
-          "type": "drive_file_status",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'pending'"
-        },
-        "confirmed_at": {
-          "name": "confirmed_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -5696,11 +5677,6 @@
       "name": "whatsapp_status",
       "schema": "public",
       "values": ["disconnected", "qr", "connecting", "connected"]
-    },
-    "public.drive_file_status": {
-      "name": "drive_file_status",
-      "schema": "public",
-      "values": ["pending", "confirmed"]
     }
   },
   "schemas": {},

@@ -80,11 +80,17 @@ export async function stopTimer(
     0,
     Math.floor((endedAt.getTime() - open.startedAt.getTime()) / 60_000),
   );
+  // Predikat endedAt-IS-NULL: dua stop konkuren membaca baris terbuka yang
+  // sama — hanya satu yang menang; yang kalah melihat 0 baris (bukan
+  // double-update + double-audit).
   const [row] = await db
     .update(timesheets)
     .set({ endedAt, minutes })
-    .where(eq(timesheets.id, open.id))
+    .where(and(eq(timesheets.id, open.id), isNull(timesheets.endedAt)))
     .returning();
+  if (!row) {
+    throw new NotFoundError("Timer sudah dihentikan.");
+  }
   await recordAudit({
     orgId,
     userId,

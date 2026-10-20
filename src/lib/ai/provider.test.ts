@@ -38,7 +38,10 @@ describe("ai provider config (pure)", () => {
   it("getAiModel tanpa konfigurasi melempar ConfigError", () => {
     const prev = process.env.AI_GATEWAY_URL;
     delete process.env.AI_GATEWAY_URL;
-    expect(() => getAiModel()).toThrow(ConfigError);
-    if (prev !== undefined) process.env.AI_GATEWAY_URL = prev;
+    try {
+      expect(() => getAiModel()).toThrow(ConfigError);
+    } finally {
+      if (prev !== undefined) process.env.AI_GATEWAY_URL = prev;
+    }
   });
 });

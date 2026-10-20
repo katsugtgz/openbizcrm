@@ -61,6 +61,25 @@ function parseInput(formData: FormData): EmployeeInput {
   };
 }
 
+/**
+ * Pesan aman untuk ?error= di URL redirect: hanya string validasi statis
+ * yang direfleksikan. Error driver PG (code 22/23/42/53…: detail constraint
+ * + nilai) dan OrgScopeError dipetakan ke fallback generik agar tidak masuk
+ * history browser, log, atau header Referer.
+ */
+function safeRedirectError(error: unknown, fallback: string): string {
+  if (error instanceof OrgScopeError) return "Akses ditolak.";
+  if (error instanceof Error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "string" && /^(22|23|42|53)/.test(code)) {
+      return fallback;
+    }
+    if (error.message.length > 200) return fallback;
+    return error.message;
+  }
+  return fallback;
+}
+
 function failBack(form: "new" | "edit", message: string, id?: string): never {
   const base = form === "new" ? "/karyawan/baru" : `/karyawan/${id}/edit`;
   redirect(`${base}?error=${encodeURIComponent(message)}`);
@@ -77,11 +96,7 @@ export async function createEmployeeAction(formData: FormData): Promise<void> {
     }
     await createEmployee(userId, orgId, input);
   } catch (error) {
-    const message =
-      error instanceof OrgScopeError || error instanceof Error
-        ? error.message
-        : "Terjadi kesalahan.";
-    failBack("new", message);
+    failBack("new", safeRedirectError(error, "Gagal menyimpan karyawan."));
   }
   revalidatePath("/karyawan");
   redirect(
@@ -102,11 +117,7 @@ export async function updateEmployeeAction(formData: FormData): Promise<void> {
     }
     await updateEmployee(userId, orgId, id, input);
   } catch (error) {
-    const message =
-      error instanceof OrgScopeError || error instanceof Error
-        ? error.message
-        : "Terjadi kesalahan.";
-    failBack("edit", message, id);
+    failBack("edit", safeRedirectError(error, "Gagal menyimpan karyawan."), id);
   }
   revalidatePath("/karyawan");
   redirect(

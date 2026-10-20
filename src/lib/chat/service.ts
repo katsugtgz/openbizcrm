@@ -7,16 +7,22 @@
  * keanggotaan org). Percakapan direct: pasangan anggota dedupe — percakapan
  * 1:1 yang sama tidak dibuat dua kali.
  */
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   chatConversationMembers,
   chatConversations,
   chatMessages,
+  orgMemberships,
   type ChatConversation,
   type ChatMessage,
 } from "@/db/schema";
-import { NotFoundError, requireOrgRole } from "@/lib/org-scope";
+import {
+  NotFoundError,
+  assertInternalId,
+  requireOrgRole,
+  requireRole,
+} from "@/lib/org-scope";
 import { recordAudit } from "@/lib/repos/audit-repo";
 import { publishChatMessage } from "./realtime";
 
@@ -26,6 +32,20 @@ export class ChatError extends Error {
     this.name = "ChatError";
   }
 }
+
+/** Batas isi pesan: tanpa ini body multi-MB ikut tersimpan + terpublish. */
+export const MAX_CHAT_MESSAGE_LENGTH = 8000;
+
+/** Anggota maksimum per grup (batasi kueri guard + ukuran insert). */
+export const MAX_GROUP_MEMBERS = 1000;
+
+/**
+ * Jendela dedupe double-submit: pesan/grup identik dalam jendela ini
+ * dianggap satu. Best-effort app-side — skema belum punya kolom
+ * idempotency key (butuh migrasi).
+ */
+const SEND_DEDUPE_WINDOW_MS = 10_000;
+const CREATE_GROUP_DEDUPE_WINDOW_MS = 30_000;
 
 /** Anggota wajib ada; org guard tetap requireOrgRole di luar ini. */
 async function requireConversation(
@@ -156,18 +176,56 @@ export async function createGroup(
   const memberIds = [...new Set(input.memberUserIds)].filter(
     (id) => id !== userId,
   );
-  await requireOrgRole(userId, orgId, "member");
-  // Semua anggota wajib member org ini (isi anggota tidak boleh lintas org).
-  for (const id of memberIds) {
-    await requireOrgRole(id, orgId, "member");
+  if (memberIds.length > MAX_GROUP_MEMBERS) {
+    throw new ChatError(`Anggota grup melebihi batas (${MAX_GROUP_MEMBERS}).`);
   }
+  await requireOrgRole(userId, orgId, "member");
+  // Guard batch satu kueri (bukan N kueri sekuensial): ambil semua
+  // membership sekaligus, lalu requireRole per id — kode error sama persis.
+  if (memberIds.length > 0) {
+    for (const id of memberIds) assertInternalId("userId", id);
+    const rows = await db
+      .select({ userId: orgMemberships.userId, role: orgMemberships.role })
+      .from(orgMemberships)
+      .where(
+        and(
+          eq(orgMemberships.orgId, orgId),
+          inArray(orgMemberships.userId, memberIds),
+        ),
+      );
+    const byId = new Map(rows.map((r) => [r.userId, r]));
+    for (const id of memberIds) requireRole(byId.get(id) ?? null, "member");
+  }
+  const name = input.name.trim();
   const conv = await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`chat-group:${orgId}`}))`,
+    );
+    // Dedupe double-submit: grup identik (pembuat+nama) dalam jendela
+    // singkat dianggap satu — tanpa idempotency key di skema.
+    const [dup] = await tx
+      .select()
+      .from(chatConversations)
+      .where(
+        and(
+          eq(chatConversations.orgId, orgId),
+          eq(chatConversations.kind, "group"),
+          eq(chatConversations.createdBy, userId),
+          eq(chatConversations.name, name),
+          gt(
+            chatConversations.createdAt,
+            new Date(Date.now() - CREATE_GROUP_DEDUPE_WINDOW_MS),
+          ),
+        ),
+      )
+      .limit(1);
+    if (dup) return dup;
     const [row] = await tx
       .insert(chatConversations)
       .values({
         orgId,
         kind: "group",
-        name: input.name.trim(),
+        name,
         createdBy: userId,
       })
       .returning();
@@ -226,27 +284,55 @@ export async function sendMessage(
   conversationId: string,
   body: string,
 ): Promise<ChatMessage> {
+  const text = body.trim();
+  if (!text) throw new ChatError("Pesan tidak boleh kosong.");
+  if (text.length > MAX_CHAT_MESSAGE_LENGTH) {
+    throw new ChatError(
+      `Pesan melebihi batas ${MAX_CHAT_MESSAGE_LENGTH} karakter.`,
+    );
+  }
   await requireOrgRole(userId, orgId, "member");
   await requireConversation(orgId, conversationId);
   await requireMember(conversationId, userId);
-  if (!body.trim()) throw new ChatError("Pesan tidak boleh kosong.");
 
-  const [msg] = await db
-    .insert(chatMessages)
-    .values({
-      conversationId,
-      orgId,
-      userId,
-      body: body.trim(),
-    })
-    .returning();
-  await recordAudit({
-    orgId,
-    userId,
-    action: "chat.message.send",
-    entity: "chat_message",
-    entityId: msg.id,
-    metadata: { conversationId },
+  const msg = await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`chat-msg:${conversationId}`}))`,
+    );
+    // Dedupe double-submit: pesan identik (user+isi) dalam jendela singkat
+    // dianggap satu — skema belum punya client message id (best-effort).
+    const [dup] = await tx
+      .select()
+      .from(chatMessages)
+      .where(
+        and(
+          eq(chatMessages.conversationId, conversationId),
+          eq(chatMessages.userId, userId),
+          eq(chatMessages.body, text),
+          gt(
+            chatMessages.createdAt,
+            new Date(Date.now() - SEND_DEDUPE_WINDOW_MS),
+          ),
+        ),
+      )
+      .limit(1);
+    if (dup) return dup;
+    const [row] = await tx
+      .insert(chatMessages)
+      .values({ conversationId, orgId, userId, body: text })
+      .returning();
+    await recordAudit(
+      {
+        orgId,
+        userId,
+        action: "chat.message.send",
+        entity: "chat_message",
+        entityId: row.id,
+        metadata: { conversationId },
+      },
+      tx,
+    );
+    return row;
   });
   // Fire-and-forget: realtime gagal tidak boleh gagalkan pesan.
   void publishChatMessage({

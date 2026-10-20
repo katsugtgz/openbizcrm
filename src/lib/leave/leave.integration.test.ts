@@ -25,6 +25,7 @@ describe("leave repo integration", () => {
   let createLeave!: LeaveRepo["createLeave"];
   let getOrCreateBalance!: LeaveRepo["getOrCreateBalance"];
   let debitBalance!: LeaveRepo["debitBalance"];
+  let debitBalanceChecked!: LeaveRepo["debitBalanceChecked"];
   let listLeaveRequests!: LeaveRepo["listLeaveRequests"];
   let listBalances!: LeaveRepo["listBalances"];
   let getEmployeeByUser!: LeaveRepo["getEmployeeByUser"];
@@ -43,6 +44,7 @@ describe("leave repo integration", () => {
       listLeaveRequests,
       listBalances,
       getEmployeeByUser,
+      debitBalanceChecked,
     } = await import("./repo"));
   });
 
@@ -66,6 +68,53 @@ describe("leave repo integration", () => {
     for (const id of createdUserIds) {
       await db.delete(users).where(eq(users.id, id));
     }
+  });
+
+  itDb("debitBalanceChecked: cukup men-debit, kurang melempar", async () => {
+    const owner = await createUser({
+      workosUserId: `lv2-owner-${suffix}`,
+      email: `lv2-owner-${suffix}@test.id`,
+    });
+    createdUserIds.push(owner.id);
+    const org = await createOrg(
+      { name: "Leave Org 2", slug: `lv2-org-${suffix}` },
+      owner.id,
+    );
+    createdOrgIds.push(org.id);
+    const [employee] = await db
+      .insert(employees)
+      .values({
+        orgId: org.id,
+        employeeNo: `EMP-LV2-${suffix}`,
+        name: "Sari Cuti",
+        baseSalary: 5_000_000,
+      })
+      .returning();
+    await getOrCreateBalance(owner.id, org.id, employee.id, 2026);
+    const ok = await debitBalanceChecked(
+      owner.id,
+      org.id,
+      employee.id,
+      2026,
+      "cutiRemaining",
+      5,
+    );
+    expect(ok.cutiRemaining).toBe(7);
+    await expect(
+      debitBalanceChecked(
+        owner.id,
+        org.id,
+        employee.id,
+        2026,
+        "cutiRemaining",
+        99,
+      ),
+    ).rejects.toThrow("Sisa cuti tidak cukup");
+    // Saldo tak berubah setelah debit gagal.
+    expect(
+      (await getOrCreateBalance(owner.id, org.id, employee.id, 2026))
+        .cutiRemaining,
+    ).toBe(7);
   });
 
   itDb(

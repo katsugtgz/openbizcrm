@@ -54,14 +54,17 @@ describe("auth adapter pick matrix", () => {
 
   /** Re-import the module under a specific env matrix cell. */
   async function pickEnv(env: Record<string, string | undefined>) {
-    process.env = {
-      ...saved,
-      AUTH_FAKE: undefined,
-      WORKOS_API_KEY: undefined,
-      WORKOS_CLIENT_ID: undefined,
-      WORKOS_COOKIE_PASSWORD: undefined,
-      ...env,
-    };
+    process.env = { ...saved };
+    // True absence: assigning undefined coerces to the string "undefined"
+    // (still present and truthy) — delete instead (mirrors config.test.ts).
+    delete process.env.AUTH_FAKE;
+    delete process.env.WORKOS_API_KEY;
+    delete process.env.WORKOS_CLIENT_ID;
+    delete process.env.WORKOS_COOKIE_PASSWORD;
+    for (const [key, value] of Object.entries(env)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     vi.resetModules();
     const mod = await import("@/lib/auth");
     const spied = vi.fn(async () => null);
@@ -92,6 +95,23 @@ describe("auth adapter pick matrix", () => {
 
   it("WorkOS unconfigured -> fake fallback (login page can render)", async () => {
     expect(await pickEnv({ NODE_ENV: "test" })).toBe(true);
+  });
+
+  it("absence cells truly delete keys (no \"undefined\" strings)", async () => {
+    process.env = { ...saved };
+    delete process.env.AUTH_FAKE;
+    delete process.env.WORKOS_API_KEY;
+    delete process.env.WORKOS_CLIENT_ID;
+    delete process.env.WORKOS_COOKIE_PASSWORD;
+    // Guard the matrix itself: with true absence the session env is not
+    // ready and the picker must serve fake.
+    vi.resetModules();
+    const { isWorkosSessionEnvReady } = await import("@/lib/auth/config");
+    const { fakeSessionActive } = await import("@/lib/auth");
+    expect(process.env.AUTH_FAKE).toBeUndefined();
+    expect(process.env.WORKOS_API_KEY).toBeUndefined();
+    expect(isWorkosSessionEnvReady()).toBe(false);
+    expect(fakeSessionActive()).toBe(true);
   });
 
   it("WorkOS fully configured -> AuthKit", async () => {

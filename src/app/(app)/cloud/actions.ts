@@ -5,6 +5,8 @@ import { redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
 import {
+  ConfigError,
+  DriveError,
   confirmUpload,
   createFolder,
   deleteFile,
@@ -12,6 +14,7 @@ import {
   listFolder,
   presignUpload,
 } from "@/lib/drive/service";
+import { NotFoundError, OrgScopeError } from "@/lib/org-scope";
 
 export interface ActionResult {
   ok: boolean;
@@ -31,10 +34,18 @@ async function requireSession() {
 }
 
 function fail(error: unknown): ActionResult {
-  return {
-    ok: false,
-    error: error instanceof Error ? error.message : "Gagal.",
-  };
+  // Domain errors carry static Indonesian strings — safe to reflect.
+  // Anything else (R2 SDK, PG) is logged server-side, generic to client.
+  if (
+    error instanceof DriveError ||
+    error instanceof ConfigError ||
+    error instanceof NotFoundError ||
+    error instanceof OrgScopeError
+  ) {
+    return { ok: false, error: error.message };
+  }
+  console.error("[cloud] action gagal:", error);
+  return { ok: false, error: "Terjadi kesalahan. Coba lagi." };
 }
 
 export async function presignUploadAction(

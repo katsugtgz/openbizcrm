@@ -3,12 +3,23 @@ import { notFound, redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
 import { requireOrgRole } from "@/lib/org-scope";
-import { getDeal, getCompany, listActivities } from "@/lib/repos/crm-repo";
+import {
+  getDeal,
+  getCompany,
+  listActivities,
+  listContacts,
+} from "@/lib/repos/crm-repo";
+import { listAuditLogsByEntity } from "@/lib/repos/audit-repo";
 import { formatIDR } from "@/lib/money";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ActivityForm, DealActions } from "./deal-actions";
+import {
+  ActivityForm,
+  DealActions,
+  DeleteDealButton,
+  EditDealForm,
+} from "./deal-actions";
 import { QUOT_LABEL } from "@/lib/deals/labels";
 
 export const metadata = { title: "Detail Deal" };
@@ -32,6 +43,15 @@ const STATUS_LABEL: Record<string, string> = {
   lost: "Lost",
 };
 
+const HISTORY_LABEL: Record<string, string> = {
+  "crm.deal.create": "Deal dibuat",
+  "crm.deal.update": "Deal diubah",
+  "crm.deal.move": "Pindah tahap",
+  "crm.deal.won": "Close Won",
+  "crm.deal.lost": "Close Lost",
+  "crm.deal.quotation_status": "Quotation",
+};
+
 export default async function DealDetailPage({
   params,
 }: {
@@ -49,9 +69,11 @@ export default async function DealDetailPage({
 
   const deal = await getDeal(orgId, dealId);
   if (!deal) notFound();
-  const [company, activities] = await Promise.all([
+  const [company, activities, contacts, history] = await Promise.all([
     getCompany(orgId, deal.companyId),
     listActivities(orgId, dealId),
+    listContacts(orgId, deal.companyId),
+    listAuditLogsByEntity(userId, orgId, "crm_deal", dealId),
   ]);
 
   return (
@@ -93,6 +115,75 @@ export default async function DealDetailPage({
           <p className="text-xs text-muted-foreground">
             Transisi quotation: Draft → Terkirim → Diterima/Ditolak.
           </p>
+          {deal.status === "open" && (
+            <>
+              <EditDealForm
+                deal={{
+                  id: deal.id,
+                  title: deal.title,
+                  value: deal.value,
+                  contactId: deal.contactId,
+                }}
+                contacts={contacts.map((c) => ({ id: c.id, name: c.name }))}
+              />
+              <DeleteDealButton dealId={deal.id} />
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Riwayat</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {history.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Belum ada riwayat tercatat.
+            </p>
+          ) : (
+            <ul className="space-y-2">
+              {history.map((h) => {
+                const meta = (h.metadata ?? {}) as {
+                  from?: string;
+                  to?: string;
+                  value?: number;
+                  status?: string;
+                };
+                const detail =
+                  h.action === "crm.deal.quotation_status" && meta.to
+                    ? `${QUOT_LABEL[meta.from ?? ""] ?? meta.from ?? "?"} → ${QUOT_LABEL[meta.to] ?? meta.to}${
+                        typeof meta.value === "number"
+                          ? ` · ${formatIDR(meta.value)}`
+                          : ""
+                      }`
+                    : h.action === "crm.deal.move" && meta.status
+                      ? `status: ${STATUS_LABEL[meta.status] ?? meta.status}`
+                      : null;
+                return (
+                  <li
+                    key={h.id}
+                    className="flex items-baseline justify-between gap-3 rounded-md border p-3"
+                  >
+                    <div>
+                      <p className="text-sm font-medium">
+                        {HISTORY_LABEL[h.action] ?? h.action}
+                      </p>
+                      {detail && (
+                        <p className="text-xs text-muted-foreground">{detail}</p>
+                      )}
+                    </div>
+                    <time
+                      dateTime={h.createdAt.toISOString()}
+                      className="shrink-0 text-xs text-muted-foreground"
+                    >
+                      {h.createdAt.toLocaleString("id-ID")}
+                    </time>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </CardContent>
       </Card>
 

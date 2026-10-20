@@ -13,6 +13,8 @@ import { recordAudit } from "@/lib/repos/audit-repo";
 import {
   AccountingError,
   accountBalance,
+  assertISODate,
+  sumExact,
   trialBalance,
   validateEntry,
   type AccountType,
@@ -39,6 +41,11 @@ export async function createAccount(
   await requireOrgRole(userId, orgId, "member");
   if (!input.code.trim() || !input.name.trim()) {
     throw new AccountingError("Kode dan nama akun wajib diisi.");
+  }
+  if (
+    !["asset", "liability", "equity", "revenue", "expense"].includes(input.type)
+  ) {
+    throw new AccountingError("Tipe akun tidak valid.");
   }
   if (input.parentId) {
     const [parent] = await db
@@ -127,6 +134,7 @@ export async function createJournalEntry(
   input: CreateEntryInput,
 ): Promise<{ entry: JournalEntry; lines: JournalLine[] }> {
   await requireOrgRole(userId, orgId, "member");
+  assertISODate(input.date, "Tanggal");
   const accountRows = await Promise.all(
     input.lines.map((l) => requireAccount(orgId, l.accountId)),
   );
@@ -315,9 +323,10 @@ export async function listLedger(
       ),
     )
     .orderBy(asc(journalEntries.date), asc(journalEntries.entryNumber));
-  let running = 0;
-  return rows.map((r) => {
-    running += accountBalance(
+  // Saldo berjalan exact: `+=` float diam-diam kehilangan presisi di
+  // atas MAX_SAFE_INTEGER — samakan dengan jalur exact engine (sumExact).
+  const deltas = rows.map((r) =>
+    accountBalance(
       [
         {
           accountCode: account.code,
@@ -326,7 +335,11 @@ export async function listLedger(
         },
       ],
       account.type,
-    );
+    ),
+  );
+  let running = 0;
+  return rows.map((r, i) => {
+    running = sumExact([running, deltas[i]]);
     return { ...r, runningBalance: running };
   });
 }
@@ -447,9 +460,10 @@ function incomeStatementFromTb(
     if (account.type === "expense")
       expense.push({ account, balance: line.balance });
   }
-  const netIncome =
-    revenue.reduce((s, r) => s + r.balance, 0) -
-    expense.reduce((s, r) => s + r.balance, 0);
+  const netIncome = sumExact([
+    ...revenue.map((r) => r.balance),
+    ...expense.map((r) => -r.balance),
+  ]);
   return { revenue, expense, netIncome };
 }
 
@@ -478,13 +492,17 @@ function balanceFromTb(
       }))
       .filter((x) => x.account && x.account.type === type);
   const sum = (xs: { balance: number }[]) =>
-    xs.reduce((s, x) => s + x.balance, 0);
+    sumExact(xs.map((x) => x.balance));
   const asset = pick("asset");
   const liability = pick("liability");
   const equity = pick("equity");
   const retainedEarnings = incomeStatementFromTb(tb).netIncome;
   const totalAsset = sum(asset);
-  const totalRhs = sum(liability) + sum(equity) + retainedEarnings;
+  const totalRhs = sumExact([
+    sum(liability),
+    sum(equity),
+    retainedEarnings,
+  ]);
   return {
     asset,
     liability,

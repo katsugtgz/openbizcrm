@@ -7,7 +7,7 @@
  * ke R2. Hapus file: admin+ boleh menghapus file milik orang lain.
  * Kredensial R2 tidak tersedia lokal: ConfigError setup dengan pesan jelas.
  */
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import {
   S3Client,
   PutObjectCommand,
@@ -42,6 +42,13 @@ export class ConfigError extends Error {
 
 /** Kuota drive per org: 10 GB (sesuai spesifikasi). */
 export const DRIVE_QUOTA_BYTES = 10 * 1024 * 1024 * 1024;
+
+/** Batas ukuran per file: satu baris tidak boleh mengunci seluruh kuota. */
+export const DRIVE_MAX_FILE_BYTES = 1 * 1024 * 1024 * 1024;
+
+/** Tipe konten aktif yang tidak boleh disimpan apa adanya (stored XSS). */
+const ACTIVE_CONTENT_MIME_RE =
+  /^(text\/html|image\/svg\+xml|application\/xhtml\+xml|text\/xml|application\/xml)\b/i;
 
 interface DriveConfig {
   bucket: string;
@@ -91,6 +98,24 @@ export function sanitizeFileName(name: string): string {
   return cleaned.slice(0, 200);
 }
 
+/**
+ * Validasi + netralisasi MIME: format token/token, panjang wajar, dan tipe
+ * konten aktif (html/svg/xml) dipaksa application/octet-stream supaya objek
+ * R2 tidak pernah di-render sebagai halaman oleh browser.
+ */
+export function sanitizeMimeType(mimeType: string): string {
+  const mime = mimeType.trim();
+  if (!mime) throw new DriveError("Tipe file wajib diisi.");
+  if (
+    mime.length > 127 ||
+    !/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i.test(mime)
+  ) {
+    throw new DriveError("Tipe file tidak valid.");
+  }
+  if (ACTIVE_CONTENT_MIME_RE.test(mime)) return "application/octet-stream";
+  return mime;
+}
+
 export interface PresignResult {
   fileId: string;
   uploadUrl: string;
@@ -122,7 +147,10 @@ export async function presignUpload(
   if (!Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) {
     throw new DriveError("Ukuran file harus bilangan bulat positif.");
   }
-  if (!mimeType.trim()) throw new DriveError("Tipe file wajib diisi.");
+  if (sizeBytes > DRIVE_MAX_FILE_BYTES) {
+    throw new DriveError("Ukuran file melebihi batas 1 GB per file.");
+  }
+  const safeMime = sanitizeMimeType(mimeType);
 
   if (folderId) {
     const [folder] = await db
@@ -150,11 +178,47 @@ export async function presignUpload(
         `Kuota drive organisasi penuh (${(Number(used) / 1e9).toFixed(2)} GB / 10 GB).`,
       );
     }
+    // Dedupe double-submit: reservasi pending identik (5 menit terakhir)
+    // dipakai ulang — tanpa ini double-click mengunci kuota 2x.
+    const [existing] = await tx
+      .select()
+      .from(driveFiles)
+      .where(
+        and(
+          eq(driveFiles.orgId, orgId),
+          eq(driveFiles.uploadedBy, userId),
+          eq(driveFiles.status, "pending"),
+          eq(driveFiles.fileName, safeName),
+          eq(driveFiles.sizeBytes, sizeBytes),
+          folderId
+            ? eq(driveFiles.folderId, folderId)
+            : isNull(driveFiles.folderId),
+          gt(driveFiles.createdAt, new Date(Date.now() - 5 * 60 * 1000)),
+        ),
+      )
+      .limit(1);
+    if (existing) {
+      const retryCommand = new PutObjectCommand({
+        Bucket: bucket,
+        Key: existing.key,
+        ContentType: existing.mimeType,
+        ContentLength: existing.sizeBytes,
+      });
+      const retryUrl = await getSignedUrl(client, retryCommand, {
+        expiresIn: PRESIGN_TTL_SECONDS,
+      });
+      return {
+        fileId: existing.id,
+        uploadUrl: retryUrl,
+        key: existing.key,
+        expiresInSeconds: PRESIGN_TTL_SECONDS,
+      };
+    }
     const key = `${orgId}/${randomUUID()}/${safeName}`;
     const command = new PutObjectCommand({
       Bucket: bucket,
       Key: key,
-      ContentType: mimeType,
+      ContentType: safeMime,
       ContentLength: sizeBytes,
     });
     const uploadUrl = await getSignedUrl(client, command, {
@@ -167,7 +231,7 @@ export async function presignUpload(
         folderId: folderId ?? null,
         key,
         fileName: safeName,
-        mimeType,
+        mimeType: safeMime,
         sizeBytes,
         uploadedBy: userId,
         status: "pending",
@@ -211,6 +275,13 @@ async function purgeExpiredPending(
     );
 }
 
+/** Pembersih reservasi kadaluarsa di luar presign (untuk sweeper terjadwal). */
+export async function purgeExpiredDrivePending(orgId: string): Promise<void> {
+  await db.transaction(async (tx) => {
+    await purgeExpiredPending(tx, orgId);
+  });
+}
+
 export async function confirmUpload(
   userId: string,
   orgId: string,
@@ -248,6 +319,30 @@ export async function confirmUpload(
     .set({ status: "confirmed", confirmedAt: new Date(), expiresAt: null })
     .where(and(eq(driveFiles.id, file.id), eq(driveFiles.orgId, orgId)))
     .returning();
+  if (!updated) throw new NotFoundError("File tidak ditemukan.");
+  // Re-validasi pasca-flip (TOCTOU HEAD): presigned PUT masih berlaku 900 dtk
+  // sehingga bytes bisa diganti setelah HEAD pertama. HEAD kedua mempersempit
+  // jendela balap ke milidetik; ketidakcocokan pasti membatalkan konfirmasi.
+  // (Perbaikan penuh butuh object versioning di bucket — infra, di luar kode.)
+  let recheck: { ContentLength?: number } | null = null;
+  try {
+    recheck = await client.send(
+      new HeadObjectCommand({ Bucket: bucket, Key: file.key }),
+    );
+  } catch {
+    recheck = null; // HEAD non-definitif (jaringan): konfirmasi tetap berlaku.
+  }
+  if (recheck && (recheck.ContentLength ?? -1) !== file.sizeBytes) {
+    await client
+      .send(new DeleteObjectCommand({ Bucket: bucket, Key: file.key }))
+      .catch(() => {});
+    await db
+      .delete(driveFiles)
+      .where(and(eq(driveFiles.id, file.id), eq(driveFiles.orgId, orgId)));
+    throw new DriveError(
+      "Ukuran objek tidak sesuai reservasi. Silakan unggah ulang.",
+    );
+  }
   return updated;
 }
 
@@ -319,6 +414,7 @@ export async function listFolder(
   userId: string,
   orgId: string,
   folderId?: string | null,
+  limit = 200,
 ): Promise<FolderEntry> {
   await requireOrgRole(userId, orgId, "member");
   if (folderId) {
@@ -329,6 +425,7 @@ export async function listFolder(
       .limit(1);
     if (!folder) throw new NotFoundError("Folder tidak ditemukan.");
   }
+  const capped = Math.min(Math.max(limit, 1), 1000);
   const [folders, files] = await Promise.all([
     db
       .select()
@@ -341,7 +438,8 @@ export async function listFolder(
             : isNull(driveFolders.parentId),
         ),
       )
-      .orderBy(asc(driveFolders.name)),
+      .orderBy(asc(driveFolders.name))
+      .limit(capped),
     db
       .select()
       .from(driveFiles)
@@ -355,7 +453,8 @@ export async function listFolder(
             : isNull(driveFiles.folderId),
         ),
       )
-      .orderBy(asc(driveFiles.fileName)),
+      .orderBy(asc(driveFiles.fileName))
+      .limit(capped),
   ]);
   return { folders, files };
 }
@@ -364,13 +463,15 @@ export async function listFolder(
 export async function folderTree(
   userId: string,
   orgId: string,
+  limit = 1000,
 ): Promise<DriveFolder[]> {
   await requireOrgRole(userId, orgId, "member");
   return db
     .select()
     .from(driveFolders)
     .where(eq(driveFolders.orgId, orgId))
-    .orderBy(asc(driveFolders.name));
+    .orderBy(asc(driveFolders.name))
+    .limit(Math.min(Math.max(limit, 1), 5000));
 }
 
 export async function deleteFile(
@@ -419,6 +520,9 @@ export async function deleteFile(
       new DeleteObjectCommand({ Bucket: bucket, Key: file.key }),
     );
   } catch (error) {
+    // Audit member-readable hanya menyimpan NAMA error; pesan mentah SDK
+    // (bisa memuat detail backend) hanya ke log server.
+    console.error("[drive] hapus objek R2 gagal:", { key: file.key, error });
     await recordAudit({
       orgId,
       userId,
@@ -427,7 +531,7 @@ export async function deleteFile(
       entityId: fileId,
       metadata: {
         key: file.key,
-        error: error instanceof Error ? error.message : String(error),
+        error: error instanceof Error ? error.name || "R2Error" : "UnknownError",
       },
     });
     throw error;
@@ -440,8 +544,20 @@ export async function driveUsageBytes(orgId: string): Promise<number> {
       used: sql<number>`coalesce(sum(${driveFiles.sizeBytes}), 0)::bigint`,
     })
     .from(driveFiles)
-    // Kuota menampilkan pemakaian aktual; reservasi pending dihitung di
-    // presign lewat query sama (semua baris), bukan di sini.
+    // Pemakaian aktual: kurangi reservasi pending yang sudah kadaluarsa
+    // (purgeExpiredPending hanya jalan saat presign — lazy).
     .where(eq(driveFiles.orgId, orgId));
-  return Number(used);
+  const [{ expired }] = await db
+    .select({
+      expired: sql<number>`coalesce(sum(${driveFiles.sizeBytes}), 0)::bigint`,
+    })
+    .from(driveFiles)
+    .where(
+      and(
+        eq(driveFiles.orgId, orgId),
+        eq(driveFiles.status, "pending"),
+        lt(driveFiles.expiresAt, sql`now()`),
+      ),
+    );
+  return Number(used) - Number(expired);
 }

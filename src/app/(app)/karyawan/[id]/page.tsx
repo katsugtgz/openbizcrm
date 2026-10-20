@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
-import { requireOrgRole } from "@/lib/org-scope";
+import { hasRole, requireOrgRole } from "@/lib/org-scope";
 import { getEmployee } from "@/lib/repos/hrm-repo";
 import { formatIDR } from "@/lib/money";
 import { Badge } from "@/components/ui/badge";
@@ -36,9 +36,12 @@ export default async function KaryawanDetailPage({
   const ids = await resolveSessionIds(user);
   if (!ids) redirect("/dashboard");
   const { userId, orgId } = ids;
-  await requireOrgRole(userId, orgId, "member");
+  const { role } = await requireOrgRole(userId, orgId, "member");
   const employee = await getEmployee(orgId, id);
   if (!employee) notFound();
+  // Gaji + rekening sensitif: hanya admin/owner atau karyawan ybs
+  // (employees.userId). Member lain tetap melihat direktori.
+  const canViewPay = hasRole(role, "admin") || employee.userId === userId;
 
   return (
     <div className="flex flex-col gap-6">
@@ -74,12 +77,12 @@ export default async function KaryawanDetailPage({
         <CardContent>
           <Row label="No. Karyawan" value={employee.employeeNo} />
           <Row label="Status Pajak (TER)" value={employee.taxStatus} />
-          <Row label="Gaji Pokok" value={formatIDR(employee.baseSalary)} />
+          <Row label="Gaji Pokok" value={canViewPay ? formatIDR(employee.baseSalary) : "—"} />
           <Row label="Tanggal Masuk" value={employee.hireDate ?? "—"} />
           <Row
             label="Rekening"
             value={
-              employee.bankName
+              canViewPay && employee.bankName
                 ? `${employee.bankName} ${employee.bankAccount ?? ""}`.trim()
                 : "—"
             }

@@ -3,7 +3,7 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
-import { requireOrgRole } from "@/lib/org-scope";
+import { hasRole, requireOrgRole } from "@/lib/org-scope";
 import { listEmployees } from "@/lib/repos/hrm-repo";
 import { formatIDR } from "@/lib/money";
 import { KaryawanToasts } from "./toasts";
@@ -32,7 +32,7 @@ const STATUS_LABEL: Record<string, string> = {
   suspended: "Suspended",
 };
 
-async function EmployeeTable({ orgId }: { orgId: string }) {
+async function EmployeeTable({ orgId, showSalary }: { orgId: string; showSalary: boolean }) {
   const employees = await listEmployees(orgId);
   return (
     <Card>
@@ -80,7 +80,7 @@ async function EmployeeTable({ orgId }: { orgId: string }) {
                   </TableCell>
                   <TableCell>{e.taxStatus}</TableCell>
                   <TableCell className="text-right tabular-nums">
-                    {formatIDR(e.baseSalary)}
+                    {showSalary ? formatIDR(e.baseSalary) : "—"}
                   </TableCell>
                   <TableCell className="text-right">
                     <Button asChild variant="outline" size="sm">
@@ -124,7 +124,7 @@ export default async function KaryawanPage({
   if (!ids) redirect("/dashboard");
   // Membership is guaranteed by the resolver; requireOrgRole enforces the
   // role (and keeps the guard consistent with sibling pages).
-  await requireOrgRole(ids.userId, ids.orgId, "member");
+  const { role } = await requireOrgRole(ids.userId, ids.orgId, "member");
   const { orgId } = ids;
   const sp = await searchParams;
 
@@ -142,7 +142,7 @@ export default async function KaryawanPage({
         </Button>
       </div>
       <Suspense fallback={<TableSkeleton />}>
-        <EmployeeTable orgId={orgId} />
+        <EmployeeTable orgId={orgId} showSalary={hasRole(role, "admin")} />
       </Suspense>
       <KaryawanToasts ok={sp.ok} error={sp.error} />
     </div>

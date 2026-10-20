@@ -63,7 +63,11 @@ export async function createAccountAction(
   return { ok: true };
 }
 
-/** Baris jurnal dikirim sebagai JSON string (state klien dinamis). */
+/**
+ * Baris jurnal dikirim sebagai JSON string (state klien dinamis). Bentuk
+ * divalidasi di boundary: JSON tak valid / bukan array / baris tak berbentuk
+ * ditolak dengan pesan jelas, bukan TypeError mentah.
+ */
 export async function createJournalEntryAction(
   formData: FormData,
 ): Promise<ActionResult> {
@@ -72,17 +76,29 @@ export async function createJournalEntryAction(
   const description = String(formData.get("description") ?? "").trim() || null;
   try {
     const raw = String(formData.get("lines") ?? "[]");
-    const parsed = JSON.parse(raw) as {
-      accountId: string;
-      debit: string;
-      credit: string;
-    }[];
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error("Baris jurnal tidak valid (bukan JSON).");
+    }
+    if (!Array.isArray(parsed)) {
+      throw new Error("Baris jurnal harus array.");
+    }
     const lines = parsed
-      .filter((l) => l.accountId)
+      .filter(
+        (
+          l,
+        ): l is { accountId: string; debit?: unknown; credit?: unknown } =>
+          typeof l === "object" &&
+          l !== null &&
+          typeof (l as { accountId?: unknown }).accountId === "string" &&
+          (l as { accountId: string }).accountId !== "",
+      )
       .map((l) => ({
         accountId: l.accountId,
-        debit: l.debit ? parseIDRInput(l.debit) : 0,
-        credit: l.credit ? parseIDRInput(l.credit) : 0,
+        debit: l.debit ? parseIDRInput(String(l.debit)) : 0,
+        credit: l.credit ? parseIDRInput(String(l.credit)) : 0,
       }));
     await createJournalEntry(userId, orgId, {
       date,
@@ -182,6 +198,10 @@ export async function disposeAssetAction(
       orgId,
       String(formData.get("assetId") ?? ""),
       String(formData.get("disposalDate") ?? ""),
+      {
+        assetAccountId: String(formData.get("assetAccountId") ?? ""),
+        lossAccountId: String(formData.get("lossAccountId") ?? ""),
+      },
     );
   } catch (error) {
     return fail(error);

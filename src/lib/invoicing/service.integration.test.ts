@@ -372,4 +372,61 @@ describe("invoicing integration", () => {
       expect(new Set(nums).size).toBe(nums.length); // tanpa tabrakan
     },
   );
+
+  itDb("invoice Rp0: kirim tanpa jurnal, langsung paid", async () => {
+    const o = await makeOrg();
+    await seedAccounts(o);
+    const company = await (
+      await import("@/lib/repos/crm-repo")
+    ).createCompany(o.userId, o.orgId, { name: `PT Nol ${suffix}` });
+    const { invoice } = await svc.createInvoice(o.userId, o.orgId, {
+      companyId: company.id,
+      issueDate: "2026-11-01",
+      dueDate: "2026-12-01",
+      items: [{ description: "Gratis", qty: 1, unitPrice: 0 }],
+    });
+    expect(invoice.total).toBe(0);
+    // Tanpa jurnal (baris 0 melanggar CHECK) — bukan error PG mentah.
+    const sent = await svc.sendInvoice(o.userId, o.orgId, invoice.id);
+    expect(sent.status).toBe("paid");
+    expect(sent.journalEntryId).toBeNull();
+    expect(await orgEntries(o.orgId)).toHaveLength(0);
+  });
+
+  itDb("tanggal tak valid dan metode tak valid ditolak tegas", async () => {
+    const o = await makeOrg();
+    await seedAccounts(o);
+    const company = await (
+      await import("@/lib/repos/crm-repo")
+    ).createCompany(o.userId, o.orgId, { name: `PT Tegas ${suffix}` });
+    await expect(
+      svc.createInvoice(o.userId, o.orgId, {
+        companyId: company.id,
+        issueDate: "2026-02-30",
+        dueDate: "2026-03-01",
+        items: [{ description: "x", qty: 1, unitPrice: 100 }],
+      }),
+    ).rejects.toThrow(/kalender/);
+    const { invoice } = await svc.createInvoice(o.userId, o.orgId, {
+      companyId: company.id,
+      issueDate: "2026-11-01",
+      dueDate: "2026-12-01",
+      items: [{ description: "x", qty: 1, unitPrice: 100 }],
+    });
+    await svc.sendInvoice(o.userId, o.orgId, invoice.id);
+    await expect(
+      svc.recordPayment(o.userId, o.orgId, invoice.id, {
+        amount: 100,
+        method: "wesel" as "cash",
+        paidAt: "2026-11-05",
+      }),
+    ).rejects.toThrow(/Metode pembayaran/);
+    await expect(
+      svc.recordPayment(o.userId, o.orgId, invoice.id, {
+        amount: 100,
+        method: "cash",
+        paidAt: "05-11-2026",
+      }),
+    ).rejects.toThrow(/YYYY-MM-DD/);
+  });
 });

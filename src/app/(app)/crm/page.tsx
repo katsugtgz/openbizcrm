@@ -50,6 +50,7 @@ async function Board({
   const { pipeline, stages } = await getOrCreateDefaultPipeline(
     orgId,
     activeCompanyId,
+    { userId },
   );
   const deals = await listDeals(orgId, pipeline.id);
   const companyName = new Map(companies.map((c) => [c.id, c.name]));

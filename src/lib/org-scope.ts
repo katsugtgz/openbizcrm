@@ -30,9 +30,12 @@ export function assertInternalId(
   value: string,
 ): void {
   if (UUID_RE.test(value)) return;
+  // Never echo the full caller-controlled value (log/URL reflection): a
+  // short preview is enough to triage which id failed the contract.
+  const shown = value.length > 32 ? `${value.slice(0, 32)}…` : value;
   throw new UUIDContractError(
     parameter,
-    `WorkOS IDs cannot query the database directly; resolve ${parameter} to the internal UUID first (got: ${value}).`,
+    `WorkOS IDs cannot query the database directly; resolve ${parameter} to the internal UUID first (got: ${shown}).`,
   );
 }
 

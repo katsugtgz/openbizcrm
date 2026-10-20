@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lte, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   attendances,
@@ -17,8 +17,11 @@ import { recordAudit } from "@/lib/repos/audit-repo";
 import { approve, createApproval, currentState, reject } from "@/lib/approval";
 import {
   saveApprovalRequest,
-  getApprovalRequestByRowId,
+  getApprovalRequestByRowIdForUpdate,
+  saveApprovalRequestTx,
 } from "@/lib/approval/store";
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export type Department = typeof departments.$inferSelect;
 export type Position = typeof positions.$inferSelect;
@@ -43,6 +46,53 @@ async function requireEmployee(
     throw new OrgScopeError("NO_MEMBERSHIP", "Karyawan tidak ditemukan.");
   }
   return employee;
+}
+
+/**
+ * Unit organisasi (cabang/departemen/posisi) wajib milik org yang sama —
+ * id lintas-org ditolak sebelum insert/update agar karyawan tidak bisa
+ * ditempel ke unit org lain (pola createOfficeWifi).
+ */
+async function requireOrgUnit(
+  orgId: string,
+  unit: "branch" | "department" | "position",
+  id: string,
+): Promise<void> {
+  const table =
+    unit === "branch"
+      ? branches
+      : unit === "department"
+        ? departments
+        : positions;
+  const label =
+    unit === "branch"
+      ? "Cabang"
+      : unit === "department"
+        ? "Departemen"
+        : "Posisi";
+  const [row] = await db
+    .select({ id: table.id })
+    .from(table)
+    .where(and(eq(table.id, id), eq(table.orgId, orgId)))
+    .limit(1);
+  if (!row) {
+    throw new OrgScopeError("NO_MEMBERSHIP", `${label} tidak ditemukan.`);
+  }
+}
+
+async function requireEmployeeUnits(
+  orgId: string,
+  input: {
+    branchId?: string | null;
+    departmentId?: string | null;
+    positionId?: string | null;
+  },
+): Promise<void> {
+  if (input.branchId) await requireOrgUnit(orgId, "branch", input.branchId);
+  if (input.departmentId)
+    await requireOrgUnit(orgId, "department", input.departmentId);
+  if (input.positionId)
+    await requireOrgUnit(orgId, "position", input.positionId);
 }
 
 // ---------------- Departments / Positions ----------------
@@ -120,12 +170,18 @@ export interface EmployeeInput {
   bankAccount?: string | null;
 }
 
-export async function listEmployees(orgId: string): Promise<Employee[]> {
+export async function listEmployees(
+  orgId: string,
+  opts?: { limit?: number },
+): Promise<Employee[]> {
+  // Default cap: halaman karyawan me-render seluruh tabel tanpa ini.
+  const limit = Math.min(Math.max(opts?.limit ?? 500, 1), 5000);
   return db
     .select()
     .from(employees)
     .where(eq(employees.orgId, orgId))
-    .orderBy(employees.employeeNo);
+    .orderBy(employees.employeeNo)
+    .limit(limit);
 }
 
 export async function getEmployee(
@@ -147,6 +203,7 @@ export async function createEmployee(
 ): Promise<Employee> {
   await requireOrgRole(userId, orgId, "admin");
   assertSafeAmount(input.baseSalary, "Gaji pokok");
+  await requireEmployeeUnits(orgId, input);
   const [row] = await db
     .insert(employees)
     .values({
@@ -170,7 +227,8 @@ export async function createEmployee(
     action: "hrm.employee.create",
     entity: "employee",
     entityId: row.id,
-    metadata: { employeeNo: row.employeeNo, baseSalary: row.baseSalary },
+    // Metadata audit member-readable: tanpa gaji/rekening.
+    metadata: { employeeNo: row.employeeNo },
   });
   return row;
 }
@@ -186,18 +244,25 @@ export async function updateEmployee(
   if (input.baseSalary !== undefined) {
     assertSafeAmount(input.baseSalary, "Gaji pokok");
   }
+  await requireEmployeeUnits(orgId, input);
   const [row] = await db
     .update(employees)
     .set(input)
     .where(and(eq(employees.id, id), eq(employees.orgId, orgId)))
     .returning();
+  // Metadata audit member-readable: input mentah bisa memuat gaji pokok
+  // dan rekening — selalu strip field sensitif sebelum dicatat.
+  const metadata = { ...input } as Record<string, unknown>;
+  delete metadata.baseSalary;
+  delete metadata.bankName;
+  delete metadata.bankAccount;
   await recordAudit({
     orgId,
     userId,
     action: "hrm.employee.update",
     entity: "employee",
     entityId: id,
-    metadata: input as Record<string, unknown>,
+    metadata,
   });
   return row;
 }
@@ -282,10 +347,26 @@ export interface MarkAttendanceInput {
   notes?: string | null;
 }
 
+/** Rentang presensi dibatasi supaya year-wide query tidak menumpuk row. */
+const MAX_ATTENDANCE_RANGE_DAYS = 62;
+const MAX_ATTENDANCE_ROWS = 5000;
+
 export async function listAttendances(
   orgId: string,
   range: { from: string; to: string; employeeId?: string },
 ): Promise<Attendance[]> {
+  const spanMs =
+    new Date(`${range.to}T00:00:00Z`).getTime() -
+    new Date(`${range.from}T00:00:00Z`).getTime();
+  const spanDays = Math.round(spanMs / 86_400_000) + 1;
+  if (!Number.isFinite(spanDays) || spanDays < 1) {
+    throw new Error("Rentang tanggal presensi tidak valid.");
+  }
+  if (spanDays > MAX_ATTENDANCE_RANGE_DAYS) {
+    throw new Error(
+      `Rentang presensi maksimal ${MAX_ATTENDANCE_RANGE_DAYS} hari.`,
+    );
+  }
   const conds = [
     eq(attendances.orgId, orgId),
     gte(attendances.date, range.from),
@@ -298,7 +379,8 @@ export async function listAttendances(
     .select()
     .from(attendances)
     .where(and(...conds))
-    .orderBy(asc(attendances.date), asc(attendances.employeeId));
+    .orderBy(asc(attendances.date), asc(attendances.employeeId))
+    .limit(MAX_ATTENDANCE_ROWS);
 }
 
 export async function markAttendance(
@@ -375,11 +457,100 @@ async function ensureBalance(
     )
     .limit(1);
   if (existing) return existing;
+  // Race-safe: dua ensure konkuren — yang kalah baca ulang baris pemenang.
   const [row] = await db
     .insert(leaveBalances)
     .values({ orgId, employeeId, year })
+    .onConflictDoNothing()
     .returning();
-  return row;
+  if (row) return row;
+  const [reread] = await db
+    .select()
+    .from(leaveBalances)
+    .where(
+      and(
+        eq(leaveBalances.employeeId, employeeId),
+        eq(leaveBalances.year, year),
+        eq(leaveBalances.orgId, orgId),
+      ),
+    )
+    .limit(1);
+  return reread;
+}
+
+/** Varian transaksional ensureBalance (dipakai actLeaveApproval). */
+async function ensureBalanceTx(
+  tx: Tx,
+  orgId: string,
+  employeeId: string,
+  year: number,
+): Promise<LeaveBalance> {
+  const scope = [
+    eq(leaveBalances.employeeId, employeeId),
+    eq(leaveBalances.year, year),
+    eq(leaveBalances.orgId, orgId),
+  ];
+  const [existing] = await tx
+    .select()
+    .from(leaveBalances)
+    .where(and(...scope))
+    .limit(1);
+  if (existing) return existing;
+  const [row] = await tx
+    .insert(leaveBalances)
+    .values({ orgId, employeeId, year })
+    .onConflictDoNothing()
+    .returning();
+  if (row) return row;
+  const [reread] = await tx
+    .select()
+    .from(leaveBalances)
+    .where(and(...scope))
+    .limit(1);
+  return reread;
+}
+
+/**
+ * Debit saldo atomik bersyarat: predikat `remaining >= days` di dalam satu
+ * UPDATE — overdraft melempar (sinyal gagal eksplisit), bukan clamp diam.
+ */
+async function debitLeaveBalanceTx(
+  tx: Tx,
+  orgId: string,
+  employeeId: string,
+  year: number,
+  type: "cuti" | "izin",
+  days: number,
+): Promise<void> {
+  const field = LEAVE_BALANCE_FIELD[type];
+  const column =
+    field === "cutiRemaining"
+      ? leaveBalances.cutiRemaining
+      : leaveBalances.izinRemaining;
+  const scope = [
+    eq(leaveBalances.orgId, orgId),
+    eq(leaveBalances.employeeId, employeeId),
+    eq(leaveBalances.year, year),
+  ];
+  const [updated] = await tx
+    .update(leaveBalances)
+    .set(
+      field === "cutiRemaining"
+        ? { cutiRemaining: sql`${column} - ${days}` }
+        : { izinRemaining: sql`${column} - ${days}` },
+    )
+    .where(and(...scope, gte(column, days)))
+    .returning();
+  if (updated) return;
+  const [existing] = await tx
+    .select()
+    .from(leaveBalances)
+    .where(and(...scope))
+    .limit(1);
+  const remaining = existing ? existing[field] : 0;
+  throw new Error(
+    `Sisa ${type} tidak cukup (butuh ${days}, sisa ${remaining}).`,
+  );
 }
 
 export async function getLeaveBalance(
@@ -393,12 +564,16 @@ export async function getLeaveBalance(
 
 export async function listLeaveRequests(
   orgId: string,
+  opts?: { limit?: number },
 ): Promise<LeaveRequest[]> {
+  // Default cap: tanpa ini pemanggil me-render seluruh tabel.
+  const limit = Math.min(Math.max(opts?.limit ?? 500, 1), 5000);
   return db
     .select()
     .from(leaveRequests)
     .where(eq(leaveRequests.orgId, orgId))
-    .orderBy(desc(leaveRequests.createdAt));
+    .orderBy(desc(leaveRequests.createdAt))
+    .limit(limit);
 }
 
 /** Hitung hari kalender inklusif start..end (input "YYYY-MM-DD"). */
@@ -446,7 +621,9 @@ export async function createLeaveRequest(
   if (input.approverId === userId) {
     throw new Error("Pemohon tidak boleh menjadi approver.");
   }
-  const requestId = `leave-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  // ID tak-tertebak (bukan Date.now+Math.random): requestId dipakai sebagai
+  // korelasi lintas approval store dan leave_requests.
+  const requestId = `leave-${crypto.randomUUID()}`;
   const req = createApproval({
     requestId,
     requestedBy: userId,
@@ -485,6 +662,11 @@ export async function createLeaveRequest(
 /**
  * Approve/reject leave request lewat approval engine + store.
  * Balance dipotong sebanyak durasi (hari) saat status jadi approved.
+ *
+ * Atomik dalam satu transaksi: baris approval dikunci (FOR UPDATE) supaya
+ * dua keputusan konkuren terserialisasi — yang kalah melihat status
+ * terminal dan engine menolaknya, bukan menimpa diam-diam. Debit saldo
+ * bersyarat (`remaining >= days`) sehingga tidak pernah over-grant.
  */
 export async function actLeaveApproval(
   actorId: string,
@@ -493,48 +675,63 @@ export async function actLeaveApproval(
   action: "approve" | "reject",
   note?: string,
 ): Promise<"approved" | "rejected" | "pending"> {
-  const [lr] = await db
-    .select()
-    .from(leaveRequests)
-    .where(
-      and(eq(leaveRequests.id, leaveRequestId), eq(leaveRequests.orgId, orgId)),
-    )
-    .limit(1);
-  if (!lr || !lr.approvalId) {
-    throw new OrgScopeError("NO_MEMBERSHIP", "Leave request tidak ditemukan.");
-  }
-  const stored = await getApprovalRequestByRowId(orgId, lr.approvalId);
-  if (!stored) {
-    throw new OrgScopeError(
-      "NO_MEMBERSHIP",
-      "Approval request tidak ditemukan.",
+  return db.transaction(async (tx) => {
+    const [lr] = await tx
+      .select()
+      .from(leaveRequests)
+      .where(
+        and(
+          eq(leaveRequests.id, leaveRequestId),
+          eq(leaveRequests.orgId, orgId),
+        ),
+      )
+      .limit(1);
+    if (!lr || !lr.approvalId) {
+      throw new OrgScopeError(
+        "NO_MEMBERSHIP",
+        "Leave request tidak ditemukan.",
+      );
+    }
+    const { state: stored } = await getApprovalRequestByRowIdForUpdate(
+      tx,
+      orgId,
+      lr.approvalId,
     );
-  }
-  const next =
-    action === "approve"
-      ? approve(stored, actorId, note)
-      : reject(stored, actorId, note);
-  await saveApprovalRequest(orgId, next);
-  const cs = currentState(next);
-  if (cs.status === "approved" && (lr.type === "cuti" || lr.type === "izin")) {
-    const year = Number(lr.startDate.slice(0, 4));
-    const balance = await ensureBalance(lr.orgId, lr.employeeId, year);
-    const days = daysBetween(lr.startDate, lr.endDate);
-    const field = LEAVE_BALANCE_FIELD[lr.type];
-    await db
-      .update(leaveBalances)
-      .set({ [field]: Math.max(0, balance[field] - days) })
-      .where(eq(leaveBalances.id, balance.id));
-  }
-  await recordAudit({
-    orgId,
-    userId: actorId,
-    action: `hrm.leave.${action}`,
-    entity: "leave_request",
-    entityId: lr.id,
-    metadata: { status: cs.status },
+    const next =
+      action === "approve"
+        ? approve(stored, actorId, note)
+        : reject(stored, actorId, note);
+    await saveApprovalRequestTx(tx, orgId, next);
+    const cs = currentState(next);
+    if (
+      cs.status === "approved" &&
+      (lr.type === "cuti" || lr.type === "izin")
+    ) {
+      const year = Number(lr.startDate.slice(0, 4));
+      const days = daysBetween(lr.startDate, lr.endDate);
+      await ensureBalanceTx(tx, lr.orgId, lr.employeeId, year);
+      await debitLeaveBalanceTx(
+        tx,
+        lr.orgId,
+        lr.employeeId,
+        year,
+        lr.type,
+        days,
+      );
+    }
+    await recordAudit(
+      {
+        orgId,
+        userId: actorId,
+        action: `hrm.leave.${action}`,
+        entity: "leave_request",
+        entityId: lr.id,
+        metadata: { status: cs.status },
+      },
+      tx,
+    );
+    return cs.status;
   });
-  return cs.status;
 }
 
 export async function listLeaveBalances(

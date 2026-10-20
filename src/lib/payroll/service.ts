@@ -18,6 +18,7 @@ import { requireOrgRole } from "@/lib/org-scope";
 import { recordAudit } from "@/lib/repos/audit-repo";
 import { currentState } from "@/lib/approval";
 import {
+  DEFAULT_WORKING_DAYS,
   computePayslip,
   type PayslipInput,
   type Payslip as PayslipBreakdown,
@@ -166,47 +167,83 @@ export async function runPayroll(
 
   const unpaid = await unpaidLeaveDaysByEmployee(orgId, year, month);
 
-  const [run] = await db
-    .insert(payrollRuns)
-    .values({ orgId, year, month, createdBy: userId })
-    .returning();
+  // Atomik: insert run + seluruh slip + audit dalam satu transaksi —
+  // crash di tengah loop me-rollback semuanya sehingga retry tidak
+  // terblokir DUPLICATE_PERIOD oleh run parsial.
+  return db.transaction(async (tx) => {
+    let run!: PayrollRun;
+    try {
+      [run] = await tx
+        .insert(payrollRuns)
+        .values({ orgId, year, month, createdBy: userId })
+        .returning();
+    } catch (error) {
+      // Balapan run konkuren untuk periode sama: unique
+      // payroll_runs_org_period_unique — laporkan sebagai duplikat, bukan 500.
+      if (
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        (error as { code: unknown }).code === "23505"
+      ) {
+        throw new PayrollError(
+          "DUPLICATE_PERIOD",
+          `Payroll ${year}-${String(month).padStart(2, "0")} sudah ada.`,
+        );
+      }
+      throw error;
+    }
+    // TS: run pasti terisi (insert gagal selalu melempar).
+    const payrollRun: PayrollRun = run;
 
-  const rows: RunPayrollResult["payslips"] = [];
-  for (const emp of selected) {
-    const input: PayslipInput = {
-      employeeId: emp.id,
-      name: emp.name,
-      taxStatus: emp.taxStatus,
-      baseSalary: emp.baseSalary,
-      unpaidLeaveDays: unpaid.get(emp.id) ?? 0,
-      weekdayOvertimeHours: 0, // ponytail: agregasi jam lembur dari attendances
-      restdayOvertimeHours: 0, // saat kolom otomatis tersedia; input manual menyusul.
-      monthsWorked: monthsWorkedAt(emp.hireDate, year, month),
-      includeThr: month === 12,
-    };
-    const breakdown = computePayslip(input);
-    const [slip] = await db
-      .insert(payslips)
-      .values({
-        orgId,
-        runId: run.id,
+    const rows: RunPayrollResult["payslips"] = [];
+    for (const emp of selected) {
+      // Overlap kalender sebulan penuh (±30 hari) bisa melebihi 21 hari
+      // kerja: clamp ke batas prorasi (gaji 0) supaya satu karyawan
+      // tidak menggagalkan run se-organisasi. Kontrak throw prorateBase
+      // untuk input liar tetap dipertahankan di engine.
+      const unpaidDays = Math.min(
+        unpaid.get(emp.id) ?? 0,
+        DEFAULT_WORKING_DAYS,
+      );
+      const input: PayslipInput = {
         employeeId: emp.id,
-        breakdown,
-        netAmount: breakdown.net,
-      })
-      .returning();
-    rows.push({ employeeId: emp.id, breakdown, net: slip.netAmount });
-  }
+        name: emp.name,
+        taxStatus: emp.taxStatus,
+        baseSalary: emp.baseSalary,
+        unpaidLeaveDays: unpaidDays,
+        weekdayOvertimeHours: 0, // ponytail: agregasi jam lembur dari attendances
+        restdayOvertimeHours: 0, // saat kolom otomatis tersedia; input manual menyusul.
+        monthsWorked: monthsWorkedAt(emp.hireDate, year, month),
+        includeThr: month === 12,
+      };
+      const breakdown = computePayslip(input);
+      const [slip] = await tx
+        .insert(payslips)
+        .values({
+          orgId,
+          runId: payrollRun.id,
+          employeeId: emp.id,
+          breakdown,
+          netAmount: breakdown.net,
+        })
+        .returning();
+      rows.push({ employeeId: emp.id, breakdown, net: slip.netAmount });
+    }
 
-  await recordAudit({
-    orgId,
-    userId,
-    action: "payroll.run.create",
-    entity: "payroll_run",
-    entityId: run.id,
-    metadata: { year, month, employees: rows.length },
+    await recordAudit(
+      {
+        orgId,
+        userId,
+        action: "payroll.run.create",
+        entity: "payroll_run",
+        entityId: payrollRun.id,
+        metadata: { year, month, employees: rows.length },
+      },
+      tx,
+    );
+    return { run: payrollRun, payslips: rows };
   });
-  return { run, payslips: rows };
 }
 
 export async function getRun(
@@ -241,6 +278,14 @@ export async function listPayslips(
   }));
 }
 
+/**
+ * Satu sel CSV bank: koma dinetralkan ke spasi (kontrak pin test CSV),
+ * CR/LF dilucuti agar nama/bank/rekening tidak bisa injeksi baris.
+ */
+function csvCell(value: string): string {
+  return value.replace(/[\r\n,]+/g, " ");
+}
+
 /** CSV transfer bank: bank, no rekening, nama, jumlah, berita 'GAJI YYYYMM'. */
 export async function exportBankTransfer(
   userId: string,
@@ -259,9 +304,9 @@ export async function exportBankTransfer(
   const lines = ["bank,rekening,nama,jumlah,berita"];
   for (const { slip, emp } of rows) {
     const net = slip.breakdown.net;
-    const bank = (emp.bankName ?? "").replace(/,/g, " ");
-    const account = emp.bankAccount ?? "";
-    const name = emp.name.replace(/,/g, " ");
+    const bank = csvCell(emp.bankName ?? "");
+    const account = csvCell(emp.bankAccount ?? "");
+    const name = csvCell(emp.name);
     lines.push(`${bank},${account},${name},${net},GAJI ${ym}`);
   }
   return lines.join("\r\n");

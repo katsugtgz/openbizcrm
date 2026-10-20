@@ -103,12 +103,21 @@ describe("crm integration", () => {
       expect(moved.status).toBe("open");
       expect(moved.closedAt).toBeNull();
 
-      // --- moveDeal stage transition won ---
-      const won = await crm.moveDeal(ownerA.id, orgA.id, deal.id, stages[4].id);
-      expect(won.status).toBe("won");
-      expect(won.closedAt).not.toBeNull();
+      // --- satu jalur close: drag/pindah ke Close Won ditolak, wajib
+      // lewat closeDeal (outcome + kopling quotation + idempotensi) ---
+      await expect(
+        crm.moveDeal(ownerA.id, orgA.id, deal.id, stages[4].id),
+      ).rejects.toThrow(/tutup deal lewat tombol/);
+      await expect(
+        crm.moveDeal(ownerA.id, orgA.id, deal.id, stages[5].id),
+      ).rejects.toThrow(/tutup deal lewat tombol/);
 
-      // --- quotation: status flow + total ---
+      // --- won mensyaratkan quotation accepted (deal/quote terkopling) ---
+      await expect(
+        deals.closeDeal(ownerA.id, orgA.id, deal.id, "won"),
+      ).rejects.toThrow(/accepted/);
+
+      // --- quotation: status flow + total (di deal open) ---
       const sent = await deals.setQuotationStatus(
         ownerA.id,
         orgA.id,
@@ -141,6 +150,14 @@ describe("crm integration", () => {
         discountTotal: 500_000,
         total: 4_500_000,
       });
+
+      // --- close via satu-satunya jalur; quotation lalu membeku ---
+      const won = await deals.closeDeal(ownerA.id, orgA.id, deal.id, "won");
+      expect(won.status).toBe("won");
+      expect(won.closedAt).not.toBeNull();
+      await expect(
+        deals.setQuotationStatus(ownerA.id, orgA.id, deal.id, "rejected"),
+      ).rejects.toThrow(/tidak bisa diubah/);
 
       // --- activity ---
       const act = await crm.createActivity(ownerA.id, orgA.id, {
@@ -232,6 +249,11 @@ describe("crm integration", () => {
       deals.closeDeal(owner.id, org.id, deal.id, "open" as "won"),
     ).rejects.toThrow(/won|lost/);
 
+    // Terima quotation dahulu agar race won-vs-lost di bawah adalah
+    // perebutan tulis sungguhan (won tanpa accepted ditolak guard).
+    await deals.setQuotationStatus(owner.id, org.id, deal.id, "sent");
+    await deals.setQuotationStatus(owner.id, org.id, deal.id, "accepted");
+
     // Close konkuren won+lost (Promise.allSettled — promise rejection tidak
     // melempar): tepat satu menang, deal status = outcome pemenang. Uji race
     // protection sungguhan, bukan versi sekuensial yang selalu lolos
@@ -257,11 +279,20 @@ describe("crm integration", () => {
       deals.closeDeal(owner.id, org.id, deal.id, other as "won"),
     ).rejects.toThrow(new RegExp(`sudah ${winnerStatus}`));
 
-    // Transisi quotation valid lalu double-call sekuensial: panggilan kedua
-    // dari status yang sama harus gagal (guard WHERE quotationStatus).
-    await deals.setQuotationStatus(owner.id, org.id, deal.id, "sent");
+    // Transisi quotation double-call sekuensial di deal open KEDUA (deal
+    // pertama sudah closed → quotation-nya beku): panggilan kedua dari
+    // status yang sama harus gagal (guard WHERE quotationStatus).
+    const deal2 = await crm.createDeal(owner.id, org.id, {
+      pipelineId: pipeline.id,
+      stageId: stages[0].id,
+      companyId: company.id,
+      contactId: contact.id,
+      title: "Deal Close 2",
+      value: 1_000_000,
+    });
+    await deals.setQuotationStatus(owner.id, org.id, deal2.id, "sent");
     await expect(
-      deals.setQuotationStatus(owner.id, org.id, deal.id, "sent"),
+      deals.setQuotationStatus(owner.id, org.id, deal2.id, "sent"),
     ).rejects.toThrow(/tidak valid/);
   });
 
@@ -339,6 +370,8 @@ describe("crm integration", () => {
         title: "Deal MoveClosed",
         value: 500_000,
       });
+      await deals.setQuotationStatus(owner.id, org.id, deal.id, "sent");
+      await deals.setQuotationStatus(owner.id, org.id, deal.id, "accepted");
       const closed = await deals.closeDeal(owner.id, org.id, deal.id, "won");
 
       // Simulasi move antrean yang membaca deal sebelum close: ditolak.
@@ -358,6 +391,125 @@ describe("crm integration", () => {
       expect(after.closedAt).not.toBeNull();
     },
   );
+
+  itDb("update/delete deal/kontak/perusahaan + guard closed/relasi", async () => {
+    const owner = await (
+      await import("@/lib/repos/user-repo")
+    ).createUser({
+      workosUserId: `it-crud-${suffix}`,
+      email: `it-crud-${suffix}@test.id`,
+    });
+    createdUserIds.push(owner.id);
+    const org = await (
+      await import("@/lib/repos/org-repo")
+    ).createOrg(
+      { name: "CRM CRUD Org", slug: `it-crud-${suffix}` },
+      owner.id,
+    );
+    createdOrgIds.push(org.id);
+
+    const company = await crm.createCompany(owner.id, org.id, {
+      name: `PT CRUD ${suffix}`,
+    });
+    // Owner default = pembuat.
+    expect(company.ownerUserId).toBe(owner.id);
+    const renamed = await crm.updateCompany(owner.id, org.id, company.id, {
+      name: `PT CRUD Baru ${suffix}`,
+    });
+    expect(renamed.name).toBe(`PT CRUD Baru ${suffix}`);
+
+    // Email/telepon tak valid ditolak; valid lolos.
+    await expect(
+      crm.createContact(owner.id, org.id, {
+        companyId: company.id,
+        name: "Jelek",
+        email: "bukan-email",
+      }),
+    ).rejects.toThrow(/Email kontak/);
+    await expect(
+      crm.createContact(owner.id, org.id, {
+        companyId: company.id,
+        name: "Jelek",
+        phone: "12",
+      }),
+    ).rejects.toThrow(/telepon/);
+    const contact = await crm.createContact(owner.id, org.id, {
+      companyId: company.id,
+      name: "Kontak CRUD",
+      email: "crud@uji.id",
+      phone: "08123456789",
+    });
+    const contact2 = await crm.createContact(owner.id, org.id, {
+      companyId: company.id,
+      name: "Kontak Hapus",
+    });
+    const updContact = await crm.updateContact(owner.id, org.id, contact.id, {
+      position: "Direktur",
+    });
+    expect(updContact.position).toBe("Direktur");
+    await crm.deleteContact(owner.id, org.id, contact2.id);
+    await expect(
+      crm.deleteContact(owner.id, org.id, contact2.id),
+    ).rejects.toThrow(/tidak ditemukan/);
+
+    const { pipeline, stages } = await crm.getOrCreateDefaultPipeline(
+      org.id,
+      company.id,
+      { userId: owner.id },
+    );
+    // Pembuatan pipeline diaudit.
+    const { auditLogs } = await import("@/db/schema");
+    const pipeAudits = await db
+      .select()
+      .from(auditLogs)
+      .where(eq(auditLogs.entityId, pipeline.id));
+    expect(pipeAudits.map((a) => a.action)).toContain("crm.pipeline.create");
+
+    const deal = await crm.createDeal(owner.id, org.id, {
+      pipelineId: pipeline.id,
+      stageId: stages[0].id,
+      companyId: company.id,
+      contactId: contact.id,
+      title: "Deal CRUD",
+      value: 1_000_000,
+    });
+    const updDeal = await crm.updateDeal(owner.id, org.id, deal.id, {
+      title: "Deal CRUD Revisi",
+      value: 2_000_000,
+    });
+    expect(updDeal.title).toBe("Deal CRUD Revisi");
+    expect(updDeal.value).toBe(2_000_000);
+
+    // Perusahaan ber-deal tak bisa dihapus.
+    await expect(
+      crm.deleteCompany(owner.id, org.id, company.id),
+    ).rejects.toThrow(/masih memiliki deal/);
+
+    // Close (lost bebas quotation) lalu deal membeku: update/delete ditolak.
+    await deals.setQuotationStatus(owner.id, org.id, deal.id, "sent");
+    await deals.closeDeal(owner.id, org.id, deal.id, "lost");
+    await expect(
+      crm.updateDeal(owner.id, org.id, deal.id, { title: "Ubah Histori" }),
+    ).rejects.toThrow(/tidak bisa diubah/);
+    await expect(
+      crm.deleteDeal(owner.id, org.id, deal.id),
+    ).rejects.toThrow(/tidak bisa dihapus/);
+
+    // Deal open lain bisa dihapus; lalu perusahaan kosong bisa dihapus.
+    // (Deal lost di atas masih menghalangi — pin guard-nya, lalu selesai.)
+    const dealOpen = await crm.createDeal(owner.id, org.id, {
+      pipelineId: pipeline.id,
+      stageId: stages[0].id,
+      companyId: company.id,
+      title: "Deal Sementara",
+      value: 10_000,
+    });
+    await crm.deleteDeal(owner.id, org.id, dealOpen.id);
+    expect(await crm.getDeal(org.id, dealOpen.id)).toBeNull();
+    await expect(
+      crm.deleteCompany(owner.id, org.id, company.id),
+    ).rejects.toThrow(/masih memiliki deal/);
+  });
 
   itDb("createDeal menolak kontak dari company lain (org sama)", async () => {
     const owner = await (

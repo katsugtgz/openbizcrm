@@ -11,6 +11,7 @@ import {
   recordPayment,
   sendInvoice,
 } from "@/lib/invoicing/service";
+import { assertISODate } from "@/lib/accounting/engine";
 import { parseIDRInput } from "@/lib/money";
 
 export interface ActionResult {
@@ -37,14 +38,11 @@ function fail(error: unknown): { ok: false; error: string } {
 /**
  * Normalisasi tanggal form ke "YYYY-MM-DD" kalender (cubic pr8 actions:60 —
  * createInvoice membandingkan string; input tak valid/offset-zona harus
- * ditolak di boundary, bukan lolos lewat lexical compare).
+ * ditolak di boundary, bukan lolos lewat lexical compare). Memakai guard
+ * bersama yang juga menolak hari tak nyata (2026-02-30 lolos Date.parse).
  */
 function normalizeDate(raw: FormDataEntryValue | null, label: string): string {
-  const v = String(raw ?? "").trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(Date.parse(v))) {
-    throw new Error(`${label} harus tanggal YYYY-MM-DD.`);
-  }
-  return v;
+  return assertISODate(String(raw ?? "").trim(), label);
 }
 
 export async function createInvoiceAction(
@@ -53,17 +51,27 @@ export async function createInvoiceAction(
   const { userId, orgId } = await requireSession();
   try {
     const raw = String(formData.get("items") ?? "[]");
-    const parsed = JSON.parse(raw) as {
-      description: string;
-      qty: string;
-      unitPrice: string;
-    }[];
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error("Item invoice tidak valid (bukan JSON).");
+    }
+    if (!Array.isArray(parsed)) {
+      throw new Error("Item invoice harus array.");
+    }
     const items = parsed
-      .filter((i) => i.description.trim())
+      .filter(
+        (i): i is { description: string; qty?: unknown; unitPrice?: unknown } =>
+          typeof i === "object" &&
+          i !== null &&
+          typeof (i as { description?: unknown }).description === "string" &&
+          (i as { description: string }).description.trim() !== "",
+      )
       .map((i) => ({
         description: i.description,
         qty: Number(i.qty),
-        unitPrice: parseIDRInput(i.unitPrice),
+        unitPrice: parseIDRInput(String(i.unitPrice ?? "")),
       }));
     const taxRaw = String(formData.get("taxPct") ?? "0").trim();
     const { invoice } = await createInvoice(userId, orgId, {
@@ -108,7 +116,7 @@ export async function recordPaymentAction(
       amount: parseIDRInput(String(formData.get("amount") ?? "")),
       method: String(formData.get("method") ?? "transfer") as
         "cash" | "transfer" | "qris",
-      paidAt: String(formData.get("paidAt") ?? ""),
+      paidAt: normalizeDate(formData.get("paidAt"), "Tanggal bayar"),
     });
   } catch (error) {
     return fail(error);

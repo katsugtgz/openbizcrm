@@ -14,7 +14,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { NewCompanyDialog, NewContactDialog } from "./dialogs";
+import {
+  DeleteRowButton,
+  EditCompanyDialog,
+  EditContactDialog,
+  NewCompanyDialog,
+  NewContactDialog,
+} from "./dialogs";
 
 export const metadata = { title: "Perusahaan CRM" };
 
@@ -55,6 +61,7 @@ async function Tables({ orgId, userId }: { orgId: string; userId: string }) {
                   <TableHead>Nama</TableHead>
                   <TableHead>Industri</TableHead>
                   <TableHead className="text-right">Jumlah Kontak</TableHead>
+                  <TableHead className="text-right">Aksi</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -64,6 +71,18 @@ async function Tables({ orgId, userId }: { orgId: string; userId: string }) {
                     <TableCell>{c.industry ?? "-"}</TableCell>
                     <TableCell className="text-right tabular-nums">
                       {contactCount.get(c.id) ?? 0}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <span className="flex items-center justify-end gap-2">
+                        <EditCompanyDialog
+                          company={{
+                            id: c.id,
+                            name: c.name,
+                            industry: c.industry,
+                          }}
+                        />
+                        <DeleteRowButton kind="company" id={c.id} />
+                      </span>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -91,6 +110,7 @@ async function Tables({ orgId, userId }: { orgId: string; userId: string }) {
                   <TableHead>Jabatan</TableHead>
                   <TableHead>Email</TableHead>
                   <TableHead>Telepon</TableHead>
+                  <TableHead className="text-right">Aksi</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -101,6 +121,20 @@ async function Tables({ orgId, userId }: { orgId: string; userId: string }) {
                     <TableCell>{k.position ?? "-"}</TableCell>
                     <TableCell>{k.email ?? "-"}</TableCell>
                     <TableCell>{k.phone ?? "-"}</TableCell>
+                    <TableCell className="text-right">
+                      <span className="flex items-center justify-end gap-2">
+                        <EditContactDialog
+                          contact={{
+                            id: k.id,
+                            name: k.name,
+                            email: k.email,
+                            phone: k.phone,
+                            position: k.position,
+                          }}
+                        />
+                        <DeleteRowButton kind="contact" id={k.id} />
+                      </span>
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>

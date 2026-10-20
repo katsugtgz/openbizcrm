@@ -5,7 +5,7 @@ import { db } from "@/db";
 import { employees, payslips } from "@/db/schema";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
-import { requireOrgRole } from "@/lib/org-scope";
+import { hasRole, requireOrgRole } from "@/lib/org-scope";
 import { PayrollError, getRun } from "@/lib/payroll/service";
 import { formatIDR } from "@/lib/money";
 import { Button } from "@/components/ui/button";
@@ -57,7 +57,7 @@ export default async function PayslipPage({
   const ids = await resolveSessionIds(user);
   if (!ids) throw new Error("Tidak ada organisasi aktif.");
   const { userId, orgId } = ids;
-  await requireOrgRole(userId, orgId, "member");
+  const { role } = await requireOrgRole(userId, orgId, "member");
 
   let run;
   try {
@@ -68,6 +68,9 @@ export default async function PayslipPage({
   }
   const breakdown = await loadBreakdown(orgId, runId, employeeId);
   if (!breakdown) notFound();
+  // Slip gaji sensitif: hanya admin/owner atau karyawan ybs
+  // (employees.userId). Member lain tidak boleh intip slip orang.
+  if (!hasRole(role, "admin") && breakdown.ownerUserId !== userId) notFound();
 
   const b = breakdown;
 
@@ -133,7 +136,7 @@ export default async function PayslipPage({
 
 async function loadBreakdown(orgId: string, runId: string, employeeId: string) {
   const [row] = await db
-    .select({ breakdown: payslips.breakdown, employeeName: employees.name })
+    .select({ breakdown: payslips.breakdown, employeeName: employees.name, ownerUserId: employees.userId })
     .from(payslips)
     .innerJoin(employees, eq(employees.id, payslips.employeeId))
     .where(
@@ -145,5 +148,5 @@ async function loadBreakdown(orgId: string, runId: string, employeeId: string) {
     )
     .limit(1);
   if (!row) return null;
-  return { ...row.breakdown, name: row.employeeName };
+  return { ...row.breakdown, name: row.employeeName, ownerUserId: row.ownerUserId };
 }

@@ -1,4 +1,4 @@
-import { redirect } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
 import { requireOrgRole } from "@/lib/org-scope";
@@ -9,6 +9,10 @@ import { driveUsageBytes, listFolder } from "@/lib/drive/service";
 import { CloudBrowser } from "./cloud-browser";
 
 export const metadata = { title: "Cloud" };
+
+/** Canonical UUID shape as accepted by PG uuid columns (mirrors guards isUuid). */
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function formatBytes(n: number): string {
   // Basis 1024 (cubic cloud/page.tsx:10) — kuota di-enforce biner (10 GiB),
@@ -30,6 +34,7 @@ export default async function CloudPage({
   if (!ids) redirect("/dashboard");
   await requireOrgRole(ids.userId, ids.orgId, "member");
   const { f: folderId } = await searchParams;
+  if (folderId && !UUID_RE.test(folderId)) notFound();
 
   const [entry, used, parent] = await Promise.all([
     listFolder(ids.userId, ids.orgId, folderId ?? null),

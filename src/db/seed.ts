@@ -35,6 +35,22 @@ const ORG_SLUG = "contoh-sejahtera";
 // organizations.id. Deterministik supaya seed idempotent.
 const ORG_WORKOS_ID = "org_contoh-sejahtera";
 
+/**
+ * Seed plants deterministic privileged rows (owner/admin/member + org). Refuse
+ * to run against a production environment unless explicitly allowed
+ * (bughunt data-tenant). CI/dev/test are unaffected (NODE_ENV unset or
+ * development/test there).
+ */
+export function assertSeedAllowed(
+  env: { NODE_ENV?: string; ALLOW_SEED?: string } = process.env,
+): void {
+  if (env.NODE_ENV === "production" && env.ALLOW_SEED !== "1") {
+    throw new Error(
+      "Refusing to seed in production. Set ALLOW_SEED=1 to override.",
+    );
+  }
+}
+
 const SEED_USERS = [
   {
     workosUserId: "seed-owner-1",
@@ -880,9 +896,17 @@ async function seed() {
   console.log("Seed selesai (idempotent).");
 }
 
-seed()
-  .then(() => process.exit(0))
-  .catch((err) => {
-    console.error(err);
-    process.exit(1);
-  });
+// Only auto-run when invoked directly (`bun src/db/seed.ts`); importing
+// this module (e.g. unit tests for assertSeedAllowed) must not seed.
+const invokedDirectly =
+  typeof process.argv[1] === "string" &&
+  /(^|[\\/])seed\.(ts|js|cjs|mjs)$/.test(process.argv[1]);
+if (invokedDirectly) {
+  assertSeedAllowed();
+  seed()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    });
+}

@@ -4,7 +4,7 @@
  * (out of scope) — proses itu nanti membaca/menulis baris ini. Semua mutasi
  * org-guarded, transaction + advisory lock, audit.
  */
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, lt, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   whatsappOutbox,
@@ -21,6 +21,29 @@ import {
 } from "./session-state";
 
 export { InvalidWhatsappTransitionError };
+
+/** Upaya kirim maksimum per baris outbox sebelum terminal `failed`. */
+export const MAX_OUTBOX_ATTEMPTS = 5;
+
+/** Samarkan nomor untuk audit member-readable: +628******1234. */
+export function maskPhone(phone: string): string {
+  const p = phone.trim();
+  if (p.length <= 4) return "****";
+  const prefix = p.startsWith("+") ? "+" : "";
+  return `${prefix}${"*".repeat(Math.max(p.length - prefix.length - 4, 1))}${p.slice(-4)}`;
+}
+
+/**
+ * Samarkan nomor di dalam pesan error sender sebelum masuk audit
+ * member-readable (error Baileys boleh menyebut nomor tujuan, mis.
+ * "gagal kirim ke 62812..."). Digit-run >= 7 disamarkan, teks alasan
+ * dipertahankan; lastError operasional tidak diubah.
+ */
+export function redactSenderError(error: string): string {
+  return error.replace(/\+?[\d][\d\s().-]{5,}[\d]/g, (m) =>
+    maskPhone(m.replace(/[\s().-]/g, "")),
+  );
+}
 
 /** Sesi org, dibuat lazy (default disconnected). Dipakai actions (GET). */
 export async function requireSession(orgId: string): Promise<WhatsappSession> {
@@ -174,7 +197,7 @@ export async function enqueueWhatsappMessage(
         action: "whatsapp.outbox.enqueue",
         entity: "whatsapp_outbox",
         entityId: row.id,
-        metadata: { phone: input.phone.trim() },
+        metadata: { phone: maskPhone(input.phone) },
       },
       tx,
     );
@@ -182,7 +205,11 @@ export async function enqueueWhatsappMessage(
   });
 }
 
-/** Baris queued milik org, urut dibuat (FIFO) — dibaca worker. */
+/**
+ * Baris siap-kirim milik org, urut dibuat (FIFO) — dibaca worker. Termasuk
+ * `failed` yang attempts-nya belum habis (retry otomatis tiap drain);
+ * `failed` yang attempts >= MAX_OUTBOX_ATTEMPTS hanya hidup via requeue.
+ */
 export async function listQueuedOutbox(
   orgId: string,
   limit = 50,
@@ -191,7 +218,16 @@ export async function listQueuedOutbox(
     .select()
     .from(whatsappOutbox)
     .where(
-      and(eq(whatsappOutbox.orgId, orgId), eq(whatsappOutbox.status, "queued")),
+      and(
+        eq(whatsappOutbox.orgId, orgId),
+        or(
+          eq(whatsappOutbox.status, "queued"),
+          and(
+            eq(whatsappOutbox.status, "failed"),
+            lt(whatsappOutbox.attempts, MAX_OUTBOX_ATTEMPTS),
+          ),
+        ),
+      ),
     )
     .orderBy(asc(whatsappOutbox.createdAt))
     .limit(limit);
@@ -201,7 +237,8 @@ export async function listQueuedOutbox(
  * Klaim atomik sebelum send (hardening worker): UPDATE ... WHERE status =
  * 'queued' di dalam advisory lock per-org, jadi dua worker (atau crash
  * sebelum resolve) tidak pernah mengirim pesan yang sama dua kali. Baris
- * yang gagal diklaim (sudah diambil worker lain) dilewati.
+ * yang gagal diklaim (sudah diambil worker lain) dilewati. Retry: baris
+ * `failed` yang attempts-nya < MAX_OUTBOX_ATTEMPTS ikut bisa diklaim.
  */
 export async function claimOutbox(
   orgId: string,
@@ -218,7 +255,13 @@ export async function claimOutbox(
         and(
           eq(whatsappOutbox.id, rowId),
           eq(whatsappOutbox.orgId, orgId),
-          eq(whatsappOutbox.status, "queued"),
+          or(
+            eq(whatsappOutbox.status, "queued"),
+            and(
+              eq(whatsappOutbox.status, "failed"),
+              lt(whatsappOutbox.attempts, MAX_OUTBOX_ATTEMPTS),
+            ),
+          ),
         ),
       )
       .returning();
@@ -233,8 +276,93 @@ export interface OutboxResult {
 }
 
 /**
+ * Requeue manual oleh operator: `failed` -> `queued` + attempts direset.
+ * Tanpa ini pesan gagal harus diketik ulang dari nol.
+ */
+export async function requeueOutbox(
+  userId: string,
+  orgId: string,
+  rowId: string,
+): Promise<WhatsappOutboxRow> {
+  await requireOrgRole(userId, orgId, "member");
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`wa:${orgId}`}))`,
+    );
+    const [row] = await tx
+      .select()
+      .from(whatsappOutbox)
+      .where(and(eq(whatsappOutbox.id, rowId), eq(whatsappOutbox.orgId, orgId)))
+      .limit(1)
+      .for("update");
+    if (!row) throw new NotFoundError("Pesan tidak ditemukan.");
+    if (row.status !== "failed") {
+      throw new Error("Hanya pesan gagal yang bisa diantrekan ulang.");
+    }
+    const [updated] = await tx
+      .update(whatsappOutbox)
+      .set({ status: "queued", attempts: 0, lastError: null })
+      .where(eq(whatsappOutbox.id, row.id))
+      .returning();
+    await recordAudit(
+      {
+        orgId,
+        userId,
+        action: "whatsapp.outbox.requeue",
+        entity: "whatsapp_outbox",
+        entityId: row.id,
+        metadata: {},
+      },
+      tx,
+    );
+    return updated;
+  });
+}
+
+/**
+ * Pemulihan crash: baris `sending` yang pemiliknya mati (kill -9 antara
+ * claim dan resolve) tidak pernah dibaca listQueued — kembalikan ke
+ * `queued` agar terkirim ulang. Baris yang attempts-nya sudah habis
+ * langsung `failed` (racun tidak boleh diulang selamanya). Dipanggil
+ * sekali saat worker start. Kembalikan jumlah baris dipulihkan.
+ */
+export async function reclaimStuckOutbox(orgId: string): Promise<number> {
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`wa:${orgId}`}))`,
+    );
+    const stuck = await tx
+      .select()
+      .from(whatsappOutbox)
+      .where(
+        and(
+          eq(whatsappOutbox.orgId, orgId),
+          eq(whatsappOutbox.status, "sending"),
+        ),
+      );
+    for (const row of stuck) {
+      await tx
+        .update(whatsappOutbox)
+        .set(
+          row.attempts >= MAX_OUTBOX_ATTEMPTS
+            ? {
+                status: "failed",
+                lastError: "Worker mati saat mengirim; batas percobaan habis.",
+              }
+            : { status: "queued" },
+        )
+        .where(eq(whatsappOutbox.id, row.id));
+    }
+    return stuck.length;
+  });
+}
+
+/**
  * Tandai hasil kirim worker (sent / failed + pesan error). Idempoten per
- * baris: sudah sent/failed => tanpa perubahan (transisi terminal).
+ * baris: sudah sent/failed => tanpa perubahan (transisi terminal per
+ * resolve). Retry otomatis ditangani drain: list/claim menyertakan
+ * `failed` yang attempts-nya tersisa, jadi `failed` hanya terminal
+ * setelah MAX_OUTBOX_ATTEMPTS atau via requeue manual.
  */
 export async function resolveOutbox(
   userId: string,
@@ -275,7 +403,10 @@ export async function resolveOutbox(
         action: "whatsapp.outbox.resolve",
         entity: "whatsapp_outbox",
         entityId: row.id,
-        metadata: { ok: result.ok, error: result.error ?? null },
+        metadata: {
+          ok: result.ok,
+          error: result.error ? redactSenderError(result.error) : null,
+        },
       },
       tx,
     );

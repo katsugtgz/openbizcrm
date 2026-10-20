@@ -16,6 +16,27 @@ function resolveDatabaseUrl(): string {
 }
 
 /**
+ * postgres-js must encrypt remote connections: without `ssl`, credentials
+ * and PII travel in cleartext whenever DB_DRIVER=postgres points at a
+ * non-local host (bughunt data-tenant). Local loopback stays plaintext.
+ * An explicit `sslmode` in the URL always wins over this default.
+ */
+export function shouldRequireSsl(url: string): boolean {
+  if (/[?&]sslmode=/i.test(url)) return false;
+  try {
+    // URL keeps IPv6 brackets in hostname ("[::1]").
+    const hostname = new URL(url).hostname.replace(/^\[|\]$/g, "");
+    return !(
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "::1"
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Local dev uses postgres-js against a plain Postgres (Docker / localhost).
  * Prod uses the Neon serverless driver. DB_DRIVER=postgres forces the local
  * driver regardless of the URL host.
@@ -53,7 +74,10 @@ function createDb() {
     return drizzleNeon(pool, { schema });
   }
 
-  const client = postgres(databaseUrl, { max: 5 });
+  const client = postgres(databaseUrl, {
+    max: 5,
+    ...(shouldRequireSsl(databaseUrl) ? { ssl: "require" as const } : {}),
+  });
   return drizzlePostgres(client, { schema });
 }
 

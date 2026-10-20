@@ -19,11 +19,22 @@ DROP INDEX IF EXISTS "tasks_org_project_daily_title_unique";--> statement-breakp
 -- AFTER the index drop: DBs where 0014 aborted early keep source='manual'
 -- rows that were generated daily tasks (due_date set, no daily_for_date).
 -- Re-promote them before dedupe, or the generator re-creates duplicates.
-UPDATE "tasks"
-SET "source" = 'daily', "daily_for_date" = "due_date"
-WHERE "source" = 'manual'
-  AND "daily_for_date" IS NULL
-  AND "due_date" IS NOT NULL;--> statement-breakpoint
+-- bughunt data-tenant: keep 0014's NOT EXISTS key guard — without it this
+-- promotes EVERY manual task with a due_date (incl. genuine manual rows)
+-- and can manufacture dup daily keys that step (c) then demotes.
+UPDATE "tasks" AS t
+SET "source" = 'daily', "daily_for_date" = t."due_date"
+WHERE t."source" = 'manual'
+  AND t."daily_for_date" IS NULL
+  AND t."due_date" IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM "tasks" AS d
+    WHERE d."org_id" = t."org_id"
+      AND d."project_id" = t."project_id"
+      AND d."daily_for_date" IS NOT DISTINCT FROM t."due_date"
+      AND d."title" = t."title"
+      AND d."source" = 'daily'
+  );--> statement-breakpoint
 
 -- (b1) pulihkan tanggal generate dari due_date
 UPDATE "tasks"

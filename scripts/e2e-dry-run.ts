@@ -46,6 +46,20 @@ export const defaultInput: DryRunInput = {
   readFile: (path) => readFileSync(path, "utf8"),
 };
 
+/**
+ * Strip `#` comments so marker checks cannot pass on commented-out text.
+ * A comment mentioning `next start` must not satisfy the boot check.
+ */
+function stripYamlComments(source: string): string {
+  return source
+    .split("\n")
+    .map((line) => {
+      const hash = line.indexOf("#");
+      return hash === -1 ? line : line.slice(0, hash);
+    })
+    .join("\n");
+}
+
 function runChecks(input: DryRunInput): DryRunCheck[] {
   const { repoRoot, exists, readFile } = input;
   const checks: DryRunCheck[] = [];
@@ -63,7 +77,7 @@ function runChecks(input: DryRunInput): DryRunCheck[] {
   let workflow = "";
   let workflowExists = false;
   try {
-    workflow = readFile(workflowPath);
+    workflow = stripYamlComments(readFile(workflowPath));
     workflowExists = true;
   } catch {
     workflowExists = false;
@@ -139,8 +153,8 @@ export function dryRun(input: DryRunInput = defaultInput): {
 }
 
 /** Script entrypoint: runs the dry run against the real repo, sets exit code. */
-export function main(): number {
-  const { ok } = dryRun();
+export function main(input: DryRunInput = defaultInput): number {
+  const { ok } = dryRun(input);
   return ok ? 0 : 1;
 }
 
