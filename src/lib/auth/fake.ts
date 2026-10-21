@@ -19,12 +19,20 @@ export function setFakeUser(user: SessionUser | null): void {
   current = user;
 }
 
-/** Resolve a cookie value to a session; null when missing or not allowlisted. */
-function fromCookieValue(value: string | undefined): SessionUser | null {
+/**
+ * Resolve a cookie value to a session; null when missing or not
+ * allowlisted. Exported for unit tests.
+ */
+export function fromCookieValue(value: string | undefined): SessionUser | null {
   if (!value) return null;
   const sep = value.indexOf(":");
   if (sep <= 0) return null;
-  const seeded = FAKE_USERS[value.slice(0, sep) as FakeUserId];
+  const id = value.slice(0, sep);
+  // Own-property check (cubic pr10 fake:43): FAKE_USERS["toString"] is a
+  // truthy inherited Function — spreading it builds a garbage "session"
+  // that crashes every layout awaiting a real id/email.
+  if (!Object.prototype.hasOwnProperty.call(FAKE_USERS, id)) return null;
+  const seeded = FAKE_USERS[id as FakeUserId];
   const sessionId = value.slice(sep + 1);
   if (!seeded || !sessionId) return null;
   return { ...seeded, sessionId };
@@ -38,6 +46,12 @@ function fromCookieValue(value: string | undefined): SessionUser | null {
 async function readRequestSession(): Promise<
   SessionUser | null | "unavailable"
 > {
+  // Cookie reads are gated on explicit AUTH_FAKE=1 (cubic pr10 fake:51):
+  // SessionFake also serves unconfigured-WorkOS envs so the login page can
+  // render — without this gate anyone there could forge the cookie and
+  // impersonate a seed user. (The test fixture below stays ungated: it is
+  // in-memory, settable only by test code, never remotely.)
+  if (process.env.AUTH_FAKE !== "1") return null;
   try {
     const { cookies } = await import("next/headers");
     return fromCookieValue((await cookies()).get(FAKE_SESSION_COOKIE)?.value);

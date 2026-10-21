@@ -7,10 +7,12 @@
  * server but is not a distributed throttle — document, do not rely on it
  * across replicas.
  *
- * DEPLOYMENT REQUIREMENT (cubic pr10 guards:96): single Next.js instance.
- * The per-conversation AI turn lock cannot serialize turns across replicas;
- * horizontal scaling needs a shared atomic lock (DB advisory lock or
- * Redis SET NX) before a second replica is added.
+ * DEPLOYMENT REQUIREMENT (cubic pr10 guards:96/chat:147): single Next.js
+ * instance. The per-conversation AI turn lock cannot serialize turns across
+ * replicas, and the rate-limiter buckets are per-process (an attacker gets
+ * one budget per replica); horizontal scaling needs a shared atomic lock
+ * (DB advisory lock or Redis SET NX) and a shared throttle before a second
+ * replica is added.
  */
 import { NotFoundError, OrgScopeError } from "@/lib/org-scope";
 import { PayrollError } from "@/lib/payroll/service";

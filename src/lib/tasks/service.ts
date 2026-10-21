@@ -271,9 +271,19 @@ export async function deleteTask(
       .from(projects)
       .where(and(eq(projects.id, task.projectId), eq(projects.orgId, orgId)))
       .for("update");
+    // Kunci baris task SEBELUM snapshot (cubic pr10 tasks:277): startTimer
+    // memegang kunci yang sama — timer konkuren menunggu delete selesai
+    // (lalu gagal not-found) alih-alih lolos dari snapshot audit.
+    await tx
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(and(eq(tasks.id, taskId), eq(tasks.orgId, orgId)))
+      .for("update");
     // FK timesheets.task_id ON DELETE CASCADE: tanpa snapshot, hapus task
     // menghapus bukti billing. Arsipkan time log ke audit SEBELUM delete
     // (soft-delete penuh butuh kolom skema — di luar area service).
+    // Snapshot TERBATAS + count terpisah (cubic pr10 tasks:288): select
+    // tanpa limit memuat seluruh time log ke memori sebelum slice.
     const linked = await tx
       .select({
         id: timesheets.id,
@@ -283,6 +293,12 @@ export async function deleteTask(
         minutes: timesheets.minutes,
         notes: timesheets.notes,
       })
+      .from(timesheets)
+      .where(and(eq(timesheets.taskId, taskId), eq(timesheets.orgId, orgId)))
+      .orderBy(asc(timesheets.startedAt))
+      .limit(DELETE_TIMESHEET_SNAPSHOT_MAX + 1);
+    const [{ total }] = await tx
+      .select({ total: sql<number>`count(*)::int` })
       .from(timesheets)
       .where(and(eq(timesheets.taskId, taskId), eq(timesheets.orgId, orgId)));
     // Service-layer SET NULL (cubic pr10 schema:795): subtask FK is
@@ -303,7 +319,7 @@ export async function deleteTask(
         entityId: taskId,
         metadata: {
           title: task.title,
-          timesheetCount: linked.length,
+          timesheetCount: total,
           timesheets: linked
             .slice(0, DELETE_TIMESHEET_SNAPSHOT_MAX)
             .map((t) => ({
@@ -311,7 +327,7 @@ export async function deleteTask(
               startedAt: t.startedAt.toISOString(),
               endedAt: t.endedAt?.toISOString() ?? null,
             })),
-          timesheetsTruncated: linked.length > DELETE_TIMESHEET_SNAPSHOT_MAX,
+          timesheetsTruncated: total > DELETE_TIMESHEET_SNAPSHOT_MAX,
         },
       },
       tx,

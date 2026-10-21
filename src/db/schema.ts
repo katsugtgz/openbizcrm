@@ -1566,9 +1566,17 @@ export const chatMessages = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     body: text("body").notNull(),
+    // Kunci idempotensi kiriman klien (cubic pr10 chat:339): dedupe
+    // konten+jendela salah menelan "ok","ok" legit. NULL = pengirim lama.
+    clientMsgId: text("client_msg_id"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => [
+    // Satu kunci = satu pesan per conversation (NULL bebas ganda di PG).
+    unique("chat_messages_conv_client_key_unique").on(
+      t.conversationId,
+      t.clientMsgId,
+    ),
     // Pesan harus satu org dengan percakapannya (cubic schema.ts:1198).
     foreignKey({
       name: "chat_messages_conversation_org_fk",

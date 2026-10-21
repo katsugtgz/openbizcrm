@@ -429,8 +429,11 @@ describe("assets integration", () => {
         assetAccountId: assetAcc.id,
         lossAccountId: lossAcc.id,
       };
+      // Periode depresiasi (2026-03) mendahului disposal (2026-06-15):
+      // dispose() menolak tanggal mundur ke periode yang sudah disusutkan
+      // (cubic pr10 assets:418) — race ini menguji status, bukan tanggal.
       await Promise.all([
-        assets.runMonthlyDepreciation(o.userId, o.orgId, "2026-12"),
+        assets.runMonthlyDepreciation(o.userId, o.orgId, "2026-03"),
         assets.dispose(o.userId, o.orgId, asset.id, "2026-06-15", disposal),
       ]);
       const after = await getAsset(asset.id);

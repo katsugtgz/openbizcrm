@@ -6,7 +6,7 @@ import { db } from "@/db";
 import { leaveRequests as leaveRequestsTable } from "@/db/schema";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
-import { hasRole, OrgScopeError, requireOrgRole } from "@/lib/org-scope";
+import { hasRole, requireOrgRole } from "@/lib/org-scope";
 import {
   saveApprovalRequest,
   getApprovalRequestByRowIdForUpdate,
@@ -29,37 +29,22 @@ import {
 } from "@/lib/leave/repo";
 import { listMembers } from "@/lib/repos/member-repo";
 import { recordAudit } from "@/lib/repos/audit-repo";
+import {
+  ValidationError,
+  safeRedirectError,
+} from "@/lib/safe-redirect-error";
 
 async function requireSession() {
   const user = await session.getSession();
   if (!user) redirect("/login");
   // WorkOS session IDs -> internal UUIDs before the org-scoped guards.
   const ids = await resolveSessionIds(user);
-  if (!ids) throw new Error("Tidak ada organisasi aktif.");
+  if (!ids) throw new ValidationError("Tidak ada organisasi aktif.");
   return ids;
 }
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * Pesan aman untuk ?error= di URL redirect: hanya string validasi statis
- * yang direfleksikan. Error driver PG (code 22/23/42/53…: detail constraint
- * + nilai) dan OrgScopeError dipetakan ke fallback generik agar tidak masuk
- * history browser, log, atau header Referer.
- */
-function safeRedirectError(error: unknown, fallback: string): string {
-  if (error instanceof OrgScopeError) return "Akses ditolak.";
-  if (error instanceof Error) {
-    const code = (error as { code?: unknown }).code;
-    if (typeof code === "string" && /^(22|23|42|53)/.test(code)) {
-      return fallback;
-    }
-    if (error.message.length > 200) return fallback;
-    return error.message;
-  }
-  return fallback;
-}
 
 /**
  * Ajukan cuti/izin. Auto-detect izin/cuti dari tanggal (mid-year rule)
@@ -78,14 +63,14 @@ export async function submitLeaveAction(formData: FormData): Promise<void> {
 
   try {
     if (!startDate || !endDate) {
-      throw new Error("Tanggal mulai dan selesai wajib diisi.");
+      throw new ValidationError("Tanggal mulai dan selesai wajib diisi.");
     }
 
     const employee = await getEmployeeByUser(userId, orgId);
-    if (!employee) throw new Error("Profil karyawan tidak ditemukan.");
+    if (!employee) throw new ValidationError("Profil karyawan tidak ditemukan.");
 
     const days = computeDuration(startDate, endDate);
-    if (days <= 0) throw new Error("Rentang tanggal tidak valid.");
+    if (days <= 0) throw new ValidationError("Rentang tanggal tidak valid.");
 
     // Rantai approval: satu admin/owner org lain (bukan pemohon) — filter
     // per membership.role, bukan sekadar "anggota org manapun".
@@ -95,7 +80,7 @@ export async function submitLeaveAction(formData: FormData): Promise<void> {
       )
       .map((m) => m.user)[0];
     if (!approver) {
-      throw new Error("Tidak ada approver lain di organisasi ini.");
+      throw new ValidationError("Tidak ada approver lain di organisasi ini.");
     }
 
     const requestId = `LV-${crypto.randomUUID()}`;
@@ -169,7 +154,7 @@ export async function actLeaveAction(formData: FormData): Promise<void> {
       !UUID_RE.test(approvalRowId) ||
       (decision !== "approve" && decision !== "reject")
     ) {
-      throw new Error("Keputusan tidak valid.");
+      throw new ValidationError("Keputusan tidak valid.");
     }
 
     await db.transaction(async (tx) => {
@@ -201,12 +186,15 @@ export async function actLeaveAction(formData: FormData): Promise<void> {
 
       await saveApprovalRequestTx(tx, orgId, nextApproval);
 
-      // Approved cuti/izin: debit saldo tahun mulai. Bersyarat
-      // (remaining >= days): overdraft melempar, bukan clamp diam.
+      // Approved cuti/izin SAJA yang mendebit saldo (cubic pr10 cuti:216):
+      // sakit/wfh tidak punya bucket saldo — versi lama salah mendebit
+      // cutiRemaining untuk keduanya. Bersyarat (remaining >= days):
+      // overdraft melempar, bukan clamp diam.
       if (
         nextApproval.status === "approved" &&
         leave?.employeeId &&
-        leave?.startDate
+        leave?.startDate &&
+        (leave.leaveType === "cuti" || leave.leaveType === "izin")
       ) {
         const year = Number(leave.startDate.slice(0, 4));
         const days = computeDuration(

@@ -5,8 +5,11 @@ const nextConfig: NextConfig = {
   cacheComponents: true,
   partialPrefetching: true,
   async headers() {
-    // No static Content-Security-Policy on purpose: it needs per-request
-    // nonces (middleware) to stay compatible with Next.js inline scripts.
+    // Static CSP subset only (cubic pr10 next.config:8): a full script-src
+    // policy needs per-request nonces (proxy) to stay compatible with
+    // Next.js inline scripts — that infra doesn't exist yet, so script
+    // directives are deliberately absent. The static directives below are
+    // safe without nonces and still narrow plugin/base/form abuse.
     return [
       {
         source: "/:path*",
@@ -19,6 +22,11 @@ const nextConfig: NextConfig = {
             // geolocation=(self): PresensiForm.locate() needs GPS check-in
             // on the app origin (cubic pr10 next.config:19).
             value: "camera=(), microphone=(), geolocation=(self)",
+          },
+          {
+            key: "Content-Security-Policy",
+            value:
+              "base-uri 'self'; object-src 'none'; form-action 'self'; frame-ancestors 'self'",
           },
           {
             key: "Strict-Transport-Security",

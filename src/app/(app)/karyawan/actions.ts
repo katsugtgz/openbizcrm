@@ -9,7 +9,10 @@ import {
   updateEmployee,
   type EmployeeInput,
 } from "@/lib/repos/hrm-repo";
-import { OrgScopeError } from "@/lib/org-scope";
+import {
+  ValidationError,
+  safeRedirectError,
+} from "@/lib/safe-redirect-error";
 
 const TAX_STATUSES = [
   "TK0",
@@ -63,25 +66,6 @@ function parseInput(formData: FormData): EmployeeInput {
   };
 }
 
-/**
- * Pesan aman untuk ?error= di URL redirect: hanya string validasi statis
- * yang direfleksikan. Error driver PG (code 22/23/42/53…: detail constraint
- * + nilai) dan OrgScopeError dipetakan ke fallback generik agar tidak masuk
- * history browser, log, atau header Referer.
- */
-function safeRedirectError(error: unknown, fallback: string): string {
-  if (error instanceof OrgScopeError) return "Akses ditolak.";
-  if (error instanceof Error) {
-    const code = (error as { code?: unknown }).code;
-    if (typeof code === "string" && /^(22|23|42|53)/.test(code)) {
-      return fallback;
-    }
-    if (error.message.length > 200) return fallback;
-    return error.message;
-  }
-  return fallback;
-}
-
 function failBack(form: "new" | "edit", message: string, id?: string): never {
   const base = form === "new" ? "/karyawan/baru" : `/karyawan/${id}/edit`;
   redirect(`${base}?error=${encodeURIComponent(message)}`);
@@ -91,10 +75,10 @@ export async function createEmployeeAction(formData: FormData): Promise<void> {
   const { userId, orgId } = await requireSession();
   const input = parseInput(formData);
   try {
-    if (!input.employeeNo) throw new Error("Nomor karyawan wajib diisi.");
-    if (!input.name) throw new Error("Nama karyawan wajib diisi.");
+    if (!input.employeeNo) throw new ValidationError("Nomor karyawan wajib diisi.");
+    if (!input.name) throw new ValidationError("Nama karyawan wajib diisi.");
     if (!Number.isInteger(input.baseSalary)) {
-      throw new Error("Gaji pokok harus angka rupiah bulat.");
+      throw new ValidationError("Gaji pokok harus angka rupiah bulat.");
     }
     await createEmployee(userId, orgId, input);
   } catch (error) {
@@ -111,11 +95,11 @@ export async function updateEmployeeAction(formData: FormData): Promise<void> {
   const id = String(formData.get("id") ?? "");
   const input = parseInput(formData);
   try {
-    if (!id) throw new Error("Karyawan tidak ditemukan.");
-    if (!input.employeeNo) throw new Error("Nomor karyawan wajib diisi.");
-    if (!input.name) throw new Error("Nama karyawan wajib diisi.");
+    if (!id) throw new ValidationError("Karyawan tidak ditemukan.");
+    if (!input.employeeNo) throw new ValidationError("Nomor karyawan wajib diisi.");
+    if (!input.name) throw new ValidationError("Nama karyawan wajib diisi.");
     if (!Number.isInteger(input.baseSalary)) {
-      throw new Error("Gaji pokok harus angka rupiah bulat.");
+      throw new ValidationError("Gaji pokok harus angka rupiah bulat.");
     }
     await updateEmployee(userId, orgId, id, input);
   } catch (error) {

@@ -49,11 +49,15 @@ export function ChatRoom({
     };
   }, [router]);
 
+  // Satu kunci idempotensi per draf (cubic pr10 chat:339): stabil di
+  // double-click/retry, diganti hanya setelah sukses terkirim.
+  const draftKey = React.useRef<string>(crypto.randomUUID());
   function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const form = e.currentTarget;
     const fd = new FormData(form);
     fd.set("conversationId", conversationId);
+    fd.set("clientMsgId", draftKey.current);
     if (!String(fd.get("body") ?? "").trim()) return;
     startTransition(async () => {
       const result = await sendMessageAction(fd);
@@ -64,6 +68,7 @@ export function ChatRoom({
       // Reset HANYA setelah sukses (cubic chat-room.tsx:37) — teks user
       // tidak hilang saat pengiriman ditolak.
       form.reset();
+      draftKey.current = crypto.randomUUID();
       router.refresh();
     });
   }

@@ -265,9 +265,13 @@ export async function updateDealAction(
   const contactId = String(formData.get("contactId") ?? "") || null;
   try {
     if (!title) throw new Error("Judul deal wajib diisi.");
+    // Nilai kosong DITOLAK (cubic pr10 crm:270): koersi diam ke 0
+    // menghapus nilai deal yang sudah ada saat user tak sengaja
+    // mengosongkan field. (Create tetap default 0: tak ada data tertimpa.)
+    if (!valueRaw) throw new Error("Nilai deal wajib diisi.");
     await updateDeal(userId, orgId, id, {
       title,
-      value: valueRaw ? parseIDRInput(valueRaw) : 0,
+      value: parseIDRInput(valueRaw),
       contactId,
     });
   } catch (error) {

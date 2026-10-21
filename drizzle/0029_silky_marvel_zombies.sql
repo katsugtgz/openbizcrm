@@ -71,6 +71,14 @@ ALTER TABLE "timesheets" DROP CONSTRAINT "timesheets_task_id_tasks_id_fk";
 --> statement-breakpoint
 -- Org-less audit rows are unattributable (no writer produces them);
 -- drop them before the NOT NULL constraint.
+-- cubic pr10 0029:74: baris audit tanpa org TIDAK dibuang — arsipkan ke
+-- tabel karantina (migration-only, tak ada di skema: audit forensik).
+-- Ditulis sebelum FK komposit dibuat agar baris yatim tetap tersimpan.
+CREATE TABLE IF NOT EXISTS "audit_logs_quarantine" (LIKE "audit_logs" INCLUDING ALL);
+ALTER TABLE "audit_logs_quarantine" ADD COLUMN IF NOT EXISTS "archived_at" timestamp DEFAULT now() NOT NULL;
+--> statement-breakpoint
+INSERT INTO "audit_logs_quarantine" SELECT *, now() FROM "audit_logs" WHERE "org_id" IS NULL;
+--> statement-breakpoint
 DELETE FROM "audit_logs" WHERE "org_id" IS NULL;
 --> statement-breakpoint
 ALTER TABLE "audit_logs" ALTER COLUMN "org_id" SET NOT NULL;

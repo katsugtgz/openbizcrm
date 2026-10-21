@@ -40,11 +40,10 @@ export const MAX_CHAT_MESSAGE_LENGTH = 8000;
 export const MAX_GROUP_MEMBERS = 1000;
 
 /**
- * Jendela dedupe double-submit: pesan/grup identik dalam jendela ini
- * dianggap satu. Best-effort app-side — skema belum punya kolom
- * idempotency key (butuh migrasi).
+ * Jendela dedupe double-submit grup: nama+pembuat+anggota identik dalam
+ * jendela ini dianggap satu (best-effort app-side). Pesan memakai kunci
+ * idempotensi klien (client_msg_id), bukan jendela waktu.
  */
-const SEND_DEDUPE_WINDOW_MS = 10_000;
 const CREATE_GROUP_DEDUPE_WINDOW_MS = 30_000;
 
 /** Anggota wajib ada; org guard tetap requireOrgRole di luar ini. */
@@ -303,6 +302,7 @@ export async function sendMessage(
   orgId: string,
   conversationId: string,
   body: string,
+  opts: { clientMsgId?: string } = {},
 ): Promise<ChatMessage> {
   const text = body.trim();
   if (!text) throw new ChatError("Pesan tidak boleh kosong.");
@@ -311,32 +311,57 @@ export async function sendMessage(
       `Pesan melebihi batas ${MAX_CHAT_MESSAGE_LENGTH} karakter.`,
     );
   }
+  // Kunci idempotensi klien: string pendek opaques (UUID disarankan).
+  const clientMsgId = opts.clientMsgId?.trim() || null;
+  if (clientMsgId && clientMsgId.length > 64) {
+    throw new ChatError("Kunci idempotensi tidak valid.");
+  }
   await requireOrgRole(userId, orgId, "member");
   await requireConversation(orgId, conversationId);
   await requireMember(conversationId, userId);
 
-  const msg = await db.transaction(async (tx) => {
+  const { msg, inserted } = await db.transaction(async (tx) => {
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtext(${`chat-msg:${conversationId}`}))`,
     );
-    // Dedupe double-submit: pesan identik (user+isi) dalam jendela singkat
-    // dianggap satu — skema belum punya client message id (best-effort).
-    const [dup] = await tx
-      .select()
-      .from(chatMessages)
-      .where(
-        and(
-          eq(chatMessages.conversationId, conversationId),
-          eq(chatMessages.userId, userId),
-          eq(chatMessages.body, text),
-          gt(
-            chatMessages.createdAt,
-            new Date(Date.now() - SEND_DEDUPE_WINDOW_MS),
-          ),
-        ),
-      )
-      .limit(1);
-    if (dup) return dup;
+    // Dedupe kunci klien, BUKAN konten+waktu (cubic pr10 chat:339):
+    // "ok","ok" legit dalam 10 detik tidak boleh ditelan. Kunci duplikat
+    // mengembalikan baris pemenang tanpa publish ulang (cubic pr10 :222).
+    if (clientMsgId) {
+      const [row] = await tx
+        .insert(chatMessages)
+        .values({ conversationId, orgId, userId, body: text, clientMsgId })
+        .onConflictDoNothing({
+          target: [chatMessages.conversationId, chatMessages.clientMsgId],
+        })
+        .returning();
+      if (!row) {
+        const [winner] = await tx
+          .select()
+          .from(chatMessages)
+          .where(
+            and(
+              eq(chatMessages.conversationId, conversationId),
+              eq(chatMessages.clientMsgId, clientMsgId),
+            ),
+          )
+          .limit(1);
+        if (!winner) throw new ChatError("Pesan gagal dikirim, coba lagi.");
+        return { msg: winner, inserted: false };
+      }
+      await recordAudit(
+        {
+          orgId,
+          userId,
+          action: "chat.message.send",
+          entity: "chat_message",
+          entityId: row.id,
+          metadata: { conversationId },
+        },
+        tx,
+      );
+      return { msg: row, inserted: true };
+    }
     const [row] = await tx
       .insert(chatMessages)
       .values({ conversationId, orgId, userId, body: text })
@@ -352,17 +377,19 @@ export async function sendMessage(
       },
       tx,
     );
-    return row;
+    return { msg: row, inserted: true };
   });
-  // Fire-and-forget: realtime gagal tidak boleh gagalkan pesan.
-  void publishChatMessage({
-    conversationId,
-    orgId,
-    messageId: msg.id,
-    userId,
-    body: msg.body,
-    createdAt: msg.createdAt.toISOString(),
-  });
+  if (inserted) {
+    // Fire-and-forget: realtime gagal tidak boleh gagalkan pesan.
+    void publishChatMessage({
+      conversationId,
+      orgId,
+      messageId: msg.id,
+      userId,
+      body: msg.body,
+      createdAt: msg.createdAt.toISOString(),
+    });
+  }
   return msg;
 }
 

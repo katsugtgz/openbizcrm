@@ -178,19 +178,11 @@ export async function presignUpload(
     await tx.execute(
       sql`select pg_advisory_xact_lock(hashtext(${`drive:${orgId}`}))`,
     );
-    const [{ used }] = await tx
-      .select({
-        used: sql<number>`coalesce(sum(${driveFiles.sizeBytes}), 0)::bigint`,
-      })
-      .from(driveFiles)
-      .where(eq(driveFiles.orgId, orgId));
-    if (Number(used) + sizeBytes > DRIVE_QUOTA_BYTES) {
-      throw new DriveError(
-        `Kuota drive organisasi penuh (${(Number(used) / 1e9).toFixed(2)} GB / 10 GB).`,
-      );
-    }
-    // Dedupe double-submit: reservasi pending identik (5 menit terakhir)
-    // dipakai ulang — tanpa ini double-click mengunci kuota 2x.
+    // Dedupe double-submit DULU, kuota kemudian (cubic pr10 drive:178):
+    // klik kedua memakai ulang reservasi pending yang sama (tanpa alokasi
+    // baru) — cek kuota dulu menolak retry sah saat nyaris penuh. Kunci:
+    // nama+ukuran+MIME+folder+pengunggah (cubic pr10 drive:194: tanpa MIME,
+    // file "a.png" JPEG menumpang URL bertanda PNG lalu PUT-nya gagal).
     const [existing] = await tx
       .select()
       .from(driveFiles)
@@ -200,6 +192,7 @@ export async function presignUpload(
           eq(driveFiles.uploadedBy, userId),
           eq(driveFiles.status, "pending"),
           eq(driveFiles.fileName, safeName),
+          eq(driveFiles.mimeType, safeMime),
           eq(driveFiles.sizeBytes, sizeBytes),
           folderId
             ? eq(driveFiles.folderId, folderId)
@@ -225,6 +218,17 @@ export async function presignUpload(
         contentType: existing.mimeType,
         expiresInSeconds: PRESIGN_TTL_SECONDS,
       };
+    }
+    const [{ used }] = await tx
+      .select({
+        used: sql<number>`coalesce(sum(${driveFiles.sizeBytes}), 0)::bigint`,
+      })
+      .from(driveFiles)
+      .where(eq(driveFiles.orgId, orgId));
+    if (Number(used) + sizeBytes > DRIVE_QUOTA_BYTES) {
+      throw new DriveError(
+        `Kuota drive organisasi penuh (${(Number(used) / 1e9).toFixed(2)} GB / 10 GB).`,
+      );
     }
     const key = `${orgId}/${randomUUID()}/${safeName}`;
     const command = new PutObjectCommand({

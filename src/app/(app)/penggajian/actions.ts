@@ -6,7 +6,7 @@ import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
 import { runPayroll, PayrollError } from "@/lib/payroll/service";
 import { computePayslip } from "@/lib/payroll/engine";
-import { listEmployees } from "@/lib/repos/hrm-repo";
+import { listEmployeesForPayroll } from "@/lib/repos/hrm-repo";
 import { requireOrgRole } from "@/lib/org-scope";
 
 async function requireSession() {
@@ -72,7 +72,7 @@ export async function previewPayrollAction(formData: FormData): Promise<
         "Bulan 1-12 dan tahun valid dibutuhkan.",
       );
     }
-    const staff = await listEmployees(orgId);
+    const staff = await listEmployeesForPayroll(orgId);
     const active = staff.filter((e) => e.status === "active");
     if (active.length === 0) {
       throw new PayrollError(

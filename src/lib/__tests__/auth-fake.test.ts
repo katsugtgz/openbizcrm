@@ -44,6 +44,28 @@ describe("SessionFake", () => {
  * adapter in a module-level promise, so each matrix case runs in a fresh
  * module registry via importActual reset below (vitest resetModules).
  */
+describe("fromCookieValue", () => {
+  it("resolves allowlisted seed ids", async () => {
+    const { fromCookieValue } = await import("@/lib/auth/fake");
+    expect(fromCookieValue("seed-member-1:fake-xyz")).toEqual({
+      ...FAKE_USERS["seed-member-1"],
+      sessionId: "fake-xyz",
+    });
+  });
+
+  it("rejects prototype keys and malformed values (cubic pr10)", async () => {
+    const { fromCookieValue } = await import("@/lib/auth/fake");
+    expect(fromCookieValue("toString:x")).toBeNull();
+    expect(fromCookieValue("__proto__:x")).toBeNull();
+    expect(fromCookieValue("constructor:x")).toBeNull();
+    expect(fromCookieValue("nope:x")).toBeNull();
+    expect(fromCookieValue("")).toBeNull();
+    expect(fromCookieValue(undefined)).toBeNull();
+    expect(fromCookieValue("noseparator")).toBeNull();
+    expect(fromCookieValue("seed-member-1:")).toBeNull();
+  });
+});
+
 describe("auth adapter pick matrix", () => {
   const saved = { ...process.env };
 

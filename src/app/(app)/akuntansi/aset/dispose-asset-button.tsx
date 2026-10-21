@@ -134,7 +134,7 @@ export function DisposeAssetButton({
             <Button
               type="button"
               variant="outline"
-              onClick={() => setOpen(false)}
+              onClick={() => handleOpenChange(false)}
             >
               Batal
             </Button>

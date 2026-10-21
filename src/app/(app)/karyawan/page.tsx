@@ -38,6 +38,11 @@ async function EmployeeTable({ orgId, showSalary }: { orgId: string; showSalary:
     <Card>
       <CardHeader>
         <CardTitle>Daftar Karyawan</CardTitle>
+        {employees.length === 500 && (
+          <p className="text-xs text-muted-foreground">
+            Menampilkan 500 karyawan pertama (batas baca) — paginasi menyusul.
+          </p>
+        )}
       </CardHeader>
       <CardContent>
         {employees.length === 0 ? (

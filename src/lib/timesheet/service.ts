@@ -23,30 +23,44 @@ export async function startTimer(
 ): Promise<Timesheet> {
   await requireOrgRole(userId, orgId, "member");
   await requireTask(orgId, taskId);
-  const [open] = await db
-    .select()
-    .from(timesheets)
-    .where(and(eq(timesheets.userId, userId), isNull(timesheets.endedAt)))
-    .limit(1);
-  if (open) {
-    throw new OrgScopeError(
-      "INSUFFICIENT_ROLE",
-      "Masih ada timer yang berjalan. Hentikan dulu sebelum memulai yang baru.",
+  return db.transaction(async (tx) => {
+    // Kunci baris task (cubic pr10 tasks:277): deleteTask memegang kunci
+    // yang sama sebelum snapshot — start konkuren menunggu delete selesai
+    // (lalu gagal FK di bawah) alih-alih lolos dari snapshot audit.
+    const [locked] = await tx
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(and(eq(tasks.id, taskId), eq(tasks.orgId, orgId)))
+      .for("update");
+    if (!locked) throw new NotFoundError("Task tidak ditemukan.");
+    const [open] = await tx
+      .select()
+      .from(timesheets)
+      .where(and(eq(timesheets.userId, userId), isNull(timesheets.endedAt)))
+      .limit(1);
+    if (open) {
+      throw new OrgScopeError(
+        "INSUFFICIENT_ROLE",
+        "Masih ada timer yang berjalan. Hentikan dulu sebelum memulai yang baru.",
+      );
+    }
+    const [row] = await tx
+      .insert(timesheets)
+      .values({ orgId, taskId, userId, startedAt: new Date() })
+      .returning();
+    await recordAudit(
+      {
+        orgId,
+        userId,
+        action: "timesheet.start",
+        entity: "timesheet",
+        entityId: row.id,
+        metadata: { taskId },
+      },
+      tx,
     );
-  }
-  const [row] = await db
-    .insert(timesheets)
-    .values({ orgId, taskId, userId, startedAt: new Date() })
-    .returning();
-  await recordAudit({
-    orgId,
-    userId,
-    action: "timesheet.start",
-    entity: "timesheet",
-    entityId: row.id,
-    metadata: { taskId },
+    return row;
   });
-  return row;
 }
 
 /**

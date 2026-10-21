@@ -60,19 +60,31 @@ export async function createInvoiceAction(
     if (!Array.isArray(parsed)) {
       throw new Error("Item invoice harus array.");
     }
-    const items = parsed
-      .filter(
-        (i): i is { description: string; qty?: unknown; unitPrice?: unknown } =>
-          typeof i === "object" &&
-          i !== null &&
-          typeof (i as { description?: unknown }).description === "string" &&
-          (i as { description: string }).description.trim() !== "",
-      )
-      .map((i) => ({
-        description: i.description,
-        qty: Number(i.qty),
-        unitPrice: parseIDRInput(String(i.unitPrice ?? "")),
-      }));
+    // Baris kosong form dinamis (deskripsi kosong/whitespace) dilewati;
+    // entri MALFORMED (bukan objek / deskripsi bukan string) DITOLAK
+    // eksplisit — diam-diam membuangnya salah menagih pelanggan
+    // (cubic pr10 faktur:65).
+    const items: { description: string; qty: number; unitPrice: number }[] = [];
+    for (const entry of parsed) {
+      if (
+        typeof entry !== "object" ||
+        entry === null ||
+        typeof (entry as { description?: unknown }).description !== "string"
+      ) {
+        throw new Error("Baris invoice tidak valid.");
+      }
+      const e = entry as {
+        description: string;
+        qty?: unknown;
+        unitPrice?: unknown;
+      };
+      if (e.description.trim() === "") continue;
+      items.push({
+        description: e.description,
+        qty: Number(e.qty),
+        unitPrice: parseIDRInput(String(e.unitPrice ?? "")),
+      });
+    }
     const taxRaw = String(formData.get("taxPct") ?? "0").trim();
     const { invoice } = await createInvoice(userId, orgId, {
       companyId: String(formData.get("companyId") ?? ""),

@@ -14,6 +14,7 @@ import {
   payslips,
   type PayrollRun,
 } from "@/db/schema";
+import { listEmployeesForPayroll } from "@/lib/repos/hrm-repo";
 import { requireOrgRole } from "@/lib/org-scope";
 import { recordAudit } from "@/lib/repos/audit-repo";
 import { currentState } from "@/lib/approval";
@@ -74,15 +75,21 @@ async function unpaidLeaveDaysByEmployee(
     if (r.type !== "izin") continue;
     const cs = currentState(r.state);
     if (cs?.status !== "approved") continue;
-    // Overlap [start,end] ∩ bulan, hari kalender.
+    // Overlap [start,end] ∩ bulan, HARI KERJA SAJA Senin–Jumat (cubic
+    // pr10 payroll:205): prorateBase berdenominator 21 hari kerja —
+    // menghitung Sabtu/Minggu menggelembungkan potongan (18 hari kerja +
+    // weekend = 24 hari kalender → clamp → gaji 0!).
     const s = r.startDate > from ? r.startDate : from;
     const e = r.endDate < to ? r.endDate : to;
-    const days =
-      Math.round(
-        (new Date(`${e}T00:00:00Z`).getTime() -
-          new Date(`${s}T00:00:00Z`).getTime()) /
-          86_400_000,
-      ) + 1;
+    let days = 0;
+    for (
+      let d = new Date(`${s}T00:00:00Z`).getTime();
+      d <= new Date(`${e}T00:00:00Z`).getTime();
+      d += 86_400_000
+    ) {
+      const dow = new Date(d).getUTCDay();
+      if (dow !== 0 && dow !== 6) days++;
+    }
     if (days > 0) {
       result.set(r.employeeId, (result.get(r.employeeId) ?? 0) + days);
     }
@@ -151,10 +158,9 @@ export async function runPayroll(
     );
   }
 
-  const staff = await db
-    .select()
-    .from(employees)
-    .where(eq(employees.orgId, orgId));
+  // Sumber staff bersama preview (cubic pr10 hrm:184): TANPA cap —
+  // run membayar semua, preview harus menghitung semua.
+  const staff = await listEmployeesForPayroll(orgId);
   const selected = period.employeeIds
     ? staff.filter((e) => period.employeeIds!.includes(e.id))
     : staff.filter((e) => e.status === "active");
@@ -198,10 +204,12 @@ export async function runPayroll(
 
     const rows: RunPayrollResult["payslips"] = [];
     for (const emp of selected) {
-      // Overlap kalender sebulan penuh (±30 hari) bisa melebihi 21 hari
-      // kerja: clamp ke batas prorasi (gaji 0) supaya satu karyawan
-      // tidak menggagalkan run se-organisasi. Kontrak throw prorateBase
-      // untuk input liar tetap dipertahankan di engine.
+      // Bulan 22–23 weekday yang semuanya izin melebihi denominator 21:
+      // clamp ke batas prorasi (gaji 0 — sebulan penuh absen) supaya satu
+      // karyawan tidak menggagalkan run se-organisasi. Kontrak throw
+      // prorateBase untuk input liar tetap dipertahankan di engine.
+      // (Hari libur nasional belum dikecualikan: repo belum punya
+      // kalender libur.)
       const unpaidDays = Math.min(
         unpaid.get(emp.id) ?? 0,
         DEFAULT_WORKING_DAYS,
@@ -282,8 +290,12 @@ export async function listPayslips(
  * Satu sel CSV bank: koma dinetralkan ke spasi (kontrak pin test CSV),
  * CR/LF dilucuti agar nama/bank/rekening tidak bisa injeksi baris.
  */
+// Formula-injection guard (cubic pr10 payroll:285): bank/nama adalah
+// input admin — sel diawali =, +, -, @ dieksekusi spreadsheet sebagai
+// formula saat CSV dibuka.
 function csvCell(value: string): string {
-  return value.replace(/[\r\n,]+/g, " ");
+  const flat = value.replace(/[\r\n,]+/g, " ");
+  return /^[=+\-@]/.test(flat.trimStart()) ? `'${flat}` : flat;
 }
 
 /** CSV transfer bank: bank, no rekening, nama, jumlah, berita 'GAJI YYYYMM'. */

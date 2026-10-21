@@ -24,10 +24,6 @@ export interface AiProviderConfig {
   apiKey?: string;
 }
 
-/** Host yang boleh memakai http (loopback + nama lokal/dev). */
-const INSECURE_LOCAL_HOST_RE =
-  /^(localhost|127\.0\.0\.1|\[?::1\]?|.*\.(local|localhost|test|example|invalid))$/i;
-
 /** Murni: ambil konfigurasi dari getter (testable tanpa process.env). */
 export function resolveAiConfig(
   getUrl: (key: string) => string | undefined = (k) => process.env[k],
@@ -48,15 +44,10 @@ export function resolveAiConfig(
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new ConfigError("AI_GATEWAY_URL harus berprotokol http/https.");
   }
-  if (
-    parsed.protocol === "http:" &&
-    !INSECURE_LOCAL_HOST_RE.test(parsed.hostname)
-  ) {
-    throw new ConfigError(
-      "AI_GATEWAY_URL memakai http ke host non-lokal — gunakan https " +
-        "(http hanya untuk localhost/dev).",
-    );
-  }
+  // Keputusan TLS milik SATU predikat — route guard (isInsecureGatewayUrl,
+  // production-only). Provider tidak menolak http non-lokal lagi (cubic
+  // pr10 ai-route:94): allowlist ganda menolak gateway dev yang sah (nama
+  // service docker, IP LAN) dan bisa drift dari guard.
   const apiKey = getUrl("AI_GATEWAY_API_KEY")?.trim() || undefined;
   return {
     baseURL,

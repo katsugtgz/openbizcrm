@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
-import { requireOrgRole } from "@/lib/org-scope";
+import { hasRole, requireOrgRole } from "@/lib/org-scope";
 import { listCompanies, listContacts } from "@/lib/repos/crm-repo";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -25,7 +25,7 @@ import {
 export const metadata = { title: "Perusahaan CRM" };
 
 async function Tables({ orgId, userId }: { orgId: string; userId: string }) {
-  await requireOrgRole(userId, orgId, "member");
+  const { role } = await requireOrgRole(userId, orgId, "member");
   const [companies, contacts] = await Promise.all([
     listCompanies(orgId),
     listContacts(orgId),
@@ -50,6 +50,12 @@ async function Tables({ orgId, userId }: { orgId: string; userId: string }) {
           </div>
         </CardHeader>
         <CardContent>
+          {companies.length === 500 && (
+            <p className="pb-2 text-xs text-muted-foreground">
+              Menampilkan 500 perusahaan pertama (batas baca) — paginasi
+              menyusul.
+            </p>
+          )}
           {companies.length === 0 ? (
             <p className="py-6 text-center text-sm text-muted-foreground">
               Belum ada perusahaan.
@@ -81,7 +87,9 @@ async function Tables({ orgId, userId }: { orgId: string; userId: string }) {
                             industry: c.industry,
                           }}
                         />
-                        <DeleteRowButton kind="company" id={c.id} />
+                        {hasRole(role, "admin") && (
+                          <DeleteRowButton kind="company" id={c.id} />
+                        )}
                       </span>
                     </TableCell>
                   </TableRow>
@@ -97,6 +105,11 @@ async function Tables({ orgId, userId }: { orgId: string; userId: string }) {
           <CardTitle>Daftar Kontak</CardTitle>
         </CardHeader>
         <CardContent>
+          {contacts.length === 500 && (
+            <p className="pb-2 text-xs text-muted-foreground">
+              Menampilkan 500 kontak pertama (batas baca) — paginasi menyusul.
+            </p>
+          )}
           {contacts.length === 0 ? (
             <p className="py-6 text-center text-sm text-muted-foreground">
               Belum ada kontak.

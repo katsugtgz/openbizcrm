@@ -85,21 +85,30 @@ export async function createJournalEntryAction(
     if (!Array.isArray(parsed)) {
       throw new Error("Baris jurnal harus array.");
     }
-    const lines = parsed
-      .filter(
-        (
-          l,
-        ): l is { accountId: string; debit?: unknown; credit?: unknown } =>
-          typeof l === "object" &&
-          l !== null &&
-          typeof (l as { accountId?: unknown }).accountId === "string" &&
-          (l as { accountId: string }).accountId !== "",
-      )
-      .map((l) => ({
-        accountId: l.accountId,
-        debit: l.debit ? parseIDRInput(String(l.debit)) : 0,
-        credit: l.credit ? parseIDRInput(String(l.credit)) : 0,
-      }));
+    // Baris kosong form dinamis (accountId "") dilewati; baris MALFORMED
+    // (bukan objek / accountId bukan string) DITOLAK eksplisit — diam-diam
+    // membuangnya mengunbalance jurnal (cubic pr10 akuntansi:88).
+    const lines: { accountId: string; debit: number; credit: number }[] = [];
+    for (const entry of parsed) {
+      if (
+        typeof entry !== "object" ||
+        entry === null ||
+        typeof (entry as { accountId?: unknown }).accountId !== "string"
+      ) {
+        throw new Error("Baris jurnal tidak valid.");
+      }
+      const e = entry as {
+        accountId: string;
+        debit?: unknown;
+        credit?: unknown;
+      };
+      if (e.accountId === "") continue;
+      lines.push({
+        accountId: e.accountId,
+        debit: e.debit ? parseIDRInput(String(e.debit)) : 0,
+        credit: e.credit ? parseIDRInput(String(e.credit)) : 0,
+      });
+    }
     await createJournalEntry(userId, orgId, {
       date,
       description,

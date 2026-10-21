@@ -54,8 +54,17 @@ function stripYamlComments(source: string): string {
   return source
     .split("\n")
     .map((line) => {
-      const hash = line.indexOf("#");
-      return hash === -1 ? line : line.slice(0, hash);
+      // Quote-aware (cubic pr10 e2e:53): '#' di dalam string (mis. run:
+      // "echo #hi") bukan komentar — hanya potong '#' di luar quote.
+      let inSingle = false;
+      let inDouble = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === "'" && !inDouble) inSingle = !inSingle;
+        else if (ch === '"' && !inSingle) inDouble = !inDouble;
+        else if (ch === "#" && !inSingle && !inDouble) return line.slice(0, i);
+      }
+      return line;
     })
     .join("\n");
 }

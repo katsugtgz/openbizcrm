@@ -195,6 +195,38 @@ export async function listEmployees(
     .limit(limit);
 }
 
+export interface PayrollStaffRow {
+  id: string;
+  name: string;
+  taxStatus: Employee["taxStatus"];
+  baseSalary: number;
+  hireDate: string | null;
+  status: Employee["status"];
+}
+
+/**
+ * Seluruh karyawan org, TANPA cap (cubic pr10 hrm:184): satu-satunya sumber
+ * untuk run + preview payroll — preview memakai listEmployees (cap 500)
+ * melaporkan total kurang saat org > 500, sementara run membayar semua.
+ * Kolom minimal (agregasi saja, tak pernah di-render per-baris).
+ */
+export async function listEmployeesForPayroll(
+  orgId: string,
+): Promise<PayrollStaffRow[]> {
+  return db
+    .select({
+      id: employees.id,
+      name: employees.name,
+      taxStatus: employees.taxStatus,
+      baseSalary: employees.baseSalary,
+      hireDate: employees.hireDate,
+      status: employees.status,
+    })
+    .from(employees)
+    .where(eq(employees.orgId, orgId))
+    .orderBy(employees.employeeNo);
+}
+
 export async function getEmployee(
   orgId: string,
   id: string,
