@@ -60,7 +60,7 @@ export async function appendMessage(
   if (!conv) throw new NotFoundError("Percakapan tidak ditemukan.");
   const [row] = await exec
     .insert(aiMessages)
-    .values({ conversationId, role, content })
+    .values({ conversationId, orgId, role, content })
     .returning();
   return row;
 }

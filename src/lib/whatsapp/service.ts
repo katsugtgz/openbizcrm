@@ -4,7 +4,7 @@
  * (out of scope) — proses itu nanti membaca/menulis baris ini. Semua mutasi
  * org-guarded, transaction + advisory lock, audit.
  */
-import { and, asc, eq, lt, or, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   whatsappOutbox,
@@ -24,6 +24,13 @@ export { InvalidWhatsappTransitionError };
 
 /** Upaya kirim maksimum per baris outbox sebelum terminal `failed`. */
 export const MAX_OUTBOX_ATTEMPTS = 5;
+
+/**
+ * Umur lease klaim sebelum baris `sending` boleh direclaim worker lain
+ * (cubic pr10 wa-service:340). 2x timeout sender: klaim sehat selalu
+ * resolve jauh sebelum lease kedaluwarsa.
+ */
+export const CLAIM_LEASE_MS = 60_000;
 
 /** Samarkan nomor untuk audit member-readable: +628******1234. */
 export function maskPhone(phone: string): string {
@@ -239,6 +246,9 @@ export async function listQueuedOutbox(
  * sebelum resolve) tidak pernah mengirim pesan yang sama dua kali. Baris
  * yang gagal diklaim (sudah diambil worker lain) dilewati. Retry: baris
  * `failed` yang attempts-nya < MAX_OUTBOX_ATTEMPTS ikut bisa diklaim.
+ * attempts dihitung saat KLAIM (bukan resolve): crash sebelum resolve
+ * tetap menghabiskan jatah, jadi poison guard reclaim bisa trip
+ * (cubic pr10 wa-service:352). claimed_at menandai awal lease.
  */
 export async function claimOutbox(
   orgId: string,
@@ -250,7 +260,11 @@ export async function claimOutbox(
     );
     const updated = await tx
       .update(whatsappOutbox)
-      .set({ status: "sending" })
+      .set({
+        status: "sending",
+        attempts: sql`${whatsappOutbox.attempts} + 1`,
+        claimedAt: new Date(),
+      })
       .where(
         and(
           eq(whatsappOutbox.id, rowId),
@@ -323,10 +337,18 @@ export async function requeueOutbox(
  * Pemulihan crash: baris `sending` yang pemiliknya mati (kill -9 antara
  * claim dan resolve) tidak pernah dibaca listQueued — kembalikan ke
  * `queued` agar terkirim ulang. Baris yang attempts-nya sudah habis
- * langsung `failed` (racun tidak boleh diulang selamanya). Dipanggil
- * sekali saat worker start. Kembalikan jumlah baris dipulihkan.
+ * langsung `failed` (racun tidak boleh diulang selamanya). Hanya baris
+ * yang lease-nya kedaluwarsa (atau pra-lease, claimed_at NULL) yang
+ * diambil — kiriman aktif worker lain tidak boleh dicuri (cubic pr10
+ * wa-service:340). Dipanggil sekali saat worker start. Kembalikan jumlah
+ * baris dipulihkan.
  */
-export async function reclaimStuckOutbox(orgId: string): Promise<number> {
+export async function reclaimStuckOutbox(
+  orgId: string,
+  opts: { leaseMs?: number } = {},
+): Promise<number> {
+  const leaseMs = opts.leaseMs ?? CLAIM_LEASE_MS;
+  const cutoff = new Date(Date.now() - leaseMs);
   return db.transaction(async (tx) => {
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtext(${`wa:${orgId}`}))`,
@@ -338,6 +360,10 @@ export async function reclaimStuckOutbox(orgId: string): Promise<number> {
         and(
           eq(whatsappOutbox.orgId, orgId),
           eq(whatsappOutbox.status, "sending"),
+          or(
+            isNull(whatsappOutbox.claimedAt),
+            lt(whatsappOutbox.claimedAt, cutoff),
+          ),
         ),
       );
     for (const row of stuck) {
@@ -358,11 +384,47 @@ export async function reclaimStuckOutbox(orgId: string): Promise<number> {
 }
 
 /**
+ * Lepaskan klaim yang resolve-nya gagal (DB blip setelah send): baris
+ * `sending` kembali `queued` + attempts dihitung, jadi drain berikut
+ * mencoba lagi alih-alih baris yatim selamanya (cubic pr10 worker:90).
+ * At-least-once: bila send aslinya sukses, retry bisa duplikat — kalah
+ * penting dibanding pesan hilang diam-diam. Hanya melepas status
+ * `sending` (resolve konkuren yang menang tidak diobrak).
+ */
+export async function releaseClaimedOutbox(
+  orgId: string,
+  rowId: string,
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`wa:${orgId}`}))`,
+    );
+    const updated = await tx
+      .update(whatsappOutbox)
+      .set({
+        status: "queued",
+        attempts: sql`${whatsappOutbox.attempts} + 1`,
+        claimedAt: null,
+      })
+      .where(
+        and(
+          eq(whatsappOutbox.id, rowId),
+          eq(whatsappOutbox.orgId, orgId),
+          eq(whatsappOutbox.status, "sending"),
+        ),
+      )
+      .returning();
+    return updated.length > 0;
+  });
+}
+
+/**
  * Tandai hasil kirim worker (sent / failed + pesan error). Idempoten per
  * baris: sudah sent/failed => tanpa perubahan (transisi terminal per
- * resolve). Retry otomatis ditangani drain: list/claim menyertakan
- * `failed` yang attempts-nya tersisa, jadi `failed` hanya terminal
- * setelah MAX_OUTBOX_ATTEMPTS atau via requeue manual.
+ * resolve). attempts TIDAK dihitung di sini — klaim yang menghitung
+ * (cubic pr10 wa-service:352). Retry otomatis ditangani drain:
+ * list/claim menyertakan `failed` yang attempts-nya tersisa, jadi
+ * `failed` hanya terminal setelah MAX_OUTBOX_ATTEMPTS atau via requeue.
  */
 export async function resolveOutbox(
   userId: string,
@@ -390,7 +452,6 @@ export async function resolveOutbox(
       .update(whatsappOutbox)
       .set({
         status: result.ok ? "sent" : "failed",
-        attempts: row.attempts + 1,
         lastError: result.ok ? null : (result.error ?? "Gagal mengirim."),
         sentAt: result.ok ? new Date() : null,
       })

@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
 import { requireOrgRole } from "@/lib/org-scope";
+import { listMembers } from "@/lib/repos/member-repo";
 import { createEmployeeAction } from "../actions";
 import { EmployeeForm } from "../employee-form";
 import { Button } from "@/components/ui/button";
@@ -20,6 +21,11 @@ export default async function KaryawanBaruPage({
   const { userId, orgId } = ids;
   await requireOrgRole(userId, orgId, "admin");
   const sp = await searchParams;
+  const members = (await listMembers(userId, orgId)).map((m) => ({
+    id: m.user.id,
+    name: m.user.name,
+    email: m.user.email,
+  }));
 
   return (
     <div className="flex flex-col gap-6">
@@ -34,7 +40,7 @@ export default async function KaryawanBaruPage({
           {sp.error}
         </p>
       )}
-      <EmployeeForm action={createEmployeeAction} />
+      <EmployeeForm members={members} action={createEmployeeAction} />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lte, ne, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   attendances,
@@ -8,10 +8,16 @@ import {
   leaveBalances,
   leaveRequests,
   officeWifi,
+  orgMemberships,
   positions,
   shifts,
 } from "@/db/schema";
-import { OrgScopeError, requireOrgRole } from "@/lib/org-scope";
+import {
+  NotFoundError,
+  OrgScopeError,
+  assertInternalId,
+  requireOrgRole,
+} from "@/lib/org-scope";
 import { assertSafeAmount } from "@/lib/money";
 import { recordAudit } from "@/lib/repos/audit-repo";
 import { approve, createApproval, currentState, reject } from "@/lib/approval";
@@ -168,6 +174,11 @@ export interface EmployeeInput {
   hireDate?: string | null;
   bankName?: string | null;
   bankAccount?: string | null;
+  /**
+   * Link ke akun user org (internal UUID): pemiliknya bisa melihat slip
+   * gaji karyawan ini. Null = lepas tautan; undefined (update) = biarkan.
+   */
+  linkedUserId?: string | null;
 }
 
 export async function listEmployees(
@@ -196,6 +207,54 @@ export async function getEmployee(
   return row ?? null;
 }
 
+/**
+ * Link karyawan<->user didukung penuh (cubic pr10 payslip:73): target
+ * wajib member org ini (UUID internal) dan belum tertaut ke karyawan
+ * lain di org yang sama. exceptEmployeeId untuk update milik sendiri.
+ */
+async function requireLinkableUser(
+  orgId: string,
+  linkedUserId: string,
+  exceptEmployeeId?: string,
+): Promise<void> {
+  assertInternalId("userId", linkedUserId);
+  const [membership] = await db
+    .select({ userId: orgMemberships.userId })
+    .from(orgMemberships)
+    .where(
+      and(
+        eq(orgMemberships.orgId, orgId),
+        eq(orgMemberships.userId, linkedUserId),
+      ),
+    )
+    .limit(1);
+  if (!membership) {
+    throw new NotFoundError("User tidak terdaftar di organisasi ini.");
+  }
+  const conds = [
+    eq(employees.orgId, orgId),
+    eq(employees.userId, linkedUserId),
+  ];
+  if (exceptEmployeeId) conds.push(ne(employees.id, exceptEmployeeId));
+  const [taken] = await db
+    .select({ id: employees.id })
+    .from(employees)
+    .where(and(...conds))
+    .limit(1);
+  if (taken) throw new Error("User sudah tertaut ke karyawan lain.");
+}
+
+/** Link race (cek lolos bersamaan): unique index bicara terakhir. */
+function throwIfLinkRace(error: unknown): never {
+  if (
+    error instanceof Error &&
+    error.message.includes("employees_org_user_unique")
+  ) {
+    throw new Error("User sudah tertaut ke karyawan lain.");
+  }
+  throw error;
+}
+
 export async function createEmployee(
   userId: string,
   orgId: string,
@@ -204,11 +263,17 @@ export async function createEmployee(
   await requireOrgRole(userId, orgId, "admin");
   assertSafeAmount(input.baseSalary, "Gaji pokok");
   await requireEmployeeUnits(orgId, input);
-  const [row] = await db
-    .insert(employees)
-    .values({
-      orgId,
-      branchId: input.branchId ?? null,
+  if (input.linkedUserId) {
+    await requireLinkableUser(orgId, input.linkedUserId);
+  }
+  let row: Employee;
+  try {
+    const [created] = await db
+      .insert(employees)
+      .values({
+        orgId,
+        userId: input.linkedUserId ?? null,
+        branchId: input.branchId ?? null,
       departmentId: input.departmentId ?? null,
       positionId: input.positionId ?? null,
       employeeNo: input.employeeNo,
@@ -220,7 +285,11 @@ export async function createEmployee(
       bankName: input.bankName ?? null,
       bankAccount: input.bankAccount ?? null,
     })
-    .returning();
+      .returning();
+    row = created;
+  } catch (error) {
+    throwIfLinkRace(error);
+  }
   await recordAudit({
     orgId,
     userId,
@@ -245,11 +314,25 @@ export async function updateEmployee(
     assertSafeAmount(input.baseSalary, "Gaji pokok");
   }
   await requireEmployeeUnits(orgId, input);
-  const [row] = await db
-    .update(employees)
-    .set(input)
-    .where(and(eq(employees.id, id), eq(employees.orgId, orgId)))
-    .returning();
+  // linkedUserId bukan nama kolom (kolomnya userId): validasi + petakan
+  // eksplisit; undefined = biarkan tautan, null = lepas tautan.
+  const { linkedUserId, ...rest } = input;
+  if (linkedUserId) {
+    await requireLinkableUser(orgId, linkedUserId, id);
+  }
+  let row: Employee;
+  try {
+    const [updated] = await db
+      .update(employees)
+      .set(
+        linkedUserId === undefined ? rest : { ...rest, userId: linkedUserId },
+      )
+      .where(and(eq(employees.id, id), eq(employees.orgId, orgId)))
+      .returning();
+    row = updated;
+  } catch (error) {
+    throwIfLinkRace(error);
+  }
   // Metadata audit member-readable: input mentah bisa memuat gaji pokok
   // dan rekening — selalu strip field sensitif sebelum dicatat.
   const metadata = { ...input } as Record<string, unknown>;

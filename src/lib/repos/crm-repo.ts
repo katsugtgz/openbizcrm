@@ -9,6 +9,7 @@ import {
   crmStages,
   invoices,
   orgMemberships,
+  projects,
 } from "@/db/schema";
 import { NotFoundError, requireOrgRole } from "@/lib/org-scope";
 import { assertSafeAmount } from "@/lib/money";
@@ -173,8 +174,9 @@ export async function updateCompany(
 
 /**
  * Hapus perusahaan. Admin saja. Ditolak bila masih ada deal atau invoice
- * (invoice me-restrict di DB; cek di sini agar pesan jelas, bukan error PG
- * mentah). Kontak + pipeline ikut cascade FK; deal kosong = aman.
+ * (deal/invoice me-restrict di DB; cek di sini agar pesan jelas, bukan
+ * error PG mentah). Kontak + pipeline ikut cascade FK; tautan proyek
+ * di-SET NULL di tx yang sama (FK komposit restrict).
  */
 export async function deleteCompany(
   userId: string,
@@ -183,6 +185,8 @@ export async function deleteCompany(
 ): Promise<void> {
   await requireOrgRole(userId, orgId, "admin");
   await requireOrgCompany(orgId, id);
+  // Pre-checks for friendly errors; the restrict FKs below close the
+  // TOCTOU race (cubic pr10 crm-repo:207).
   const [deal] = await db
     .select({ id: crmDeals.id })
     .from(crmDeals)
@@ -203,9 +207,33 @@ export async function deleteCompany(
       "Perusahaan masih memiliki invoice; tidak bisa dihapus.",
     );
   }
-  await db
-    .delete(crmCompanies)
-    .where(and(eq(crmCompanies.id, id), eq(crmCompanies.orgId, orgId)));
+  // Null project links in-tx (projects FK is restrict — cubic pr10
+  // schema:795), then delete. A deal/invoice inserted between the
+  // pre-check and the delete trips the restrict FK (23503): map it to the
+  // same friendly message instead of a raw PG error.
+  try {
+    await db.transaction(async (tx) => {
+      await tx
+        .update(projects)
+        .set({ clientCompanyId: null })
+        .where(
+          and(
+            eq(projects.clientCompanyId, id),
+            eq(projects.orgId, orgId),
+          ),
+        );
+      await tx
+        .delete(crmCompanies)
+        .where(and(eq(crmCompanies.id, id), eq(crmCompanies.orgId, orgId)));
+    });
+  } catch (error) {
+    if ((error as { code?: unknown }).code === "23503") {
+      throw new Error(
+        "Perusahaan masih memiliki deal atau invoice; tidak bisa dihapus.",
+      );
+    }
+    throw error;
+  }
   await recordAudit({
     orgId,
     userId,
@@ -313,8 +341,9 @@ export async function updateContact(
 }
 
 /**
- * Hapus kontak. Deal/invoice yang menaut ikut SET NULL di DB (bukan hapus
- * diam-diam) — aman tanpa guard tambahan.
+ * Hapus kontak. Deal/invoice yang menaut di-SET NULL di service layer
+ * dalam tx yang sama (FK komposit restrict — PG akan me-null-kan org_id
+ * bila SET NULL komposit dipakai; cubic pr10 schema:795).
  */
 export async function deleteContact(
   userId: string,
@@ -322,11 +351,21 @@ export async function deleteContact(
   id: string,
 ): Promise<void> {
   await requireOrgRole(userId, orgId, "member");
-  const [row] = await db
-    .delete(crmContacts)
-    .where(and(eq(crmContacts.id, id), eq(crmContacts.orgId, orgId)))
-    .returning();
-  if (!row) throw new NotFoundError("Kontak tidak ditemukan.");
+  await db.transaction(async (tx) => {
+    await tx
+      .update(crmDeals)
+      .set({ contactId: null })
+      .where(and(eq(crmDeals.contactId, id), eq(crmDeals.orgId, orgId)));
+    await tx
+      .update(invoices)
+      .set({ contactId: null })
+      .where(and(eq(invoices.contactId, id), eq(invoices.orgId, orgId)));
+    const [row] = await tx
+      .delete(crmContacts)
+      .where(and(eq(crmContacts.id, id), eq(crmContacts.orgId, orgId)))
+      .returning();
+    if (!row) throw new NotFoundError("Kontak tidak ditemukan.");
+  });
   await recordAudit({
     orgId,
     userId,
@@ -681,11 +720,22 @@ export async function updateDeal(
       .limit(1);
     if (!contact) throw new NotFoundError("Kontak tidak ditemukan.");
   }
+  // Expected-state predicate (cubic pr10 crm-repo:300): closeDeal yang
+  // menang di antara pre-read dan UPDATE membuat predicate nol-baris.
   const [row] = await db
     .update(crmDeals)
     .set(input)
-    .where(and(eq(crmDeals.id, id), eq(crmDeals.orgId, orgId)))
+    .where(
+      and(
+        eq(crmDeals.id, id),
+        eq(crmDeals.orgId, orgId),
+        eq(crmDeals.status, "open"),
+      ),
+    )
     .returning();
+  if (!row) {
+    throw new Error("Deal berubah status saat disimpan; tidak bisa diubah.");
+  }
   await recordAudit({
     orgId,
     userId,
@@ -713,9 +763,23 @@ export async function deleteDeal(
       `Deal sudah ${deal.status}; histori closed tidak bisa dihapus.`,
     );
   }
-  await db
+  // Expected-state predicate (cubic pr10 crm-repo:717): closeDeal
+  // konkuren membuat delete ini nol-baris alih-alih menghapus histori.
+  const deleted = await db
     .delete(crmDeals)
-    .where(and(eq(crmDeals.id, id), eq(crmDeals.orgId, orgId)));
+    .where(
+      and(
+        eq(crmDeals.id, id),
+        eq(crmDeals.orgId, orgId),
+        eq(crmDeals.status, "open"),
+      ),
+    )
+    .returning();
+  if (deleted.length === 0) {
+    throw new Error(
+      "Deal berubah status saat dihapus; histori closed tidak bisa dihapus.",
+    );
+  }
   await recordAudit({
     orgId,
     userId,

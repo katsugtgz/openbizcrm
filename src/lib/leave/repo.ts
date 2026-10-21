@@ -113,7 +113,7 @@ export async function getOrCreateBalance(
   year: number,
   exec: typeof db | Tx = db,
 ): Promise<LeaveBalanceRow> {
-  await requireOrgRole(userId, orgId, "member");
+  await requireOrgRole(userId, orgId, "member", exec);
   const [existing] = await exec
     .select()
     .from(leaveBalances)
@@ -207,7 +207,7 @@ export async function debitBalanceChecked(
   days: number,
   exec: typeof db | Tx = db,
 ): Promise<LeaveBalanceRow> {
-  await requireOrgRole(actorId, orgId, "member");
+  await requireOrgRole(actorId, orgId, "member", exec);
   const column =
     field === "cutiRemaining"
       ? leaveBalances.cutiRemaining

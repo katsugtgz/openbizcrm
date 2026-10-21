@@ -195,22 +195,25 @@ export const employees = pgTable(
     // Parent key for tenant-aware composite FKs (bughunt data-tenant).
     unique("employees_id_org_key").on(t.id, t.orgId),
     unique("employees_org_no_unique").on(t.orgId, t.employeeNo),
+    // Satu user = satu karyawan per org (NULL bebas ganda di PG) — target
+    // link slip gaji (cubic pr10 payslip:73).
+    unique("employees_org_user_unique").on(t.orgId, t.userId),
     check("employees_base_salary_check", sql`base_salary >= 0`),
     foreignKey({
       name: "employees_branch_org_fk",
       columns: [t.branchId, t.orgId],
       foreignColumns: [branches.id, branches.orgId],
-    }).onDelete("set null"),
+    }).onDelete("restrict"),
     foreignKey({
       name: "employees_department_org_fk",
       columns: [t.departmentId, t.orgId],
       foreignColumns: [departments.id, departments.orgId],
-    }).onDelete("set null"),
+    }).onDelete("restrict"),
     foreignKey({
       name: "employees_position_org_fk",
       columns: [t.positionId, t.orgId],
       foreignColumns: [positions.id, positions.orgId],
-    }).onDelete("set null"),
+    }).onDelete("restrict"),
   ],
 );
 
@@ -496,7 +499,7 @@ export const projects = pgTable(
       name: "projects_company_org_fk",
       columns: [t.clientCompanyId, t.orgId],
       foreignColumns: [crmCompanies.id, crmCompanies.orgId],
-    }).onDelete("set null"),
+    }).onDelete("restrict"),
   ],
 );
 
@@ -554,7 +557,7 @@ export const tasks = pgTable(
       name: "tasks_parent_org_fk",
       columns: [t.parentId, t.orgId],
       foreignColumns: [t.id, t.orgId],
-    }).onDelete("set null"),
+    }).onDelete("restrict"),
   ],
 );
 
@@ -790,12 +793,14 @@ export const crmDeals = pgTable(
       name: "crm_deals_company_org_fk",
       columns: [t.companyId, t.orgId],
       foreignColumns: [crmCompanies.id, crmCompanies.orgId],
-    }).onDelete("cascade"),
+      // Restrict (cubic pr10 crm-repo:207): deleteCompany blocks on deals
+      // via pre-check; races fail here and map to the same friendly error.
+    }).onDelete("restrict"),
     foreignKey({
       name: "crm_deals_contact_org_fk",
       columns: [t.contactId, t.orgId],
       foreignColumns: [crmContacts.id, crmContacts.orgId],
-    }).onDelete("set null"),
+    }).onDelete("restrict"),
   ],
 );
 
@@ -892,7 +897,7 @@ export const accounts = pgTable(
       name: "accounts_parent_org_fk",
       columns: [t.orgId, t.parentId],
       foreignColumns: [t.orgId, t.id],
-    }).onDelete("set null"),
+    }).onDelete("restrict"),
   ],
 );
 
@@ -1070,6 +1075,10 @@ export const posSales = pgTable(
     subtotal: bigint("subtotal", { mode: "number" }).notNull(),
     taxAmount: bigint("tax_amount", { mode: "number" }).notNull(),
     total: bigint("total", { mode: "number" }).notNull(),
+    // Tanggal bisnis input kasir (cubic pr10 pos:366): createdAt milik DB
+    // (stempel audit); sale_date mencatat hari transaksi — termasuk
+    // checkout Rp0 yang tidak punya jurnal.
+    saleDate: date("sale_date").notNull(),
     // FK tenant-aware: jurnal harus milik org yang sama (cubic pr8 :902).
     journalEntryId: uuid("journal_entry_id"),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -1197,7 +1206,7 @@ export const invoices = pgTable(
       name: "invoices_contact_org_fk",
       columns: [t.contactId, t.orgId],
       foreignColumns: [crmContacts.id, crmContacts.orgId],
-    }).onDelete("set null"),
+    }).onDelete("restrict"),
   ],
 );
 
@@ -1432,6 +1441,9 @@ export const whatsappOutbox = pgTable(
     attempts: integer("attempts").notNull().default(0),
     lastError: text("last_error"),
     sentAt: timestamp("sent_at"),
+    // Lease klaim worker (cubic pr10 wa-service:340): reclaim hanya boleh
+    // mengambil baris sending yang lease-nya kedaluwarsa.
+    claimedAt: timestamp("claimed_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => [index("whatsapp_outbox_org_status_idx").on(t.orgId, t.status)],
@@ -1463,9 +1475,9 @@ export const aiMessages = pgTable(
     conversationId: uuid("conversation_id")
       .notNull()
       .references(() => aiConversations.id, { onDelete: "cascade" }),
-    // Tenant binding (bughunt data-tenant). Nullable: existing writers
-    // predate it; rows carrying org_id are enforced by the composite FK.
-    orgId: uuid("org_id"),
+    // Tenant binding (bughunt data-tenant): NOT NULL — writers always
+    // set the conversation org; orphans deleted in 0030 (cubic pr10 0029:84).
+    orgId: uuid("org_id").notNull(),
     role: aiMessageRoleEnum("role").notNull(),
     content: text("content").notNull(),
     createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -1521,9 +1533,9 @@ export const chatConversationMembers = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    // Tenant binding (bughunt data-tenant). Nullable: existing writers
-    // predate it; rows carrying org_id are enforced by the composite FKs.
-    orgId: uuid("org_id"),
+    // Tenant binding (bughunt data-tenant): NOT NULL — writers always
+    // set the conversation org; orphans deleted in 0030 (cubic pr10 0029:84).
+    orgId: uuid("org_id").notNull(),
     joinedAt: timestamp("joined_at").defaultNow().notNull(),
   },
   (t) => [

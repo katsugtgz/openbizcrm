@@ -2,15 +2,17 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   WORKOS_MIN_COOKIE_PASSWORD_LENGTH,
   isWorkosConfigured,
+  isWorkosEnvPresent,
   isWorkosSessionEnvReady,
 } from "./config";
 import { fakeSessionActive } from "./index";
 
 /**
- * Readiness predicates stay unified: the adapter picker (fakeSessionActive)
- * and the login/proxy check (isWorkosConfigured) share the session-env
- * verdict, so a short cookie can no longer select AuthKit while the login
- * page reports "unconfigured".
+ * Readiness predicates: the login/proxy check (isWorkosConfigured) keeps
+ * the length requirement, while the fake-fallback predicate
+ * (fakeSessionActive) is presence-only — a short cookie fails closed
+ * through AuthKit instead of silently serving forgeable fake sessions
+ * (cubic pr10 auth-config:36).
  */
 describe("auth readiness predicates", () => {
   const saved = { ...process.env };
@@ -38,10 +40,13 @@ describe("auth readiness predicates", () => {
       WORKOS_COOKIE_PASSWORD: "short",
     });
     expect(isWorkosSessionEnvReady()).toBe(false);
-    expect(fakeSessionActive()).toBe(true);
+    // Presence-only fallback: short cookie selects AuthKit (fail closed),
+    // never the fake adapter.
+    expect(isWorkosEnvPresent()).toBe(true);
+    expect(fakeSessionActive()).toBe(false);
   });
 
-  it("short cookie agrees with the login-page verdict (no drift)", () => {
+  it("short cookie fails closed (login unconfigured, no fake fallback)", () => {
     setEnv({
       NODE_ENV: "test",
       WORKOS_API_KEY: "sk_test_x",
@@ -49,9 +54,10 @@ describe("auth readiness predicates", () => {
       WORKOS_COOKIE_PASSWORD: "short",
       NEXT_PUBLIC_WORKOS_REDIRECT_URI: "http://localhost:3000/callback",
     });
-    // Login page says unconfigured AND the picker serves fake: consistent.
+    // Login page says unconfigured AND the picker refuses fake: a forged
+    // ob_fake_session cookie cannot impersonate seed users here.
     expect(isWorkosConfigured()).toBe(false);
-    expect(fakeSessionActive()).toBe(true);
+    expect(fakeSessionActive()).toBe(false);
   });
 
   it("full session env (no redirect URI) selects AuthKit reads", () => {

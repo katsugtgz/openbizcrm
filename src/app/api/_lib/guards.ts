@@ -6,6 +6,11 @@
  * Limiter/lock state is in-memory per instance: it bounds abuse on a single
  * server but is not a distributed throttle — document, do not rely on it
  * across replicas.
+ *
+ * DEPLOYMENT REQUIREMENT (cubic pr10 guards:96): single Next.js instance.
+ * The per-conversation AI turn lock cannot serialize turns across replicas;
+ * horizontal scaling needs a shared atomic lock (DB advisory lock or
+ * Redis SET NX) before a second replica is added.
  */
 import { NotFoundError, OrgScopeError } from "@/lib/org-scope";
 import { PayrollError } from "@/lib/payroll/service";
@@ -95,7 +100,10 @@ export function isAllowedOrigin(request: Request): boolean {
 
 const inFlightTurns = new Set<string>();
 
-/** Reserve a turn; false means another turn is already running. */
+/**
+ * Reserve a turn; false means another turn is already running.
+ * Single-instance only (see header): cross-replica turns are NOT fenced.
+ */
 export function tryBeginTurn(conversationId: string): boolean {
   if (inFlightTurns.has(conversationId)) return false;
   inFlightTurns.add(conversationId);

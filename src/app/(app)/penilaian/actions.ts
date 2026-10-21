@@ -19,7 +19,7 @@ import {
   updateForm,
 } from "@/lib/review/service";
 import { parseFieldsJson as parseFieldsJsonLib } from "@/lib/review/fields";
-import { checkThrottle } from "@/app/r/[slug]/guard";
+import { checkPublicThrottle } from "@/app/r/[slug]/guard";
 
 export interface ActionResult {
   ok: boolean;
@@ -231,9 +231,18 @@ export async function submitPublicResponseAction(
   try {
     const slug = String(formData.get("slug") ?? "");
     const assignmentId = String(formData.get("assignmentId") ?? "");
-    // Submit publik tanpa login: throttle per tautan (10/menit) supaya
-    // flood anonim tidak membanjiri DB + revalidatePath.
-    if (!checkThrottle(`public-submit:${slug}:${assignmentId}`, 10)) {
+    // Submit publik tanpa login: throttle per requester per form +
+    // backstop global per form (cubic pr10 penilaian:236) — kunci
+    // assignmentId saja bisa diputar penyerang. Flood anonim tak boleh
+    // membanjiri DB + revalidatePath.
+    if (
+      !(await checkPublicThrottle(
+        `public-submit:${slug}`,
+        10,
+        `public-submit-global:${slug}`,
+        100,
+      ))
+    ) {
       return { ok: false, error: "Terlalu banyak percobaan. Coba lagi." };
     }
     const { submitPublicResponse } = await import("@/lib/review/service");

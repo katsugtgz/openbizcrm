@@ -22,6 +22,42 @@ describe("shouldRequireSsl (pure)", () => {
     expect(
       shouldRequireSsl("postgres://u:p@db.internal/db?sslmode=require"),
     ).toBe(false);
+    expect(
+      shouldRequireSsl("postgres://u:p@db.internal/db?sslmode=verify-full"),
+    ).toBe(false);
+  });
+
+  it("unknown sslmode values fall back to the host default (cubic pr10)", () => {
+    // postgres-js leaves SSL disabled for these: remote stays encrypted.
+    expect(
+      shouldRequireSsl("postgres://u:p@db.internal/db?sslmode=prefer"),
+    ).toBe(true);
+    expect(
+      shouldRequireSsl("postgres://u:p@db.internal/db?sslmode=requier"),
+    ).toBe(true);
+    expect(
+      shouldRequireSsl("postgres://u:p@localhost/db?sslmode=prefer"),
+    ).toBe(false);
+  });
+
+  it("postgres-js ?host= override decides, not the authority (cubic pr10)", () => {
+    expect(
+      shouldRequireSsl("postgres://u:p@localhost:5432/db?host=db.internal"),
+    ).toBe(true);
+    expect(
+      shouldRequireSsl("postgres://u:p@db.internal:5432/db?host=localhost"),
+    ).toBe(false);
+    // Multi-host: any non-loopback host requires TLS.
+    expect(
+      shouldRequireSsl(
+        "postgres://u:p@localhost:5432/db?host=localhost,db.internal",
+      ),
+    ).toBe(true);
+    expect(
+      shouldRequireSsl(
+        "postgres://u:p@localhost:5432/db?host=127.0.0.1,localhost",
+      ),
+    ).toBe(false);
   });
 
   it("unparseable URL fails closed to false (resolveDatabaseUrl throws later)", () => {

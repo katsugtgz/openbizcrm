@@ -16,7 +16,9 @@ const nextConfig: NextConfig = {
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
           {
             key: "Permissions-Policy",
-            value: "camera=(), microphone=(), geolocation=()",
+            // geolocation=(self): PresensiForm.locate() needs GPS check-in
+            // on the app origin (cubic pr10 next.config:19).
+            value: "camera=(), microphone=(), geolocation=(self)",
           },
           {
             key: "Strict-Transport-Security",

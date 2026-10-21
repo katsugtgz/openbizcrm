@@ -8,9 +8,9 @@
  */
 
 /**
- * Minimum WorkOS cookie password length (seal requirement). Shared by the
- * readiness predicates and the adapter picker: a short cookie used to select
- * AuthKit while the login page reported "unconfigured".
+ * Minimum WorkOS cookie password length (seal requirement). A short cookie
+ * is a misconfiguration that fails closed through AuthKit — it must never
+ * select the fake adapter (cubic pr10 auth-config:36).
  */
 export const WORKOS_MIN_COOKIE_PASSWORD_LENGTH = 32;
 
@@ -19,6 +19,19 @@ export function isWorkosConfigured(): boolean {
     process.env.AUTH_FAKE !== "1" &&
     isWorkosSessionEnvReady() &&
     !!process.env.NEXT_PUBLIC_WORKOS_REDIRECT_URI
+  );
+}
+
+/**
+ * Presence-only variant for the fake-fallback predicate: only a truly
+ * absent WorkOS config falls back to fake outside production. Length is
+ * deliberately NOT checked here (cubic pr10 auth-config:36).
+ */
+export function isWorkosEnvPresent(): boolean {
+  return (
+    !!process.env.WORKOS_API_KEY &&
+    !!process.env.WORKOS_CLIENT_ID &&
+    !!process.env.WORKOS_COOKIE_PASSWORD
   );
 }
 

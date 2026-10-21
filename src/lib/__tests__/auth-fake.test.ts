@@ -125,6 +125,17 @@ describe("auth adapter pick matrix", () => {
     ).toBe(false);
   });
 
+  it("short cookie password -> NOT fake (fail closed, cubic pr10)", async () => {
+    expect(
+      await pickEnv({
+        NODE_ENV: "test",
+        WORKOS_API_KEY: "sk_test_x",
+        WORKOS_CLIENT_ID: "client_x",
+        WORKOS_COOKIE_PASSWORD: "short",
+      }),
+    ).toBe(false);
+  });
+
   it("partial WorkOS config (no cookie password) -> fake fallback", async () => {
     expect(
       await pickEnv({

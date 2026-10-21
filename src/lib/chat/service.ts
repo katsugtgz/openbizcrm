@@ -144,8 +144,8 @@ export async function openDirect(
       .values({ orgId, kind: "direct", createdBy: userId })
       .returning();
     await tx.insert(chatConversationMembers).values([
-      { conversationId: conv.id, userId },
-      { conversationId: conv.id, userId: otherUserId },
+      { conversationId: conv.id, orgId, userId },
+      { conversationId: conv.id, orgId, userId: otherUserId },
     ]);
     await recordAudit(
       {
@@ -219,7 +219,23 @@ export async function createGroup(
         ),
       )
       .limit(1);
-    if (dup) return dup;
+    if (dup) {
+      // Nama + pembuat saja tidak cukup (cubic pr10 chat:214): grup baru
+      // bernama sama dengan anggota beda wajib jadi conversation baru.
+      // Samakan himpunan anggota persis sebelum memakai ulang.
+      const dupMembers = await tx
+        .select({ userId: chatConversationMembers.userId })
+        .from(chatConversationMembers)
+        .where(eq(chatConversationMembers.conversationId, dup.id));
+      const want = new Set([userId, ...memberIds]);
+      const got = new Set(dupMembers.map((m) => m.userId));
+      if (
+        want.size === got.size &&
+        [...want].every((id) => got.has(id))
+      ) {
+        return dup;
+      }
+    }
     const [row] = await tx
       .insert(chatConversations)
       .values({
@@ -232,8 +248,12 @@ export async function createGroup(
     await tx
       .insert(chatConversationMembers)
       .values([
-        { conversationId: row.id, userId },
-        ...memberIds.map((uid) => ({ conversationId: row.id, userId: uid })),
+        { conversationId: row.id, orgId, userId },
+        ...memberIds.map((uid) => ({
+          conversationId: row.id,
+          orgId,
+          userId: uid,
+        })),
       ]);
     await recordAudit(
       {

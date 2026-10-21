@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
 import { getEmployee } from "@/lib/repos/hrm-repo";
+import { listMembers } from "@/lib/repos/member-repo";
 import { requireOrgRole } from "@/lib/org-scope";
 import { updateEmployeeAction } from "../../actions";
 import { EmployeeForm } from "../../employee-form";
@@ -26,6 +27,11 @@ export default async function KaryawanEditPage({
   const employee = await getEmployee(orgId, id);
   if (!employee) notFound();
   const sp = await searchParams;
+  const members = (await listMembers(userId, orgId)).map((m) => ({
+    id: m.user.id,
+    name: m.user.name,
+    email: m.user.email,
+  }));
 
   return (
     <div className="flex flex-col gap-6">
@@ -42,7 +48,11 @@ export default async function KaryawanEditPage({
           {sp.error}
         </p>
       )}
-      <EmployeeForm employee={employee} action={updateEmployeeAction} />
+      <EmployeeForm
+        employee={employee}
+        members={members}
+        action={updateEmployeeAction}
+      />
     </div>
   );
 }

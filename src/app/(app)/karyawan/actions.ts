@@ -58,6 +58,8 @@ function parseInput(formData: FormData): EmployeeInput {
     hireDate: String(formData.get("hireDate") ?? "") || null,
     bankName: String(formData.get("bankName") ?? "").trim() || null,
     bankAccount: String(formData.get("bankAccount") ?? "").trim() || null,
+    // Select selalu mengirim nilai eksplisit ("" = tanpa tautan).
+    linkedUserId: String(formData.get("linkedUserId") ?? "").trim() || null,
   };
 }
 

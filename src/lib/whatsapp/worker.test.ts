@@ -10,6 +10,7 @@ vi.mock("./service", () => ({
     { id: "row-2", phone: "+6282", message: "m2" },
   ]),
   claimOutbox: vi.fn(async () => true),
+  releaseClaimedOutbox: vi.fn(async () => true),
   resolveOutbox: vi.fn(
     async (
       _u: string,
@@ -60,6 +61,7 @@ describe("worker drain (mocked service)", () => {
         attempts: 0,
         lastError: null,
         sentAt: null,
+        claimedAt: null,
         createdAt: new Date(),
       },
       {
@@ -71,6 +73,7 @@ describe("worker drain (mocked service)", () => {
         attempts: 0,
         lastError: null,
         sentAt: null,
+        claimedAt: null,
         createdAt: new Date(),
       },
     ]);

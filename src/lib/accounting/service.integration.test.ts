@@ -346,6 +346,7 @@ describe("accounting integration", () => {
         .values({
           orgId: o.orgId,
           saleNumber: "SLS-FK-1",
+          saleDate: "2026-11-01",
           paymentMethod: "cash",
           taxPct: 0,
           subtotal: 5,
@@ -359,6 +360,7 @@ describe("accounting integration", () => {
         db.insert(posSales).values({
           orgId: o.orgId,
           saleNumber: "SLS-FK-2",
+          saleDate: "2026-11-01",
           paymentMethod: "cash",
           taxPct: 0,
           subtotal: 1,
@@ -373,6 +375,7 @@ describe("accounting integration", () => {
         db.insert(posSales).values({
           orgId: oB.orgId,
           saleNumber: "SLS-FK-B",
+          saleDate: "2026-11-01",
           paymentMethod: "cash",
           taxPct: 0,
           subtotal: 1,

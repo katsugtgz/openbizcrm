@@ -36,6 +36,45 @@ export function checkThrottle(
   return true;
 }
 
+/**
+ * Identitas requester terbaik untuk throttle publik (cubic pr10 r:25,
+ * penilaian:236): entri pertama x-forwarded-for (atau x-real-ip bila tak
+ * ada). Bukan identitas tepercaya penuh — header bisa dipalsukan tanpa
+ * proxy tepercaya — tapi menaikkan biaya serang dari "tahu slug" menjadi
+ * "rotasi IP". Di luar scope request (tes): kunci global saja.
+ */
+async function requesterIp(): Promise<string> {
+  try {
+    const { headers } = await import("next/headers");
+    const h = await headers();
+    const fwd = h.get("x-forwarded-for");
+    if (fwd) return fwd.split(",")[0].trim() || "unknown";
+    return h.get("x-real-ip")?.trim() || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * Throttle dua lapis untuk endpoint publik tanpa login: lapis requester
+ * (per IP per resource) + backstop global per resource. Keduanya harus
+ * lolos — kunci slug/tautan saja bisa diputar penyerang untuk DoS form
+ * publik atau membanjiri DB.
+ */
+export async function checkPublicThrottle(
+  requesterBase: string,
+  requesterLimit: number,
+  globalBase: string,
+  globalLimit: number,
+  windowMs = 60_000,
+): Promise<boolean> {
+  const ip = await requesterIp();
+  return (
+    checkThrottle(`${ip}:${requesterBase}`, requesterLimit, windowMs) &&
+    checkThrottle(globalBase, globalLimit, windowMs)
+  );
+}
+
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

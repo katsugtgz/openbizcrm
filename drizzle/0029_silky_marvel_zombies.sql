@@ -91,7 +91,13 @@ UPDATE "ai_messages" AS m SET "org_id" = c."org_id" FROM "ai_conversations" AS c
 --> statement-breakpoint
 UPDATE "chat_conversation_members" AS m SET "org_id" = c."org_id" FROM "chat_conversations" AS c WHERE m."conversation_id" = c."id" AND m."org_id" IS NULL AND EXISTS (SELECT 1 FROM "org_memberships" AS om WHERE om."org_id" = c."org_id" AND om."user_id" = m."user_id");
 --> statement-breakpoint
+-- cubic pr10 0029:94: fail with remediation (not midway) when tenants
+-- already violate the new uniqueness rules.
+DO $$ BEGIN IF EXISTS (SELECT 1 FROM "crm_companies" GROUP BY "org_id", lower("name") HAVING count(*) > 1 LIMIT 1) THEN RAISE EXCEPTION 'bughunt 0029: duplicate company names in one org — rename or merge them first (SELECT org_id, lower(name), count(*) FROM crm_companies GROUP BY 1, 2 HAVING count(*) > 1)'; END IF; END $$;
+--> statement-breakpoint
 CREATE UNIQUE INDEX "crm_companies_org_lower_name_unique" ON "crm_companies" USING btree ("org_id",lower("name"));
+--> statement-breakpoint
+DO $$ BEGIN IF EXISTS (SELECT 1 FROM "crm_contacts" WHERE email IS NOT NULL GROUP BY "org_id", lower("email") HAVING count(*) > 1 LIMIT 1) THEN RAISE EXCEPTION 'bughunt 0029: duplicate contact emails in one org — dedupe them first (SELECT org_id, lower(email), count(*) FROM crm_contacts WHERE email IS NOT NULL GROUP BY 1, 2 HAVING count(*) > 1)'; END IF; END $$;
 --> statement-breakpoint
 CREATE UNIQUE INDEX "crm_contacts_org_lower_email_unique" ON "crm_contacts" USING btree ("org_id",lower("email")) WHERE email IS NOT NULL;
 --> statement-breakpoint
@@ -112,6 +118,8 @@ ALTER TABLE "crm_stages" ADD CONSTRAINT "crm_stages_id_org_key" UNIQUE("id","org
 ALTER TABLE "departments" ADD CONSTRAINT "departments_id_org_key" UNIQUE("id","org_id");
 --> statement-breakpoint
 ALTER TABLE "employees" ADD CONSTRAINT "employees_id_org_key" UNIQUE("id","org_id");
+--> statement-breakpoint
+DO $$ BEGIN IF EXISTS (SELECT 1 FROM "employees" GROUP BY "org_id", "employee_no" HAVING count(*) > 1 LIMIT 1) THEN RAISE EXCEPTION 'bughunt 0029: duplicate employee_no in one org — renumber them first (SELECT org_id, employee_no, count(*) FROM employees GROUP BY 1, 2 HAVING count(*) > 1)'; END IF; END $$;
 --> statement-breakpoint
 ALTER TABLE "employees" ADD CONSTRAINT "employees_org_no_unique" UNIQUE("org_id","employee_no");
 --> statement-breakpoint

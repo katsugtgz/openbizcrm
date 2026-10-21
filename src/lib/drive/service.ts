@@ -7,7 +7,7 @@
  * ke R2. Hapus file: admin+ boleh menghapus file milik orang lain.
  * Kredensial R2 tidak tersedia lokal: ConfigError setup dengan pesan jelas.
  */
-import { and, asc, eq, gt, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import {
   S3Client,
   PutObjectCommand,
@@ -73,8 +73,10 @@ function requireDriveConfig(): DriveConfig {
     client: new S3Client({
       region: "auto",
       // Backend S3 apa pun (MinIO lokal) via S3_ENDPOINT; default R2.
+      // Empty string falls back too (cubic pr10 env:30): copied examples
+      // leave S3_ENDPOINT= blank, and ?? would keep the blank endpoint.
       endpoint:
-        process.env.S3_ENDPOINT ??
+        process.env.S3_ENDPOINT ||
         `https://${accountId}.r2.cloudflarestorage.com`,
       credentials: { accessKeyId, secretAccessKey },
     }),
@@ -120,6 +122,13 @@ export interface PresignResult {
   fileId: string;
   uploadUrl: string;
   key: string;
+  /**
+   * MIME yang ditandatangani pada URL (hasil sanitizeMimeType): klien
+   * WAJIB memakainya sebagai header PUT — file.type asli bisa dinormalisasi
+   * (html/svg -> octet-stream) dan mismatch menandatangani gagal (cubic
+   * pr10 drive:221).
+   */
+  contentType: string;
   expiresInSeconds: number;
 }
 
@@ -161,12 +170,14 @@ export async function presignUpload(
     if (!folder) throw new NotFoundError("Folder tidak ditemukan.");
   }
 
+  // Bersihkan reservasi kadaluarsa + objek R2 yatimnya SEBELUM tx kuota
+  // (penghapusan objek tak boleh di dalam tx DB).
+  await purgeExpiredWithObjects(orgId);
   return db.transaction(async (tx) => {
     // Kunci per org: dua presign konkuren tidak boleh lolos kuota bersama.
     await tx.execute(
       sql`select pg_advisory_xact_lock(hashtext(${`drive:${orgId}`}))`,
     );
-    await purgeExpiredPending(tx, orgId);
     const [{ used }] = await tx
       .select({
         used: sql<number>`coalesce(sum(${driveFiles.sizeBytes}), 0)::bigint`,
@@ -211,6 +222,7 @@ export async function presignUpload(
         fileId: existing.id,
         uploadUrl: retryUrl,
         key: existing.key,
+        contentType: existing.mimeType,
         expiresInSeconds: PRESIGN_TTL_SECONDS,
       };
     }
@@ -254,18 +266,24 @@ export async function presignUpload(
       fileId: file.id,
       uploadUrl,
       key,
+      contentType: safeMime,
       expiresInSeconds: PRESIGN_TTL_SECONDS,
     };
   });
 }
 
-/** Hapus reservasi pending yang kadaluarsa (dipanggil dalam transaksi). */
+/**
+ * Hapus reservasi pending yang kadaluarsa (dipanggil dalam transaksi).
+ * Kembalikan object key yang dibebaskan agar pemanggil menghapus objek
+ * R2-nya setelah commit (cubic pr10 drive:562).
+ */
 async function purgeExpiredPending(
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
   orgId: string,
-): Promise<void> {
-  await tx
-    .delete(driveFiles)
+): Promise<string[]> {
+  const expired = await tx
+    .select({ id: driveFiles.id, key: driveFiles.key })
+    .from(driveFiles)
     .where(
       and(
         eq(driveFiles.orgId, orgId),
@@ -273,13 +291,46 @@ async function purgeExpiredPending(
         sql`${driveFiles.expiresAt} is not null and ${driveFiles.expiresAt} < now()`,
       ),
     );
+  if (expired.length === 0) return [];
+  await tx.delete(driveFiles).where(
+    inArray(
+      driveFiles.id,
+      expired.map((r) => r.id),
+    ),
+  );
+  return expired.map((r) => r.key);
+}
+
+/**
+ * Purge reservasi kadaluarsa + objek R2 yatimnya (best-effort, di luar
+ * tx DB): tanpa ini unggahan terbengkalai menumpuk di luar kuota.
+ */
+async function purgeExpiredWithObjects(orgId: string): Promise<void> {
+  const keys = await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtext(${`drive:${orgId}`}))`,
+    );
+    return purgeExpiredPending(tx, orgId);
+  });
+  if (keys.length === 0) return;
+  try {
+    const { bucket, client } = requireDriveConfig();
+    await Promise.all(
+      keys.map((Key) =>
+        client
+          .send(new DeleteObjectCommand({ Bucket: bucket, Key }))
+          .catch(() => {}),
+      ),
+    );
+  } catch {
+    // R2 belum dikonfigurasi / jaringan down: baris sudah dibebaskan,
+    // objek yatim menunggu purge berikut.
+  }
 }
 
 /** Pembersih reservasi kadaluarsa di luar presign (untuk sweeper terjadwal). */
 export async function purgeExpiredDrivePending(orgId: string): Promise<void> {
-  await db.transaction(async (tx) => {
-    await purgeExpiredPending(tx, orgId);
-  });
+  await purgeExpiredWithObjects(orgId);
 }
 
 export async function confirmUpload(
@@ -324,15 +375,28 @@ export async function confirmUpload(
   // sehingga bytes bisa diganti setelah HEAD pertama. HEAD kedua mempersempit
   // jendela balap ke milidetik; ketidakcocokan pasti membatalkan konfirmasi.
   // (Perbaikan penuh butuh object versioning di bucket — infra, di luar kode.)
+  // Fail closed (cubic pr10 drive:333): HEAD di-retry 3x; ketidakcocokan
+  // PASTI maupun HEAD yang tetap gagal membatalkan konfirmasi (buang
+  // objek + reservasi, klien unggah ulang). Konfirmasi tanpa verifikasi
+  // membiarkan overwrite pasca-HEAD lolos.
   let recheck: { ContentLength?: number } | null = null;
-  try {
-    recheck = await client.send(
-      new HeadObjectCommand({ Bucket: bucket, Key: file.key }),
-    );
-  } catch {
-    recheck = null; // HEAD non-definitif (jaringan): konfirmasi tetap berlaku.
+  let recheckError: unknown = null;
+  for (let attempt = 0; attempt < 3 && !recheck; attempt++) {
+    try {
+      recheck = await client.send(
+        new HeadObjectCommand({ Bucket: bucket, Key: file.key }),
+      );
+    } catch (e) {
+      recheckError = e; // retry: HEAD non-definitif (jaringan)
+    }
   }
-  if (recheck && (recheck.ContentLength ?? -1) !== file.sizeBytes) {
+  if (!recheck) {
+    console.error("[drive] recheck HEAD gagal, konfirmasi dibatalkan:", {
+      key: file.key,
+      error: recheckError,
+    });
+  }
+  if (!recheck || (recheck.ContentLength ?? -1) !== file.sizeBytes) {
     await client
       .send(new DeleteObjectCommand({ Bucket: bucket, Key: file.key }))
       .catch(() => {});
@@ -539,25 +603,14 @@ export async function deleteFile(
 }
 
 export async function driveUsageBytes(orgId: string): Promise<number> {
+  // Semua baris dihitung — termasuk pending kadaluarsa yang belum di-purge
+  // (cubic pr10 drive:562): objek R2-nya masih ada sampai purge
+  // menghapusnya, jadi menguranginya dari kuota menyembunyikan pemakaian.
   const [{ used }] = await db
     .select({
       used: sql<number>`coalesce(sum(${driveFiles.sizeBytes}), 0)::bigint`,
     })
     .from(driveFiles)
-    // Pemakaian aktual: kurangi reservasi pending yang sudah kadaluarsa
-    // (purgeExpiredPending hanya jalan saat presign — lazy).
     .where(eq(driveFiles.orgId, orgId));
-  const [{ expired }] = await db
-    .select({
-      expired: sql<number>`coalesce(sum(${driveFiles.sizeBytes}), 0)::bigint`,
-    })
-    .from(driveFiles)
-    .where(
-      and(
-        eq(driveFiles.orgId, orgId),
-        eq(driveFiles.status, "pending"),
-        lt(driveFiles.expiresAt, sql`now()`),
-      ),
-    );
-  return Number(used) - Number(expired);
+  return Number(used);
 }

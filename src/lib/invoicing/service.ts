@@ -341,6 +341,11 @@ export async function sendInvoice(
     if (invoice.total < 0 || invoice.subtotal < 0 || invoice.taxAmount < 0) {
       throw new InvoiceError("Total invoice tidak valid (negatif).");
     }
+    // Guard konsistensi (cubic pr10 invoicing:346): baris lama/manual
+    // dengan total 0 tapi subtotal positif tak boleh lolos tanpa jurnal.
+    if (invoice.total !== invoice.subtotal + invoice.taxAmount) {
+      throw new InvoiceError("Total invoice tidak konsisten.");
+    }
     let journalEntryId: string | null = null;
     let status: "sent" | "paid" = "sent";
     if (invoice.total === 0) {

@@ -62,14 +62,21 @@ export function CloudBrowser({
       fd.set("sizeBytes", String(file.size));
       if (folderId) fd.set("folderId", folderId);
       const result = await presignUploadAction(fd);
-      if (!result.ok || !result.uploadUrl || !result.fileId) {
+      if (
+        !result.ok ||
+        !result.uploadUrl ||
+        !result.fileId ||
+        !result.contentType
+      ) {
         toast.error(result.error ?? "Gagal menyiapkan unggahan.");
         return;
       }
+      // Content-Type WAJIB MIME bertanda dari presign (cubic pr10
+      // drive:221): file.type asli bisa dinormalisasi server.
       const put = await fetch(result.uploadUrl, {
         method: "PUT",
         body: file,
-        headers: { "Content-Type": file.type || "application/octet-stream" },
+        headers: { "Content-Type": result.contentType },
       });
       if (!put.ok) {
         toast.error(`Unggahan ke storage gagal (HTTP ${put.status}).`);

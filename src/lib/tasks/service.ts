@@ -285,6 +285,12 @@ export async function deleteTask(
       })
       .from(timesheets)
       .where(and(eq(timesheets.taskId, taskId), eq(timesheets.orgId, orgId)));
+    // Service-layer SET NULL (cubic pr10 schema:795): subtask FK is
+    // restrict — orphan subtasks to root before deleting the parent.
+    await tx
+      .update(tasks)
+      .set({ parentId: null })
+      .where(and(eq(tasks.parentId, taskId), eq(tasks.orgId, orgId)));
     await tx
       .delete(tasks)
       .where(and(eq(tasks.id, taskId), eq(tasks.orgId, orgId)));

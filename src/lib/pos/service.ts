@@ -365,8 +365,10 @@ export async function checkout(
         total,
         journalEntryId,
         // createdAt milik DB (defaultNow = waktu server): tanggal input
-        // kasir tak boleh memalsukan stempel audit. Tanggal bisnis tetap
-        // tercatat di jurnal (input.date).
+        // kasir tak boleh memalsukan stempel audit. Tanggal bisnis tercatat
+        // jujur di sale_date (semua sale — termasuk Rp0 tanpa jurnal) dan
+        // di jurnal bila ada (cubic pr10 pos:366).
+        saleDate: input.date,
       })
       .returning();
     const itemRows = await tx

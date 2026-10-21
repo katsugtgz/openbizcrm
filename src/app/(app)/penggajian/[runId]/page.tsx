@@ -59,7 +59,14 @@ export default async function RunDetailPage({
     throw error;
   }
 
-  const visible = selfEmployee ? slips.filter((s) => s.employeeId === selfEmployee.id) : slips;
+  // Admin/owner sees every row; a linked member sees only their own; a
+  // member WITHOUT a linked employee sees nothing (cubic pr10: null must
+  // not mean admin).
+  const visible = hasRole(role, "admin")
+    ? slips
+    : selfEmployee
+      ? slips.filter((s) => s.employeeId === selfEmployee.id)
+      : [];
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">

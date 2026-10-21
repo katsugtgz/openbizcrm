@@ -20,9 +20,10 @@ export interface ActionResult {
   ok: boolean;
   error?: string;
   message?: string;
-  /** Presigned PUT URL + fileId saat presign berhasil. */
+  /** Presigned PUT URL + fileId + MIME bertanda saat presign berhasil. */
   uploadUrl?: string;
   fileId?: string;
+  contentType?: string;
 }
 
 async function requireSession() {
@@ -70,7 +71,12 @@ export async function presignUploadAction(
     // Tidak revalidate di sini (cubic cloud/actions.ts:59): baris masih
     // pending, listFolder hanya menampilkan confirmed. Halaman segar setelah
     // confirmUploadAction sukses.
-    return { ok: true, uploadUrl: result.uploadUrl, fileId: result.fileId };
+    return {
+      ok: true,
+      uploadUrl: result.uploadUrl,
+      fileId: result.fileId,
+      contentType: result.contentType,
+    };
   } catch (error) {
     return fail(error);
   }

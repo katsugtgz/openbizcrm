@@ -435,6 +435,22 @@ export async function dispose(
       .limit(1)
       .for("update");
     if (!asset) throw new NotFoundError("Aset tidak ditemukan / sudah disposed.");
+    // Tanggal disposal waras (cubic pr10 assets:418): tak boleh sebelum
+    // perolehan, tak boleh mundur ke bulan yang sudah disusutkan.
+    if (disposalDate < asset.acquiredDate) {
+      throw new AssetError(
+        "Tanggal disposal tidak boleh sebelum tanggal perolehan aset.",
+      );
+    }
+    if (
+      asset.lastDepreciatedPeriod &&
+      disposalDate.slice(0, 7) <= asset.lastDepreciatedPeriod
+    ) {
+      throw new AssetError(
+        `Aset sudah disusutkan sampai ${asset.lastDepreciatedPeriod}; ` +
+          "disposal tidak bisa mundur ke periode itu.",
+      );
+    }
     const codes = await requireDisposalAccounts(
       tx,
       orgId,

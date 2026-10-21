@@ -14,11 +14,15 @@
  *  - P0 (:70): guarded main fail-closed di luar development — tanpa sender
  *    nyata disuntikkan, worker tidak boleh start dengan stubSender (stub
  *    menandai semua pesan `sent` tanpa kirim nyata).
+ *  - pr10: sender menerima AbortSignal (timeout membatalkan kiriman);
+ *    resolve yang gagal melepas klaim (releaseClaimedOutbox) agar baris
+ *    tidak yatim di `sending`; reclaim ber-lease (lihat service).
  */
 import {
   claimOutbox,
   listQueuedOutbox,
   reclaimStuckOutbox,
+  releaseClaimedOutbox,
   resolveOutbox,
 } from "./service";
 
@@ -29,16 +33,20 @@ async function withTimeout<T>(
   promise: Promise<T>,
   ms: number,
   label: string,
+  onTimeout?: () => void,
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       promise,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`${label} timeout setelah ${ms}ms`)),
-          ms,
-        );
+        timer = setTimeout(() => {
+          // Batalkan kiriman SEBELUM resolve gagal (cubic pr10 worker:35):
+          // tanpa ini send yang timeout tetap selesai setelah resolve
+          // menandai failed, lalu retry mengirim duplikat.
+          onTimeout?.();
+          reject(new Error(`${label} timeout setelah ${ms}ms`));
+        }, ms);
       }),
     ]);
   } finally {
@@ -49,6 +57,7 @@ async function withTimeout<T>(
 export type WaSender = (
   phone: string,
   message: string,
+  signal?: AbortSignal,
 ) => Promise<{ ok: boolean; error?: string }>;
 
 /** Stub dev: selalu sukses. Baileys asli menggantikan via injeksi. */
@@ -65,16 +74,20 @@ export async function drainOutbox(
   const timeoutMs = opts.senderTimeoutMs ?? SENDER_TIMEOUT_MS;
   let processed = 0;
   for (const row of queued) {
+    let claimedRowId: string | null = null;
     try {
       // Klaim atomik: hanya satu worker yang boleh mengirim baris ini.
       const claimed = await claimOutbox(orgId, row.id);
       if (!claimed) continue; // diambil worker lain / sudah terminal
+      claimedRowId = row.id;
+      const sendAborter = new AbortController();
       let result: { ok: boolean; error?: string };
       try {
         result = await withTimeout(
-          sender(row.phone, row.message),
+          sender(row.phone, row.message, sendAborter.signal),
           timeoutMs,
           "pengiriman WA",
+          () => sendAborter.abort(),
         );
       } catch (e) {
         result = {
@@ -91,6 +104,15 @@ export async function drainOutbox(
         rowId: row.id,
         error: e,
       });
+      if (claimedRowId) {
+        // Resolve gagal setelah klaim: lepas kembali ke queued (upaya
+        // terbaik) agar baris tidak yatim di `sending` sampai restart.
+        try {
+          await releaseClaimedOutbox(orgId, claimedRowId);
+        } catch {
+          // DB masih down — reclaim lease saat start berikut memulihkan.
+        }
+      }
     }
   }
   return processed;
