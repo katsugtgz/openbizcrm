@@ -1095,8 +1095,8 @@ export const posSales = pgTable(
       foreignColumns: [journalEntries.orgId, journalEntries.id],
     }),
     index("pos_sales_org_created_idx").on(t.orgId, t.createdAt),
-    // Filter rentang saleDate ringkasan AI (cubic pr10 r4): tanpa ini
-    // tiap pesan chat memindai seluruh baris POS org.
+    // Index saleDate ranges used by the AI monthly summary; without it,
+    // each chat message scans every POS row for the organization.
     index("pos_sales_org_sale_date_idx").on(t.orgId, t.saleDate),
     check("pos_sales_tax_pct_check", sql`tax_pct >= 0 AND tax_pct <= 100`),
     check(
