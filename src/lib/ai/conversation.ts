@@ -3,7 +3,7 @@
  * conversation -> simpan pesan user -> provider complete -> simpan balasan
  * assistant. Semua tulisan dalam satu tx per langkah, audit per conversation.
  */
-import { and, asc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import {
   aiConversations,
@@ -60,15 +60,24 @@ export async function appendMessage(
   if (!conv) throw new NotFoundError("Percakapan tidak ditemukan.");
   const [row] = await exec
     .insert(aiMessages)
-    .values({ conversationId, role, content })
+    .values({ conversationId, orgId, role, content })
     .returning();
   return row;
 }
 
-/** Pesan conversation urut waktu — hanya milik org terkait (guard org). */
+/** Jendela riwayat default untuk prompt: riwayat penuh bikin tiap POST makin lambat + mahal. */
+export const AI_HISTORY_DEFAULT_LIMIT = 100;
+export const AI_HISTORY_MAX_LIMIT = 500;
+
+/**
+ * Pesan conversation urut waktu — hanya milik org terkait (guard org).
+ * Jendela TERBARU (bukan tertua): N terakhir urut kronologis — pola sama
+ * seperti listMessages chat (desc + limit, lalu reverse).
+ */
 export async function listMessages(
   orgId: string,
   conversationId: string,
+  limit = AI_HISTORY_DEFAULT_LIMIT,
 ): Promise<AiMessage[]> {
   const [conv] = await db
     .select({ id: aiConversations.id })
@@ -81,9 +90,12 @@ export async function listMessages(
     )
     .limit(1);
   if (!conv) return [];
-  return db
+  const capped = Math.min(Math.max(limit, 1), AI_HISTORY_MAX_LIMIT);
+  const rows = await db
     .select()
     .from(aiMessages)
     .where(eq(aiMessages.conversationId, conversationId))
-    .orderBy(asc(aiMessages.createdAt));
+    .orderBy(desc(aiMessages.createdAt))
+    .limit(capped);
+  return rows.reverse();
 }

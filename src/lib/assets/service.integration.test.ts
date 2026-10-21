@@ -62,7 +62,12 @@ describe("assets integration", () => {
     userId: string,
     orgId: string,
     tag: string,
-  ): Promise<{ depExpense: { id: string }; accumDep: { id: string } }> {
+  ): Promise<{
+    depExpense: { id: string };
+    accumDep: { id: string };
+    assetAcc: { id: string };
+    lossAcc: { id: string };
+  }> {
     const depExpense = await acct.createAccount(userId, orgId, {
       code: `5-2${tag}`,
       name: "Beban Penyusutan",
@@ -73,7 +78,17 @@ describe("assets integration", () => {
       name: "Akumulasi Penyusutan",
       type: "asset",
     });
-    return { depExpense, accumDep };
+    const assetAcc = await acct.createAccount(userId, orgId, {
+      code: `1-5${tag}`,
+      name: "Peralatan",
+      type: "asset",
+    });
+    const lossAcc = await acct.createAccount(userId, orgId, {
+      code: `5-8${tag}`,
+      name: "Rugi Disposal",
+      type: "expense",
+    });
+    return { depExpense, accumDep, assetAcc, lossAcc };
   }
 
   async function depDebitSum(
@@ -396,7 +411,7 @@ describe("assets integration", () => {
     "disposal bersamaan dengan depresiasi: status tidak dihidupkan ulang",
     async () => {
       const o = await makeOrg();
-      const { depExpense, accumDep } = await makeDepAccounts(
+      const { depExpense, accumDep, assetAcc, lossAcc } = await makeDepAccounts(
         o.userId,
         o.orgId,
         "f",
@@ -410,9 +425,16 @@ describe("assets integration", () => {
         depreciationExpenseAccountId: depExpense.id,
         accumulatedDepreciationAccountId: accumDep.id,
       });
+      const disposal = {
+        assetAccountId: assetAcc.id,
+        lossAccountId: lossAcc.id,
+      };
+      // Periode depresiasi (2026-03) mendahului disposal (2026-06-15):
+      // dispose() menolak tanggal mundur ke periode yang sudah disusutkan
+      // (cubic pr10 assets:418) — race ini menguji status, bukan tanggal.
       await Promise.all([
-        assets.runMonthlyDepreciation(o.userId, o.orgId, "2026-12"),
-        assets.dispose(o.userId, o.orgId, asset.id, "2026-06-15"),
+        assets.runMonthlyDepreciation(o.userId, o.orgId, "2026-03"),
+        assets.dispose(o.userId, o.orgId, asset.id, "2026-06-15", disposal),
       ]);
       const after = await getAsset(asset.id);
       // Disposal tidak boleh tertimpa kembali menjadi active.
@@ -427,7 +449,7 @@ describe("assets integration", () => {
 
   itDb("dispose idempoten-gagal: dipanggil dua kali ditolak", async () => {
     const o = await makeOrg();
-    const { depExpense, accumDep } = await makeDepAccounts(
+    const { depExpense, accumDep, assetAcc, lossAcc } = await makeDepAccounts(
       o.userId,
       o.orgId,
       "g",
@@ -441,15 +463,131 @@ describe("assets integration", () => {
       depreciationExpenseAccountId: depExpense.id,
       accumulatedDepreciationAccountId: accumDep.id,
     });
+    const disposal = {
+      assetAccountId: assetAcc.id,
+      lossAccountId: lossAcc.id,
+    };
     const disposed = await assets.dispose(
       o.userId,
       o.orgId,
       asset2.id,
       "2026-08-01",
+      disposal,
     );
     expect(disposed.status).toBe("disposed");
     await expect(
-      assets.dispose(o.userId, o.orgId, asset2.id, "2026-08-02"),
+      assets.dispose(o.userId, o.orgId, asset2.id, "2026-08-02", disposal),
     ).rejects.toThrow(/disposed/);
+  });
+
+  itDb("dispose memposting jurnal derecognition seimbang", async () => {
+    const o = await makeOrg();
+    const { depExpense, accumDep, assetAcc, lossAcc } = await makeDepAccounts(
+      o.userId,
+      o.orgId,
+      "h",
+    );
+    const asset = await assets.addAsset(o.userId, o.orgId, {
+      name: `Meja ${suffix}`,
+      cost: 12_000_000,
+      salvageValue: 0,
+      usefulLifeMonths: 24, // 500_000/bulan
+      acquiredDate: "2026-01-01",
+      depreciationExpenseAccountId: depExpense.id,
+      accumulatedDepreciationAccountId: accumDep.id,
+    });
+    // Susutkan 3 bulan (1_500_000) lalu dispose: NBV 10_500_000.
+    await assets.runMonthlyDepreciation(o.userId, o.orgId, "2026-03");
+    const disposed = await assets.dispose(o.userId, o.orgId, asset.id, "2026-04-10", {
+      assetAccountId: assetAcc.id,
+      lossAccountId: lossAcc.id,
+    });
+    expect(disposed.status).toBe("disposed");
+    expect(disposed.disposalDate).toBe("2026-04-10");
+
+    const [entry] = await db
+      .select()
+      .from(journalEntries)
+      .where(
+        and(
+          eq(journalEntries.orgId, o.orgId),
+          eq(journalEntries.description, `Disposal Meja ${suffix}`),
+        ),
+      );
+    expect(entry.status).toBe("posted");
+    expect(entry.date).toBe("2026-04-10");
+    const lines = await db
+      .select()
+      .from(journalLines)
+      .where(eq(journalLines.entryId, entry.id));
+    const byAccount = new Map(lines.map((l) => [l.accountId, l]));
+    // Debit akumulasi 1_500_000 + debit rugi 10_500_000 vs credit aset cost.
+    expect(byAccount.get(accumDep.id)).toMatchObject({
+      debit: 1_500_000,
+      credit: 0,
+    });
+    expect(byAccount.get(lossAcc.id)).toMatchObject({
+      debit: 10_500_000,
+      credit: 0,
+    });
+    expect(byAccount.get(assetAcc.id)).toMatchObject({
+      debit: 0,
+      credit: 12_000_000,
+    });
+    const tb = await acct.trialBalanceService(o.orgId);
+    expect(tb.balanced).toBe(true);
+  });
+
+  itDb("dispose menolak akun salah tipe dan periode tertutup", async () => {
+    const o = await makeOrg();
+    const { depExpense, accumDep, assetAcc, lossAcc } = await makeDepAccounts(
+      o.userId,
+      o.orgId,
+      "i",
+    );
+    const asset = await assets.addAsset(o.userId, o.orgId, {
+      name: `Kursi ${suffix}`,
+      cost: 1_200_000,
+      salvageValue: 0,
+      usefulLifeMonths: 12,
+      acquiredDate: "2026-01-01",
+      depreciationExpenseAccountId: depExpense.id,
+      accumulatedDepreciationAccountId: accumDep.id,
+    });
+    // Akun aset bertipe expense ditolak.
+    await expect(
+      assets.dispose(o.userId, o.orgId, asset.id, "2026-02-01", {
+        assetAccountId: depExpense.id,
+        lossAccountId: lossAcc.id,
+      }),
+    ).rejects.toThrow(/harus bertipe asset/);
+    // Akun kembar ditolak.
+    await expect(
+      assets.dispose(o.userId, o.orgId, asset.id, "2026-02-01", {
+        assetAccountId: assetAcc.id,
+        lossAccountId: assetAcc.id,
+      }),
+    ).rejects.toThrow(/berbeda/);
+    // Periode disposal tertutup memblokir.
+    await acct.closePeriod(o.userId, o.orgId, "2026-02");
+    await expect(
+      assets.dispose(o.userId, o.orgId, asset.id, "2026-02-15", {
+        assetAccountId: assetAcc.id,
+        lossAccountId: lossAcc.id,
+      }),
+    ).rejects.toThrow(/ditutup/);
+    // Gagal = tetap active, tak ada jurnal disposal.
+    const after = await getAsset(asset.id);
+    expect(after.status).toBe("active");
+    const entries = await db
+      .select({ id: journalEntries.id })
+      .from(journalEntries)
+      .where(
+        and(
+          eq(journalEntries.orgId, o.orgId),
+          eq(journalEntries.description, `Disposal Kursi ${suffix}`),
+        ),
+      );
+    expect(entries).toHaveLength(0);
   });
 });

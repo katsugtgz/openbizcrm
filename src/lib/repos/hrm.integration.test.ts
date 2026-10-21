@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { eq } from "drizzle-orm";
-import { organizations, users } from "@/db/schema";
+import { and, eq } from "drizzle-orm";
+import { employees, orgMemberships, organizations, users } from "@/db/schema";
 import { OrgScopeError } from "@/lib/org-scope";
 import { MoneyError } from "@/lib/money";
 
@@ -33,6 +33,8 @@ describe("hrm repos integration", () => {
   let markAttendance!: HrmRepo["markAttendance"];
   let actLeaveApproval!: HrmRepo["actLeaveApproval"];
   let createLeaveRequest!: HrmRepo["createLeaveRequest"];
+  let updateEmployee!: HrmRepo["updateEmployee"];
+  let throwIfLinkRace!: HrmRepo["throwIfLinkRace"];
 
   beforeAll(async () => {
     if (process.env.RUN_DB_TESTS !== "1") return;
@@ -51,6 +53,8 @@ describe("hrm repos integration", () => {
       markAttendance,
       actLeaveApproval,
       createLeaveRequest,
+      updateEmployee,
+      throwIfLinkRace,
     } = await import("@/lib/repos/hrm-repo"));
   });
 
@@ -206,5 +210,175 @@ describe("hrm repos integration", () => {
     await expect(
       actLeaveApproval(owner.id, org.id, req3.id, "approve"),
     ).rejects.toThrow(/self-approval/i);
+  });
+
+  itDb("user link guards: non-member and already-linked rejected", async () => {
+    const owner = await createUser({
+      workosUserId: `it-hrm-link-owner-${suffix}`,
+      email: `it-hrm-link-owner-${suffix}@test.id`,
+    });
+    createdUserIds.push(owner.id);
+    const org = await createOrg(
+      { name: "Link Org", slug: `it-hrm-link-${suffix}` },
+      owner.id,
+    );
+    createdOrgIds.push(org.id);
+    const member = await createUser({
+      workosUserId: `it-hrm-link-m-${suffix}`,
+      email: `it-hrm-link-m-${suffix}@test.id`,
+    });
+    createdUserIds.push(member.id);
+    await addMember(owner.id, org.id, member.id, "member");
+    const outsider = await createUser({
+      workosUserId: `it-hrm-link-o-${suffix}`,
+      email: `it-hrm-link-o-${suffix}@test.id`,
+    });
+    createdUserIds.push(outsider.id);
+
+    const base = { taxStatus: "TK0" as const, baseSalary: 5_000_000 };
+    // Bukan member: tolak saat create.
+    await expect(
+      createEmployee(owner.id, org.id, {
+        ...base,
+        employeeNo: "LINK-0",
+        name: "No Link",
+        linkedUserId: outsider.id,
+      }),
+    ).rejects.toThrow(/tidak terdaftar/);
+    // Tautkan member: ok.
+    const emp1 = await createEmployee(owner.id, org.id, {
+      ...base,
+      employeeNo: "LINK-1",
+      name: "Satu",
+      linkedUserId: member.id,
+    });
+    expect(emp1.userId).toBe(member.id);
+    // Sudah tertaut: tolak saat create kedua.
+    await expect(
+      createEmployee(owner.id, org.id, {
+        ...base,
+        employeeNo: "LINK-2",
+        name: "Dua",
+        linkedUserId: member.id,
+      }),
+    ).rejects.toThrow(/sudah tertaut/);
+    // Sudah tertaut: tolak saat update karyawan lain.
+    const emp2 = await createEmployee(owner.id, org.id, {
+      ...base,
+      employeeNo: "LINK-3",
+      name: "Tiga",
+    });
+    await expect(
+      updateEmployee(owner.id, org.id, emp2.id, { linkedUserId: member.id }),
+    ).rejects.toThrow(/sudah tertaut/);
+    await expect(
+      updateEmployee(owner.id, org.id, emp2.id, { linkedUserId: outsider.id }),
+    ).rejects.toThrow(/tidak terdaftar/);
+  });
+
+  itDb("link race: concurrent links map to the friendly error", async () => {
+    const owner = await createUser({
+      workosUserId: `it-hrm-race-owner-${suffix}`,
+      email: `it-hrm-race-owner-${suffix}@test.id`,
+    });
+    createdUserIds.push(owner.id);
+    const org = await createOrg(
+      { name: "Race Org", slug: `it-hrm-race-${suffix}` },
+      owner.id,
+    );
+    createdOrgIds.push(org.id);
+    const member = await createUser({
+      workosUserId: `it-hrm-race-m-${suffix}`,
+      email: `it-hrm-race-m-${suffix}@test.id`,
+    });
+    createdUserIds.push(member.id);
+    await addMember(owner.id, org.id, member.id, "member");
+
+    const base = { taxStatus: "TK0" as const, baseSalary: 5_000_000 };
+    const a = await createEmployee(owner.id, org.id, {
+      ...base,
+      employeeNo: "RACE-A",
+      name: "A",
+    });
+    const b = await createEmployee(owner.id, org.id, {
+      ...base,
+      employeeNo: "RACE-B",
+      name: "B",
+    });
+    // Satu pemenang, satu pesan ramah — baik lewat pre-check maupun
+    // mapping 23505, pesannya sama sehingga assertion deterministik.
+    const results = await Promise.allSettled([
+      updateEmployee(owner.id, org.id, a.id, { linkedUserId: member.id }),
+      updateEmployee(owner.id, org.id, b.id, { linkedUserId: member.id }),
+    ]);
+    const ok = results.filter((r) => r.status === "fulfilled");
+    const failed = results.filter((r) => r.status === "rejected");
+    expect(ok).toHaveLength(1);
+    expect(failed).toHaveLength(1);
+    expect(String((failed[0] as PromiseRejectedResult).reason)).toMatch(
+      /sudah tertaut/,
+    );
+
+    // Mapping cabang deterministik: bentuk drizzle asli + passthrough.
+    const drizzleRace = Object.assign(new Error("duplicate key"), {
+      cause: { code: "23505", constraint: "employees_org_user_unique" },
+    });
+    expect(() => throwIfLinkRace(drizzleRace)).toThrow(/sudah tertaut/);
+    const otherConstraint = Object.assign(new Error("duplicate key"), {
+      cause: { code: "23505", constraint: "employees_org_no_unique" },
+    });
+    expect(() => throwIfLinkRace(otherConstraint)).toThrow(otherConstraint);
+    const notNull = Object.assign(new Error("null value"), {
+      cause: { code: "23502", constraint: "employees_name_check" },
+    });
+    expect(() => throwIfLinkRace(notNull)).toThrow(notNull);
+  });
+
+  itDb("unchanged link skips validation after member departure", async () => {
+    const owner = await createUser({
+      workosUserId: `it-hrm-stale-owner-${suffix}`,
+      email: `it-hrm-stale-owner-${suffix}@test.id`,
+    });
+    createdUserIds.push(owner.id);
+    const org = await createOrg(
+      { name: "Stale Org", slug: `it-hrm-stale-${suffix}` },
+      owner.id,
+    );
+    createdOrgIds.push(org.id);
+    const member = await createUser({
+      workosUserId: `it-hrm-stale-m-${suffix}`,
+      email: `it-hrm-stale-m-${suffix}@test.id`,
+    });
+    createdUserIds.push(member.id);
+    await addMember(owner.id, org.id, member.id, "member");
+
+    const emp = await createEmployee(owner.id, org.id, {
+      taxStatus: "TK0",
+      baseSalary: 5_000_000,
+      employeeNo: "STALE-1",
+      name: "Lama",
+      linkedUserId: member.id,
+    });
+    // User keluar org: update lain tetap jalan, tautan basi dipertahankan.
+    await db
+      .delete(orgMemberships)
+      .where(
+        and(
+          eq(orgMemberships.orgId, org.id),
+          eq(orgMemberships.userId, member.id),
+        ),
+      );
+    const updated = await updateEmployee(owner.id, org.id, emp.id, {
+      linkedUserId: member.id,
+      name: "Nama Baru",
+    });
+    expect(updated.name).toBe("Nama Baru");
+    expect(updated.userId).toBe(member.id);
+    const [row] = await db
+      .select({ userId: employees.userId })
+      .from(employees)
+      .where(eq(employees.id, emp.id))
+      .limit(1);
+    expect(row.userId).toBe(member.id);
   });
 });

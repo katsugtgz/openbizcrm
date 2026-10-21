@@ -26,12 +26,17 @@ function SubmitButton({ label }: { label: string }) {
   );
 }
 
-/** Form create/edit karyawan. Gaji pakai parseIDRInput (digit saja). */
+/**
+ * Form create/edit karyawan. Gaji pakai parseIDRInput (digit saja).
+ * members: opsi tautan akun user (cubic pr10 payslip:73).
+ */
 export function EmployeeForm({
   employee,
+  members,
   action,
 }: {
   employee?: Employee;
+  members: { id: string; name: string | null; email: string }[];
   action: (formData: FormData) => void | Promise<void>;
 }) {
   const [salary, setSalary] = useState(
@@ -149,6 +154,33 @@ export function EmployeeForm({
                 defaultValue={employee?.bankAccount ?? ""}
                 placeholder="1234567890"
               />
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="linkedUserId">Akun User Tertaut</Label>
+              <select
+                id="linkedUserId"
+                name="linkedUserId"
+                defaultValue={employee?.userId ?? ""}
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs"
+              >
+                <option value="">— Tanpa tautan —</option>
+                {employee?.userId &&
+                  !members.some((m) => m.id === employee.userId) && (
+                    <option value={employee.userId}>
+                      Tautan lama (user keluar org) — dipertahankan bila tak
+                      diubah
+                    </option>
+                  )}
+                {members.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name ?? m.email} ({m.email})
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-muted-foreground">
+                Tautkan ke akun login karyawan agar ia bisa melihat slip
+                gajinya sendiri.
+              </p>
             </div>
           </div>
           <div>

@@ -15,7 +15,7 @@ import {
 import { NotFoundError, requireOrgRole } from "@/lib/org-scope";
 import { recordAudit } from "@/lib/repos/audit-repo";
 import { assertSafeAmount } from "@/lib/money";
-import { AccountingError } from "@/lib/accounting/engine";
+import { AccountingError, assertISODate } from "@/lib/accounting/engine";
 import { computeLineTotals, floorTax } from "@/lib/invoicing/totals";
 import { PPN_OUT_CODE } from "@/lib/invoicing/service";
 
@@ -159,6 +159,10 @@ export async function checkout(
   if (input.items.length === 0) {
     throw new PosError("Checkout minimal 1 item.");
   }
+  if (!["cash", "transfer", "qris"].includes(input.paymentMethod)) {
+    throw new PosError("Metode pembayaran tidak valid.");
+  }
+  assertISODate(input.date, "Tanggal");
   // Dedupe produk: qty kumulatif per produk.
   const qtyByProduct = new Map<string, number>();
   for (const item of input.items) {
@@ -268,79 +272,85 @@ export async function checkout(
         `Akun ${!cashAccount ? cashCode : "4-1000"} tidak ditemukan di org ini.`,
       );
     }
-    const [{ nextNum }] = await tx
-      .select({
-        nextNum: sql<number>`coalesce(max(${journalEntries.entryNumber}), 0) + 1`,
-      })
-      .from(journalEntries)
-      .where(eq(journalEntries.orgId, orgId));
-    const [entry] = await tx
-      .insert(journalEntries)
-      .values({
-        orgId,
-        entryNumber: nextNum,
-        date: input.date,
-        description: `Penjualan POS ${saleNumber}`,
-        status: "posted",
-        source: "pos",
-        paymentMethod: input.paymentMethod,
-        postedAt: new Date(),
-        createdBy: userId,
-      })
-      .returning();
-    const posJournalLines: {
-      orgId: string;
-      entryId: string;
-      accountId: string;
-      debit: number;
-      credit: number;
-    }[] = [
-      {
-        orgId,
-        entryId: entry.id,
-        accountId: cashAccount.id,
-        debit: total,
-        credit: 0,
-      },
-      {
-        orgId,
-        entryId: entry.id,
-        accountId: revenueAccount.id,
-        debit: 0,
-        credit: subtotal,
-      },
-    ];
-    if (taxAmount > 0) {
-      let [ppnAccount] = await tx
-        .select({ id: accounts.id })
-        .from(accounts)
-        .where(and(eq(accounts.orgId, orgId), eq(accounts.code, PPN_OUT_CODE)))
-        .limit(1);
-      if (!ppnAccount) {
-        // Auto-create akun PPN keluaran (liability) per org, seperti invoicing.
-        [ppnAccount] = await tx
-          .insert(accounts)
-          .values({
-            orgId,
-            code: PPN_OUT_CODE,
-            name: "PPN Keluaran",
-            type: "liability",
-          })
-          .onConflictDoUpdate({
-            target: [accounts.orgId, accounts.code],
-            set: { name: "PPN Keluaran" },
-          })
-          .returning();
+    // Total 0 (item gratis): tanpa jurnal — baris (0,0) melanggar CHECK
+    // journal_lines_amounts_check. Stok tetap dipotong + audit tetap dicatat.
+    let journalEntryId: string | null = null;
+    if (total > 0) {
+      const [{ nextNum }] = await tx
+        .select({
+          nextNum: sql<number>`coalesce(max(${journalEntries.entryNumber}), 0) + 1`,
+        })
+        .from(journalEntries)
+        .where(eq(journalEntries.orgId, orgId));
+      const [entry] = await tx
+        .insert(journalEntries)
+        .values({
+          orgId,
+          entryNumber: nextNum,
+          date: input.date,
+          description: `Penjualan POS ${saleNumber}`,
+          status: "posted",
+          source: "pos",
+          paymentMethod: input.paymentMethod,
+          postedAt: new Date(),
+          createdBy: userId,
+        })
+        .returning();
+      const posJournalLines: {
+        orgId: string;
+        entryId: string;
+        accountId: string;
+        debit: number;
+        credit: number;
+      }[] = [
+        {
+          orgId,
+          entryId: entry.id,
+          accountId: cashAccount.id,
+          debit: total,
+          credit: 0,
+        },
+        {
+          orgId,
+          entryId: entry.id,
+          accountId: revenueAccount.id,
+          debit: 0,
+          credit: subtotal,
+        },
+      ];
+      if (taxAmount > 0) {
+        let [ppnAccount] = await tx
+          .select({ id: accounts.id })
+          .from(accounts)
+          .where(and(eq(accounts.orgId, orgId), eq(accounts.code, PPN_OUT_CODE)))
+          .limit(1);
+        if (!ppnAccount) {
+          // Auto-create akun PPN keluaran (liability) per org, seperti invoicing.
+          [ppnAccount] = await tx
+            .insert(accounts)
+            .values({
+              orgId,
+              code: PPN_OUT_CODE,
+              name: "PPN Keluaran",
+              type: "liability",
+            })
+            .onConflictDoUpdate({
+              target: [accounts.orgId, accounts.code],
+              set: { name: "PPN Keluaran" },
+            })
+            .returning();
+        }
+        posJournalLines.push({
+          orgId,
+          entryId: entry.id,
+          accountId: ppnAccount.id,
+          debit: 0,
+          credit: taxAmount,
+        });
       }
-      posJournalLines.push({
-        orgId,
-        entryId: entry.id,
-        accountId: ppnAccount.id,
-        debit: 0,
-        credit: taxAmount,
-      });
+      await tx.insert(journalLines).values(posJournalLines);
+      journalEntryId = entry.id;
     }
-    await tx.insert(journalLines).values(posJournalLines);
 
     const [sale] = await tx
       .insert(posSales)
@@ -353,8 +363,12 @@ export async function checkout(
         subtotal,
         taxAmount,
         total,
-        journalEntryId: entry.id,
-        createdAt: new Date(`${input.date}T00:00:00Z`),
+        journalEntryId,
+        // createdAt milik DB (defaultNow = waktu server): tanggal input
+        // kasir tak boleh memalsukan stempel audit. Tanggal bisnis tercatat
+        // jujur di sale_date (semua sale — termasuk Rp0 tanpa jurnal) dan
+        // di jurnal bila ada (cubic pr10 pos:366).
+        saleDate: input.date,
       })
       .returning();
     const itemRows = await tx

@@ -30,20 +30,51 @@ export function ChatRoom({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
 
-  // Fallback realtime (cubic chat-room.tsx:50): polling ringan saat fokus —
+  // Fallback realtime (cubic chat-room.tsx:50): polling ringan saat terlihat —
   // realtime Ably belum ada subscriber di klien, jadi router.refresh() tiap
-  // 5 dtk menjaga pesan masuk terlihat tanpa navigasi.
+  // 5 dtk menjaga pesan masuk terlihat tanpa navigasi. Tab tersembunyi tidak
+  // ikut refetch (visibility check); refresh sekali saat tab kembali tampak.
   React.useEffect(() => {
-    const id = setInterval(() => router.refresh(), 5000);
-    return () => clearInterval(id);
+    const id = setInterval(() => {
+      if (document.hidden) return;
+      router.refresh();
+    }, 5000);
+    const onVisible = () => {
+      if (!document.hidden) router.refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [router]);
 
+  // Satu kunci idempotensi per draf (cubic pr10 chat:339): stabil di
+  // double-click/retry, diganti hanya setelah sukses terkirim. Diisi di
+  // effect (bukan render) agar lolos react-hooks/purity.
+  const draftKey = React.useRef<string>("");
+  // Teks yang diikat kunci draf saat ini (cubic pr10 r4): kunci
+  // idempotensi mengikat SATU teks — retry dengan teks edit memakai
+  // kunci lama akan ditolak server sebagai mismatch.
+  const draftText = React.useRef<string>("");
+  React.useEffect(() => {
+    if (!draftKey.current) draftKey.current = newClientMsgId();
+  }, []);
   function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const form = e.currentTarget;
     const fd = new FormData(form);
     fd.set("conversationId", conversationId);
-    if (!String(fd.get("body") ?? "").trim()) return;
+    const body = String(fd.get("body") ?? "");
+    if (!body.trim()) return;
+    // Rotasi kunci saat teks berubah (cubic pr10 r4): draf yang diedit
+    // setelah kirim gagal harus memakai kunci baru, kalau tidak error
+    // mismatch server akan berulang selamanya.
+    if (draftText.current !== "" && body !== draftText.current) {
+      draftKey.current = newClientMsgId();
+    }
+    draftText.current = body;
+    fd.set("clientMsgId", draftKey.current);
     startTransition(async () => {
       const result = await sendMessageAction(fd);
       if (!result.ok) {
@@ -53,6 +84,7 @@ export function ChatRoom({
       // Reset HANYA setelah sukses (cubic chat-room.tsx:37) — teks user
       // tidak hilang saat pengiriman ditolak.
       form.reset();
+      draftKey.current = newClientMsgId();
       router.refresh();
     });
   }
@@ -87,5 +119,17 @@ export function ChatRoom({
         </Button>
       </form>
     </div>
+  );
+}
+
+/**
+ * ID idempotensi klien (cubic pr10 r3:9109): crypto.randomUUID hanya ada
+ * di konteks aman (HTTPS/localhost); fallback timestamp+acak agar halaman
+ * chat tak crash di LAN http. Dipakai di effect/handler (bukan render).
+ */
+function newClientMsgId(): string {
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
   );
 }

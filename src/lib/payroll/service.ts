@@ -14,10 +14,13 @@ import {
   payslips,
   type PayrollRun,
 } from "@/db/schema";
+import { listEmployeesForPayroll } from "@/lib/repos/hrm-repo";
+import { pgErrorParts } from "@/lib/db-errors";
 import { requireOrgRole } from "@/lib/org-scope";
 import { recordAudit } from "@/lib/repos/audit-repo";
 import { currentState } from "@/lib/approval";
 import {
+  DEFAULT_WORKING_DAYS,
   computePayslip,
   type PayslipInput,
   type Payslip as PayslipBreakdown,
@@ -73,20 +76,87 @@ async function unpaidLeaveDaysByEmployee(
     if (r.type !== "izin") continue;
     const cs = currentState(r.state);
     if (cs?.status !== "approved") continue;
-    // Overlap [start,end] ∩ bulan, hari kalender.
+    // Overlap [start,end] ∩ bulan, HARI KERJA SAJA Senin–Jumat (cubic
+    // pr10 payroll:205): prorateBase berdenominator 21 hari kerja —
+    // menghitung Sabtu/Minggu menggelembungkan potongan (18 hari kerja +
+    // weekend = 24 hari kalender → clamp → gaji 0!).
     const s = r.startDate > from ? r.startDate : from;
     const e = r.endDate < to ? r.endDate : to;
-    const days =
-      Math.round(
-        (new Date(`${e}T00:00:00Z`).getTime() -
-          new Date(`${s}T00:00:00Z`).getTime()) /
-          86_400_000,
-      ) + 1;
+    let days = 0;
+    for (
+      let d = new Date(`${s}T00:00:00Z`).getTime();
+      d <= new Date(`${e}T00:00:00Z`).getTime();
+      d += 86_400_000
+    ) {
+      const dow = new Date(d).getUTCDay();
+      if (dow !== 0 && dow !== 6) days++;
+    }
     if (days > 0) {
       result.set(r.employeeId, (result.get(r.employeeId) ?? 0) + days);
     }
   }
   return result;
+}
+
+type PayrollStaffRow = Awaited<
+  ReturnType<typeof listEmployeesForPayroll>
+>[number];
+
+/**
+ * Payslip input SHARED by run + preview: real unpaid days (prorata
+ * clamp) + real tenure. A preview using static 0/12 lies for approved
+ * izin and mid-year hires — this constructor is the single source of
+ * truth for both.
+ */
+function buildPayslipInput(
+  emp: PayrollStaffRow,
+  unpaidDaysRaw: number,
+  year: number,
+  month: number,
+): PayslipInput {
+  // Bulan 22–23 weekday yang semuanya izin melebihi denominator 21:
+  // clamp ke batas prorasi (gaji 0 — sebulan penuh absen) supaya satu
+  // karyawan tidak menggagalkan run se-organisasi. Kontrak throw
+  // prorateBase untuk input liar tetap dipertahankan di engine.
+  // (Hari libur nasional belum dikecualikan: repo belum punya
+  // kalender libur.)
+  const unpaidDays = Math.min(unpaidDaysRaw, DEFAULT_WORKING_DAYS);
+  return {
+    employeeId: emp.id,
+    name: emp.name,
+    taxStatus: emp.taxStatus,
+    baseSalary: emp.baseSalary,
+    unpaidLeaveDays: unpaidDays,
+    weekdayOvertimeHours: 0, // ponytail: agregasi jam lembur dari attendances
+    restdayOvertimeHours: 0, // saat kolom otomatis tersedia; input manual menyusul.
+    monthsWorked: monthsWorkedAt(emp.hireDate, year, month),
+    includeThr: month === 12,
+  };
+}
+
+/**
+ * Preview totals WITHOUT writing a run: roster and calculation inputs
+ * exactly matching runPayroll (real unpaid days, real tenure) — only
+ * the aggregates are returned. Auth stays with the caller (admin-only).
+ */
+export async function previewPayrollTotals(
+  orgId: string,
+  year: number,
+  month: number,
+): Promise<{ employeeCount: number; totalBruto: number; totalNet: number }> {
+  const staff = await listEmployeesForPayroll(orgId);
+  const active = staff.filter((e) => e.status === "active");
+  const unpaid = await unpaidLeaveDaysByEmployee(orgId, year, month);
+  let totalBruto = 0;
+  let totalNet = 0;
+  for (const emp of active) {
+    const b = computePayslip(
+      buildPayslipInput(emp, unpaid.get(emp.id) ?? 0, year, month),
+    );
+    totalBruto += b.gross;
+    totalNet += b.net;
+  }
+  return { employeeCount: active.length, totalBruto, totalNet };
 }
 
 /** Masa kerja bulan utuh per tanggal gajian (akhir bulan tsb). */
@@ -111,6 +181,28 @@ export interface RunPayrollResult {
     breakdown: PayslipBreakdown;
     net: number;
   }>;
+}
+
+/**
+ * Map a concurrent run race for the same period (the
+ * payroll_runs_org_period_unique unique index) to DUPLICATE_PERIOD
+ * instead of a 500. Reads through drizzle's cause wrapper, which
+ * carries the code. Exported so the branch mapping is covered by
+ * deterministic tests.
+ */
+export function throwIfPayrollRace(
+  error: unknown,
+  year: number,
+  month: number,
+): never {
+  const { code, constraint } = pgErrorParts(error);
+  if (code === "23505" && constraint === "payroll_runs_org_period_unique") {
+    throw new PayrollError(
+      "DUPLICATE_PERIOD",
+      `Payroll ${year}-${String(month).padStart(2, "0")} sudah ada.`,
+    );
+  }
+  throw error;
 }
 
 export async function runPayroll(
@@ -150,10 +242,9 @@ export async function runPayroll(
     );
   }
 
-  const staff = await db
-    .select()
-    .from(employees)
-    .where(eq(employees.orgId, orgId));
+  // Sumber staff bersama preview (cubic pr10 hrm:184): TANPA cap —
+  // run membayar semua, preview harus menghitung semua.
+  const staff = await listEmployeesForPayroll(orgId);
   const selected = period.employeeIds
     ? staff.filter((e) => period.employeeIds!.includes(e.id))
     : staff.filter((e) => e.status === "active");
@@ -166,47 +257,53 @@ export async function runPayroll(
 
   const unpaid = await unpaidLeaveDaysByEmployee(orgId, year, month);
 
-  const [run] = await db
-    .insert(payrollRuns)
-    .values({ orgId, year, month, createdBy: userId })
-    .returning();
+  // Atomik: insert run + seluruh slip + audit dalam satu transaksi —
+  // crash di tengah loop me-rollback semuanya sehingga retry tidak
+  // terblokir DUPLICATE_PERIOD oleh run parsial.
+  return db.transaction(async (tx) => {
+    let run!: PayrollRun;
+    try {
+      [run] = await tx
+        .insert(payrollRuns)
+        .values({ orgId, year, month, createdBy: userId })
+        .returning();
+    } catch (error) {
+      throwIfPayrollRace(error, year, month);
+    }
+    // TS: run pasti terisi (insert gagal selalu melempar).
+    const payrollRun: PayrollRun = run;
 
-  const rows: RunPayrollResult["payslips"] = [];
-  for (const emp of selected) {
-    const input: PayslipInput = {
-      employeeId: emp.id,
-      name: emp.name,
-      taxStatus: emp.taxStatus,
-      baseSalary: emp.baseSalary,
-      unpaidLeaveDays: unpaid.get(emp.id) ?? 0,
-      weekdayOvertimeHours: 0, // ponytail: agregasi jam lembur dari attendances
-      restdayOvertimeHours: 0, // saat kolom otomatis tersedia; input manual menyusul.
-      monthsWorked: monthsWorkedAt(emp.hireDate, year, month),
-      includeThr: month === 12,
-    };
-    const breakdown = computePayslip(input);
-    const [slip] = await db
-      .insert(payslips)
-      .values({
+    const rows: RunPayrollResult["payslips"] = [];
+    for (const emp of selected) {
+      const breakdown = computePayslip(
+        buildPayslipInput(emp, unpaid.get(emp.id) ?? 0, year, month),
+      );
+      const [slip] = await tx
+        .insert(payslips)
+        .values({
+          orgId,
+          runId: payrollRun.id,
+          employeeId: emp.id,
+          breakdown,
+          netAmount: breakdown.net,
+        })
+        .returning();
+      rows.push({ employeeId: emp.id, breakdown, net: slip.netAmount });
+    }
+
+    await recordAudit(
+      {
         orgId,
-        runId: run.id,
-        employeeId: emp.id,
-        breakdown,
-        netAmount: breakdown.net,
-      })
-      .returning();
-    rows.push({ employeeId: emp.id, breakdown, net: slip.netAmount });
-  }
-
-  await recordAudit({
-    orgId,
-    userId,
-    action: "payroll.run.create",
-    entity: "payroll_run",
-    entityId: run.id,
-    metadata: { year, month, employees: rows.length },
+        userId,
+        action: "payroll.run.create",
+        entity: "payroll_run",
+        entityId: payrollRun.id,
+        metadata: { year, month, employees: rows.length },
+      },
+      tx,
+    );
+    return { run: payrollRun, payslips: rows };
   });
-  return { run, payslips: rows };
 }
 
 export async function getRun(
@@ -241,6 +338,18 @@ export async function listPayslips(
   }));
 }
 
+/**
+ * Satu sel CSV bank: koma dinetralkan ke spasi (kontrak pin test CSV),
+ * CR/LF dilucuti agar nama/bank/rekening tidak bisa injeksi baris.
+ */
+// Formula-injection guard (cubic pr10 payroll:285): bank/nama adalah
+// input admin — sel diawali =, +, -, @ dieksekusi spreadsheet sebagai
+// formula saat CSV dibuka.
+function csvCell(value: string): string {
+  const flat = value.replace(/[\r\n,]+/g, " ");
+  return /^[=+\-@]/.test(flat.trimStart()) ? `'${flat}` : flat;
+}
+
 /** CSV transfer bank: bank, no rekening, nama, jumlah, berita 'GAJI YYYYMM'. */
 export async function exportBankTransfer(
   userId: string,
@@ -259,9 +368,9 @@ export async function exportBankTransfer(
   const lines = ["bank,rekening,nama,jumlah,berita"];
   for (const { slip, emp } of rows) {
     const net = slip.breakdown.net;
-    const bank = (emp.bankName ?? "").replace(/,/g, " ");
-    const account = emp.bankAccount ?? "";
-    const name = emp.name.replace(/,/g, " ");
+    const bank = csvCell(emp.bankName ?? "");
+    const account = csvCell(emp.bankAccount ?? "");
+    const name = csvCell(emp.name);
     lines.push(`${bank},${account},${name},${net},GAJI ${ym}`);
   }
   return lines.join("\r\n");

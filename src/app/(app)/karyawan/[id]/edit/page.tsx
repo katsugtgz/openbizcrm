@@ -3,6 +3,8 @@ import { notFound, redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
 import { getEmployee } from "@/lib/repos/hrm-repo";
+import { listMembers } from "@/lib/repos/member-repo";
+import { listLinkedUserIds } from "@/lib/repos/hrm-repo";
 import { requireOrgRole } from "@/lib/org-scope";
 import { updateEmployeeAction } from "../../actions";
 import { EmployeeForm } from "../../employee-form";
@@ -26,6 +28,17 @@ export default async function KaryawanEditPage({
   const employee = await getEmployee(orgId, id);
   if (!employee) notFound();
   const sp = await searchParams;
+  // Sembunyikan user tertaut ke karyawan LAIN (cubic pr10 r2:2232);
+  // tautan milik sendiri tetap ditawarkan agar tak terlepas diam-diam.
+  const [linkedIds, allMembers] = await Promise.all([
+    listLinkedUserIds(orgId),
+    listMembers(userId, orgId),
+  ]);
+  const linked = new Set(linkedIds);
+  if (employee.userId) linked.delete(employee.userId);
+  const members = allMembers
+    .filter((m) => !linked.has(m.user.id))
+    .map((m) => ({ id: m.user.id, name: m.user.name, email: m.user.email }));
 
   return (
     <div className="flex flex-col gap-6">
@@ -42,7 +55,11 @@ export default async function KaryawanEditPage({
           {sp.error}
         </p>
       )}
-      <EmployeeForm employee={employee} action={updateEmployeeAction} />
+      <EmployeeForm
+        employee={employee}
+        members={members}
+        action={updateEmployeeAction}
+      />
     </div>
   );
 }

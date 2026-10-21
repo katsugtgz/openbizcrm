@@ -30,6 +30,7 @@
  * Returns null when the user or org is not (and cannot be) provisioned —
  * callers redirect (pages) or throw (actions).
  */
+import { randomUUID } from "crypto";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { organizations, orgMemberships, users } from "@/db/schema";
@@ -89,20 +90,32 @@ async function provision(
         // kebetulan memakai WorkOS org id ini sebagai slug — tidak boleh
         // ditelan diam-diam, karena itu meng-commit user tanpa org
         // (needsOrg=false) dan login berikutnya kehilangan path retry.
-        // Konflik slug melempar error → seluruh transaksi roll back.
+        // Sebaliknya slug collision memakai slug unik bersufiks: tanpa ini
+        // insert melempar pada SETIAP login (denial permanen sampai admin
+        // mengganti slug penabrak). Sufiks acak membuat sisa race (dua
+        // insert konkuren) self-healing pada retry login berikutnya.
         let [org] = await tx
           .select()
           .from(organizations)
           .where(eq(organizations.workosOrgId, user.organizationId))
           .limit(1);
         if (!org) {
+          let slug = user.organizationId;
+          const [slugOwner] = await tx
+            .select({ id: organizations.id })
+            .from(organizations)
+            .where(eq(organizations.slug, slug))
+            .limit(1);
+          if (slugOwner) {
+            slug = `${user.organizationId}-${randomUUID().slice(0, 8)}`;
+          }
           [org] = await tx
             .insert(organizations)
             .values({
               // WorkOS gives us only the org id here; id doubles as name and
               // slug fallback until renamed manually.
               name: user.organizationId,
-              slug: user.organizationId,
+              slug,
               workosOrgId: user.organizationId,
             })
             .onConflictDoNothing({ target: organizations.workosOrgId })
@@ -141,7 +154,14 @@ async function provision(
       return { userId: dbUser.id, orgId };
     });
   } catch (e) {
-    console.error("[ids.provision] failed:", e);
+    // Never log the raw error: PG details embed attempted values (email,
+    // ids). Name + code are enough to triage provisioning failures.
+    const code =
+      (e as { code?: unknown } | null)?.code ??
+      (e as { cause?: { code?: unknown } } | null)?.cause?.code ??
+      "unknown";
+    const name = e instanceof Error ? e.name : typeof e;
+    console.error(`[ids.provision] failed (${name} code=${String(code)})`);
     return null;
   }
 }
@@ -163,7 +183,9 @@ export async function resolveSessionIds(
   // User-only provisioning retry (cubic P1 ids:128): user dibuat oleh sesi
   // tanpa org (needs_org=true). Login berikut yang membawa organizationId
   // melengkapi provisioning — bukan gagal permanen di cek membership.
-  if (dbUser.needsOrg && user.organizationId) {
+  // AuthKit-only seperti path first-login di atas: fake mode tidak pernah
+  // provisioning (kontrak modul).
+  if (dbUser.needsOrg && user.organizationId && !fakeSessionActive()) {
     const provisioned = await provision(user);
     if (provisioned?.orgId) {
       return { userId: provisioned.userId, orgId: provisioned.orgId };

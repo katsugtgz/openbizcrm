@@ -114,6 +114,52 @@ describe("chat + drive integration", () => {
   );
 
   itDb(
+    "idempotency key: same-key retry dedupes, edited text or other sender rejected",
+    async () => {
+      const a = await makeOrgWithOwner();
+      const b = await makeUser("idem-b");
+      await db.execute(
+        (await import("drizzle-orm"))
+          .sql`insert into org_memberships (org_id, user_id, role)
+        values (${a.orgId}, ${b}, 'member')`,
+      );
+      const { conversationId } = await chat.openDirect(a.userId, a.orgId, b);
+      const key = `idem-${suffix}`;
+
+      const first = await chat.sendMessage(
+        a.userId,
+        a.orgId,
+        conversationId,
+        "teks asli",
+        { clientMsgId: key },
+      );
+      // Retry identik: pemenang yang sama, bukan baris baru.
+      const retry = await chat.sendMessage(
+        a.userId,
+        a.orgId,
+        conversationId,
+        "teks asli",
+        { clientMsgId: key },
+      );
+      expect(retry.id).toBe(first.id);
+      // Kunci dipakai ulang dengan teks edit: ditolak (cubic pr10 r4).
+      await expect(
+        chat.sendMessage(a.userId, a.orgId, conversationId, "teks edit", {
+          clientMsgId: key,
+        }),
+      ).rejects.toThrow(/gagal dikirim/);
+      // Kunci milik pengirim lain: ditolak.
+      await expect(
+        chat.sendMessage(b, a.orgId, conversationId, "teks asli", {
+          clientMsgId: key,
+        }),
+      ).rejects.toThrow(/gagal dikirim/);
+      const msgs = await chat.listMessages(a.userId, a.orgId, conversationId);
+      expect(msgs).toHaveLength(1);
+    },
+  );
+
+  itDb(
     "group conversation: create, member list, empty name rejected",
     async () => {
       const { userId, orgId } = await makeOrgWithOwner();

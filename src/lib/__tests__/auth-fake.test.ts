@@ -39,6 +39,28 @@ describe("SessionFake", () => {
   });
 });
 
+describe("fromCookieValue", () => {
+  it("resolves allowlisted seed ids", async () => {
+    const { fromCookieValue } = await import("@/lib/auth/fake");
+    expect(fromCookieValue("seed-member-1:fake-xyz")).toEqual({
+      ...FAKE_USERS["seed-member-1"],
+      sessionId: "fake-xyz",
+    });
+  });
+
+  it("rejects prototype keys and malformed values (cubic pr10)", async () => {
+    const { fromCookieValue } = await import("@/lib/auth/fake");
+    expect(fromCookieValue("toString:x")).toBeNull();
+    expect(fromCookieValue("__proto__:x")).toBeNull();
+    expect(fromCookieValue("constructor:x")).toBeNull();
+    expect(fromCookieValue("nope:x")).toBeNull();
+    expect(fromCookieValue("")).toBeNull();
+    expect(fromCookieValue(undefined)).toBeNull();
+    expect(fromCookieValue("noseparator")).toBeNull();
+    expect(fromCookieValue("seed-member-1:")).toBeNull();
+  });
+});
+
 /**
  * Adapter pick matrix (src/lib/auth/index.ts). The module caches the picked
  * adapter in a module-level promise, so each matrix case runs in a fresh
@@ -54,14 +76,17 @@ describe("auth adapter pick matrix", () => {
 
   /** Re-import the module under a specific env matrix cell. */
   async function pickEnv(env: Record<string, string | undefined>) {
-    process.env = {
-      ...saved,
-      AUTH_FAKE: undefined,
-      WORKOS_API_KEY: undefined,
-      WORKOS_CLIENT_ID: undefined,
-      WORKOS_COOKIE_PASSWORD: undefined,
-      ...env,
-    };
+    process.env = { ...saved };
+    // True absence: assigning undefined coerces to the string "undefined"
+    // (still present and truthy) — delete instead (mirrors config.test.ts).
+    delete process.env.AUTH_FAKE;
+    delete process.env.WORKOS_API_KEY;
+    delete process.env.WORKOS_CLIENT_ID;
+    delete process.env.WORKOS_COOKIE_PASSWORD;
+    for (const [key, value] of Object.entries(env)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     vi.resetModules();
     const mod = await import("@/lib/auth");
     const spied = vi.fn(async () => null);
@@ -94,6 +119,23 @@ describe("auth adapter pick matrix", () => {
     expect(await pickEnv({ NODE_ENV: "test" })).toBe(true);
   });
 
+  it('absence cells truly delete keys (no "undefined" strings)', async () => {
+    process.env = { ...saved };
+    delete process.env.AUTH_FAKE;
+    delete process.env.WORKOS_API_KEY;
+    delete process.env.WORKOS_CLIENT_ID;
+    delete process.env.WORKOS_COOKIE_PASSWORD;
+    // Guard the matrix itself: with true absence the session env is not
+    // ready and the picker must serve fake.
+    vi.resetModules();
+    const { isWorkosSessionEnvReady } = await import("@/lib/auth/config");
+    const { fakeSessionActive } = await import("@/lib/auth");
+    expect(process.env.AUTH_FAKE).toBeUndefined();
+    expect(process.env.WORKOS_API_KEY).toBeUndefined();
+    expect(isWorkosSessionEnvReady()).toBe(false);
+    expect(fakeSessionActive()).toBe(true);
+  });
+
   it("WorkOS fully configured -> AuthKit", async () => {
     expect(
       await pickEnv({
@@ -101,6 +143,17 @@ describe("auth adapter pick matrix", () => {
         WORKOS_API_KEY: "sk_test_x",
         WORKOS_CLIENT_ID: "client_x",
         WORKOS_COOKIE_PASSWORD: "c".repeat(32),
+      }),
+    ).toBe(false);
+  });
+
+  it("short cookie password -> NOT fake (fail closed, cubic pr10)", async () => {
+    expect(
+      await pickEnv({
+        NODE_ENV: "test",
+        WORKOS_API_KEY: "sk_test_x",
+        WORKOS_CLIENT_ID: "client_x",
+        WORKOS_COOKIE_PASSWORD: "short",
       }),
     ).toBe(false);
   });

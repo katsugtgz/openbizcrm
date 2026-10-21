@@ -4,10 +4,15 @@ services:
     container_name: openbizcrm-postgres
     restart: unless-stopped
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      # Init-only (cubic pr10 compose:10): read ONLY when the volume
+      # openbizcrm-pgdata is created for the first time. Changing this later
+      # does NOT rotate the password (the existing DB keeps its old one):
+      # rotation requires ALTER USER ... PASSWORD or deleting the volume
+      # (data loss).
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: openbizcrm
     volumes:
       - openbizcrm-pgdata:/var/lib/postgresql/data

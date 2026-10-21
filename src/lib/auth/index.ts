@@ -5,6 +5,7 @@
  * (dev without WorkOS, jsdom tests).
  */
 import { SessionFake } from "./fake";
+import { isWorkosEnvPresent } from "./config";
 import type { AuthSession } from "./types";
 
 export type { AuthSession, SessionUser } from "./types";
@@ -18,7 +19,8 @@ let adapter: Promise<AuthSession> | null = null;
  * 2. AUTH_FAKE=1 → SessionFake (dev/tests without WorkOS).
  * 3. WorkOS unconfigured (missing API key / client ID / cookie password)
  *    → SessionFake, so the login page's "belum dikonfigurasi" fallback can
- *    render instead of AuthKit throwing.
+ *    render instead of AuthKit throwing. Presence-only: a short cookie
+ *    password fails closed through AuthKit (cubic pr10 auth-config:36).
  * 4. Otherwise → AuthKit (real WorkOS).
  */
 function pick(): Promise<AuthSession> {
@@ -36,14 +38,7 @@ function pick(): Promise<AuthSession> {
  */
 function allowFake(): boolean {
   if (process.env.NODE_ENV === "production") return false;
-  return (
-    process.env.AUTH_FAKE === "1" ||
-    !(
-      !!process.env.WORKOS_API_KEY &&
-      !!process.env.WORKOS_CLIENT_ID &&
-      !!process.env.WORKOS_COOKIE_PASSWORD
-    )
-  );
+  return process.env.AUTH_FAKE === "1" || !isWorkosEnvPresent();
 }
 
 /**

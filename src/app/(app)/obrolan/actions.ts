@@ -82,8 +82,10 @@ export async function sendMessageAction(
   const { userId, orgId } = await requireSession();
   const conversationId = String(formData.get("conversationId") ?? "").trim();
   const body = String(formData.get("body") ?? "");
+  const clientMsgId =
+    String(formData.get("clientMsgId") ?? "").trim() || undefined;
   try {
-    await sendMessage(userId, orgId, conversationId, body);
+    await sendMessage(userId, orgId, conversationId, body, { clientMsgId });
   } catch (error) {
     return fail(error);
   }

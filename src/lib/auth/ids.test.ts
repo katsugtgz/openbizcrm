@@ -18,11 +18,21 @@ function restoreEnv(saved: Partial<Record<string, string | undefined>>): void {
   }
 }
 
+// DB-backed cases below are security pins (org-boundary no-fallback,
+// provisioning, slug-collision, two-phase) and need a database. Local runs
+// without RUN_DB_TESTS=1 skip them — loudly, so a green run never hides
+// unexecuted pins (CI sets RUN_DB_TESTS=1 with a postgres service).
+if (process.env.RUN_DB_TESTS !== "1") {
+  console.warn(
+    "[ids.test] RUN_DB_TESTS!=1: skipping DB-backed security-pinned cases; rerun with RUN_DB_TESTS=1 and a database to execute them.",
+  );
+}
+
 describe("resolveSessionIds", () => {
   let resolveSessionIds: typeof import("./ids").resolveSessionIds;
   // The DB-backed cases resolve against seeded rows, so they need the
-  // database (RUN_DB_TESTS=1): CI runs without it and the resolver
-  // correctly returns null for unknown users there.
+  // database (RUN_DB_TESTS=1, as in CI): without it they skip with the
+  // module-load warning above.
   const itDb = process.env.RUN_DB_TESTS === "1" ? it : it.skip;
 
   beforeEach(async () => {
@@ -56,8 +66,8 @@ describe("resolveSessionIds", () => {
   );
 
   // The next two resolve against seeded rows, so they need the database
-  // (RUN_DB_TESTS=1): CI runs without it and the resolver correctly
-  // returns null for unknown users there.
+  // (RUN_DB_TESTS=1, as in CI): without it they skip with the module-load
+  // warning above.
   itDb(
     "resolves fake-session ids (seed-owner-1) to internal UUIDs",
     async () => {
@@ -316,16 +326,17 @@ describe("resolveSessionIds integration (seeded DB)", () => {
   );
 
   itDb(
-    "slug collision: provisioning fails cleanly, user row NOT committed",
+    "slug collision: provisioning mints a unique slug, login succeeds",
     async () => {
-      // Pin cubic P1 ids:71 — onConflictDoNothing tanpa target menelan
-      // konflik slug: org lain sudah memakai WorkOS org id sebagai slug.
-      // Lama: user di-commit dengan needsOrg=false & orgId=null → retry
-      // path mati permanen. Benar: error slug → tx rollback → null, login
-      // berikutnya mencoba lagi.
+      // Org lain sudah memakai WorkOS org id sebagai slug (cubic P1 ids:71
+      // melarang konflik ini ditelan diam-diam menjadi user tanpa org).
+      // Lama: insert melempar pada SETIAP login → denial permanen sampai
+      // admin mengganti slug penabrak. Baru: slug unik bersufiks, user +
+      // org + membership ter-commit dan login berhasil.
       const { db } = await import("@/db");
-      const { users, organizations } = await import("@/db/schema");
-      const { eq } = await import("drizzle-orm");
+      const { users, organizations, orgMemberships } =
+        await import("@/db/schema");
+      const { eq, and, inArray } = await import("drizzle-orm");
       const collideSlug = `test_slugcollide_${Date.now()}`;
       const workosUserId = `test_slugcollide_user_${Date.now()}`;
       // Org "manual" dengan slug = WorkOS org id, workos_org_id NULL.
@@ -343,21 +354,47 @@ describe("resolveSessionIds integration (seeded DB)", () => {
       process.env.WORKOS_COOKIE_PASSWORD = "x".repeat(32);
       try {
         const { resolveSessionIds } = await import("./ids");
-        // Konflik slug → seluruh transaksi roll back, resolver null.
         const resolved = await resolveSessionIds({
           id: workosUserId,
           email: `slugcollide-${Date.now()}@contoh.co.id`,
           sessionId: "authkit-session",
           organizationId: collideSlug,
         });
-        expect(resolved).toBeNull();
-        // User TIDAK tertinggal: rollback penuh, bukan commit parsial.
-        const orphans = await db
+        expect(resolved).not.toBeNull();
+        const [dbUser] = await db
           .select()
           .from(users)
-          .where(eq(users.workosUserId, workosUserId));
-        expect(orphans).toHaveLength(0);
+          .where(eq(users.workosUserId, workosUserId))
+          .limit(1);
+        const [dbOrg] = await db
+          .select()
+          .from(organizations)
+          .where(eq(organizations.workosOrgId, collideSlug))
+          .limit(1);
+        // Slug unik: bukan slug penabrak, tetap turun dari WorkOS org id.
+        expect(dbOrg.slug).not.toBe(collideSlug);
+        expect(dbOrg.slug.startsWith(`${collideSlug}-`)).toBe(true);
+        expect(resolved).toEqual({ userId: dbUser.id, orgId: dbOrg.id });
+        expect(dbUser.needsOrg).toBe(false);
+        expect(dbUser.currentOrgId).toBe(dbOrg.id);
+        const [membership] = await db
+          .select()
+          .from(orgMemberships)
+          .where(
+            and(
+              eq(orgMemberships.userId, dbUser.id),
+              eq(orgMemberships.orgId, dbOrg.id),
+            ),
+          )
+          .limit(1);
+        expect(membership).toMatchObject({ role: "member" });
       } finally {
+        await db
+          .delete(users)
+          .where(inArray(users.workosUserId, [workosUserId]));
+        await db
+          .delete(organizations)
+          .where(inArray(organizations.workosOrgId, [collideSlug]));
         await db
           .delete(organizations)
           .where(eq(organizations.id, collideOrg.id));

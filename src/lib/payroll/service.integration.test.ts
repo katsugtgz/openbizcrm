@@ -17,8 +17,12 @@ describe("payroll service integration", () => {
   let createUser!: (typeof import("@/lib/repos/user-repo"))["createUser"];
   let createOrg!: (typeof import("@/lib/repos/org-repo"))["createOrg"];
   let createEmployee!: (typeof import("@/lib/repos/hrm-repo"))["createEmployee"];
+  let createLeaveRequest!: (typeof import("@/lib/repos/hrm-repo"))["createLeaveRequest"];
+  let actLeaveApproval!: (typeof import("@/lib/repos/hrm-repo"))["actLeaveApproval"];
   let PayrollError!: PayrollService["PayrollError"];
   let runPayroll!: PayrollService["runPayroll"];
+  let previewPayrollTotals!: PayrollService["previewPayrollTotals"];
+  let throwIfPayrollRace!: PayrollService["throwIfPayrollRace"];
   let exportBankTransfer!: PayrollService["exportBankTransfer"];
   let getRun!: PayrollService["getRun"];
 
@@ -27,9 +31,16 @@ describe("payroll service integration", () => {
     ({ db } = await import("@/db"));
     ({ createUser } = await import("@/lib/repos/user-repo"));
     ({ createOrg } = await import("@/lib/repos/org-repo"));
-    ({ createEmployee } = await import("@/lib/repos/hrm-repo"));
-    ({ PayrollError, runPayroll, exportBankTransfer, getRun } =
-      await import("./service"));
+    ({ createEmployee, createLeaveRequest, actLeaveApproval } =
+      await import("@/lib/repos/hrm-repo"));
+    ({
+      PayrollError,
+      runPayroll,
+      previewPayrollTotals,
+      throwIfPayrollRace,
+      exportBankTransfer,
+      getRun,
+    } = await import("./service"));
   });
 
   // Roundtrip may fail midway; track every resource at creation time so
@@ -158,6 +169,91 @@ describe("payroll service integration", () => {
       PayrollError,
     );
   });
+
+  itDb("throwIfPayrollRace maps the concurrent-run conflict only", async () => {
+    const drizzleRace = Object.assign(new Error("duplicate key"), {
+      cause: { code: "23505", constraint: "payroll_runs_org_period_unique" },
+    });
+    try {
+      throwIfPayrollRace(drizzleRace, 2026, 12);
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(PayrollError);
+      expect((error as InstanceType<typeof PayrollError>).code).toBe(
+        "DUPLICATE_PERIOD",
+      );
+    }
+    // Constraint lain / kode lain: lempar ulang apa adanya.
+    const other = Object.assign(new Error("duplicate key"), {
+      cause: { code: "23505", constraint: "payroll_runs_pkey" },
+    });
+    expect(() => throwIfPayrollRace(other, 2026, 12)).toThrow(other);
+    const notNull = Object.assign(new Error("null value"), {
+      cause: { code: "23502", constraint: "payroll_runs_org_period_unique" },
+    });
+    expect(() => throwIfPayrollRace(notNull, 2026, 12)).toThrow(notNull);
+  });
+
+  itDb(
+    "previewPayrollTotals matches runPayroll (izin + mid-year hire)",
+    async () => {
+      const admin = await createUser({
+        workosUserId: `pay-prev-admin-${suffix}`,
+        email: `pay-prev-admin-${suffix}@test.id`,
+      });
+      createdUserIds.push(admin.id);
+      const approver = await createUser({
+        workosUserId: `pay-prev-appr-${suffix}`,
+        email: `pay-prev-appr-${suffix}@test.id`,
+      });
+      createdUserIds.push(approver.id);
+      const org = await createOrg(
+        { name: "Preview Org", slug: `pay-prev-${suffix}` },
+        admin.id,
+      );
+      createdOrgIds.push(org.id);
+      await db
+        .insert(orgMemberships)
+        .values({ orgId: org.id, userId: approver.id, role: "admin" });
+
+      const emp = await createEmployee(admin.id, org.id, {
+        employeeNo: "PREV-1",
+        name: "Paritas",
+        taxStatus: "TK0",
+        baseSalary: 6_000_000,
+        hireDate: "2026-06-15", // 6 bulan kerja utk Desember 2026
+      });
+
+      const year = 2026;
+      const month = 12;
+      const before = await previewPayrollTotals(org.id, year, month);
+      expect(before.employeeCount).toBe(1);
+
+      // Izin approved 3 hari kerja (Senin-Rabu, 7-9 Des 2026).
+      const { request } = await createLeaveRequest(admin.id, org.id, {
+        employeeId: emp.id,
+        type: "izin",
+        startDate: "2026-12-07",
+        endDate: "2026-12-09",
+        approverId: approver.id,
+      });
+      await actLeaveApproval(approver.id, org.id, request.id, "approve");
+
+      // Preview mencerminkan izin: net turun setelah approval.
+      const after = await previewPayrollTotals(org.id, year, month);
+      expect(after.totalNet).toBeLessThan(before.totalNet);
+
+      // Run memakai input hitung yang sama persis: total identik.
+      const { payslips } = await runPayroll(admin.id, org.id, { year, month });
+      expect(payslips).toHaveLength(1);
+      const gross = payslips.reduce((s, p) => s + p.breakdown.gross, 0);
+      const net = payslips.reduce((s, p) => s + p.net, 0);
+      expect(after.totalBruto).toBe(gross);
+      expect(after.totalNet).toBe(net);
+      // Masa kerja 6 bulan, bukan 12: THR prorata setengah gaji.
+      expect(payslips[0].breakdown.thr).toBe(3_000_000);
+    },
+  );
 
   // Org deletion cascades memberships/employees/payslips; deletes registered
   // resources even when the roundtrip fails midway (cubic P2 :129).

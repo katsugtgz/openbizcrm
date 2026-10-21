@@ -115,6 +115,27 @@ describe("review 360 integration", () => {
     expect(bySlug?.id).toBe(formId);
   });
 
+  itDb("period menolak judul kosong dan tanggal tak valid", async () => {
+    await expect(
+      svc.createPeriod(owner.id, orgA.id, { formId, title: "   " }),
+    ).rejects.toThrow("Judul periode");
+    await expect(
+      svc.createPeriod(owner.id, orgA.id, {
+        formId,
+        title: "Periode X",
+        startDate: "2026-12-31",
+        endDate: "2026-01-01",
+      }),
+    ).rejects.toThrow("Tanggal selesai");
+    await expect(
+      svc.createPeriod(owner.id, orgA.id, {
+        formId,
+        title: "Periode X",
+        startDate: "2026-13-01",
+      }),
+    ).rejects.toThrow("Tanggal mulai");
+  });
+
   itDb("period dibuat dari form aktif; form draft ditolak", async () => {
     const draft = await svc.createForm(owner.id, orgA.id, {
       title: `Draft ${suffix}`,

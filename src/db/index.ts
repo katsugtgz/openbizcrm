@@ -16,6 +16,50 @@ function resolveDatabaseUrl(): string {
 }
 
 /**
+ * postgres-js must encrypt remote connections: without `ssl`, credentials
+ * and PII travel in cleartext whenever DB_DRIVER=postgres points at a
+ * non-local host (bughunt data-tenant). Local loopback stays plaintext.
+ * An explicit RECOGNIZED `sslmode` in the URL always wins over this
+ * default; unknown values (prefer/typo) leave SSL disabled in postgres-js,
+ * so they fall through to the host-based default (cubic pr10 db:25).
+ */
+export function shouldRequireSsl(url: string): boolean {
+  const sslmode = /[?&]sslmode=([^&#]*)/i.exec(url)?.[1]?.toLowerCase();
+  if (
+    sslmode === "disable" ||
+    sslmode === "require" ||
+    sslmode === "verify-ca" ||
+    sslmode === "verify-full"
+  ) {
+    return false;
+  }
+  try {
+    // postgres-js honors ?host= (incl. comma-separated multi-host) over the
+    // URL authority (cubic pr10 db:28): a loopback authority with a remote
+    // query host must still require TLS. Any non-loopback host wins.
+    const parsed = new URL(url);
+    const rawHosts = parsed.searchParams.get("host") ?? parsed.hostname;
+    const hosts = rawHosts.split(",").map((h) => {
+      // URL keeps IPv6 brackets in hostname ("[::1]"); strip an explicit
+      // :port only from bare hostnames/IPv4 (IPv6 keeps its colons).
+      // Entries starting with "/" are postgres unix-socket dirs: a local
+      // socket, not a remote host, so TLS must not be forced.
+      let host = h.trim().toLowerCase();
+      if (host.startsWith("/")) return "localhost";
+      const bare = host.match(/^(\[.*\]|[^:]+)(:\d+)?$/);
+      host = (bare ? bare[1] : host).replace(/^\[|\]$/g, "");
+      return host;
+    });
+    return hosts.some(
+      (host) =>
+        host !== "localhost" && host !== "127.0.0.1" && host !== "::1",
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Local dev uses postgres-js against a plain Postgres (Docker / localhost).
  * Prod uses the Neon serverless driver. DB_DRIVER=postgres forces the local
  * driver regardless of the URL host.
@@ -53,7 +97,10 @@ function createDb() {
     return drizzleNeon(pool, { schema });
   }
 
-  const client = postgres(databaseUrl, { max: 5 });
+  const client = postgres(databaseUrl, {
+    max: 5,
+    ...(shouldRequireSsl(databaseUrl) ? { ssl: "require" as const } : {}),
+  });
   return drizzlePostgres(client, { schema });
 }
 

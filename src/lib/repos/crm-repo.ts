@@ -1,4 +1,4 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   crmActivities,
@@ -7,8 +7,12 @@ import {
   crmDeals,
   crmPipelines,
   crmStages,
+  invoices,
+  orgMemberships,
+  projects,
 } from "@/db/schema";
 import { NotFoundError, requireOrgRole } from "@/lib/org-scope";
+import { pgErrorParts } from "@/lib/db-errors";
 import { assertSafeAmount } from "@/lib/money";
 import { recordAudit } from "@/lib/repos/audit-repo";
 
@@ -42,14 +46,58 @@ async function requireDeal(orgId: string, dealId: string): Promise<CrmDeal> {
   return deal;
 }
 
+/** User wajib anggota org ini (dipakai untuk owner/assignee lintas repos). */
+export async function requireOrgMember(
+  orgId: string,
+  userId: string,
+  label = "Pengguna",
+): Promise<void> {
+  const [m] = await db
+    .select({ id: orgMemberships.id })
+    .from(orgMemberships)
+    .where(
+      and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId)),
+    )
+    .limit(1);
+  if (!m) throw new NotFoundError(`${label} bukan anggota organisasi ini.`);
+}
+
+/** Email kontak: bentuk user@domain.tld tanpa spasi. */
+export function assertContactEmail(email: string | null): void {
+  if (email === null) return;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new Error("Email kontak tidak valid.");
+  }
+}
+
+/** Telepon kontak: digit/+/spasi/tanda baca umum, 7..15 digit. */
+export function assertContactPhone(phone: string | null): void {
+  if (phone === null) return;
+  const digits = phone.replace(/\D/g, "");
+  if (
+    !/^[+\d][\d\s\-().]*$/.test(phone) ||
+    digits.length < 7 ||
+    digits.length > 15
+  ) {
+    throw new Error("Nomor telepon kontak tidak valid.");
+  }
+}
+
+/** Batas baca default daftar CRM; halaman memakai +1 untuk probe. */
+export const CRM_LIST_DEFAULT_LIMIT = 500;
+
 // ---------------- Companies ----------------
 
-export async function listCompanies(orgId: string): Promise<CrmCompany[]> {
+export async function listCompanies(
+  orgId: string,
+  limit = CRM_LIST_DEFAULT_LIMIT,
+): Promise<CrmCompany[]> {
   return db
     .select()
     .from(crmCompanies)
     .where(eq(crmCompanies.orgId, orgId))
-    .orderBy(asc(crmCompanies.name));
+    .orderBy(asc(crmCompanies.name))
+    .limit(limit);
 }
 
 export async function getCompany(
@@ -74,13 +122,17 @@ export async function createCompany(
   },
 ): Promise<CrmCompany> {
   await requireOrgRole(userId, orgId, "member");
+  // Kolom owner hidup: default pembuat (UI tak punya pemilih owner), nilai
+  // eksplisit wajib anggota org ini.
+  const ownerUserId = input.ownerUserId ?? userId;
+  await requireOrgMember(orgId, ownerUserId, "Pemilik perusahaan");
   const [row] = await db
     .insert(crmCompanies)
     .values({
       orgId,
       name: input.name,
       industry: input.industry ?? null,
-      ownerUserId: input.ownerUserId ?? null,
+      ownerUserId,
     })
     .returning();
   await recordAudit({
@@ -97,10 +149,17 @@ export async function updateCompany(
   userId: string,
   orgId: string,
   id: string,
-  input: Partial<{ name: string; industry: string | null }>,
+  input: Partial<{
+    name: string;
+    industry: string | null;
+    ownerUserId: string | null;
+  }>,
 ): Promise<CrmCompany> {
   await requireOrgRole(userId, orgId, "member");
   await requireOrgCompany(orgId, id);
+  if (input.ownerUserId) {
+    await requireOrgMember(orgId, input.ownerUserId, "Pemilik perusahaan");
+  }
   const [row] = await db
     .update(crmCompanies)
     .set(input)
@@ -117,6 +176,90 @@ export async function updateCompany(
   return row;
 }
 
+/**
+ * Hapus perusahaan. Admin saja. Ditolak bila masih ada deal atau invoice
+ * (deal/invoice me-restrict di DB; cek di sini agar pesan jelas, bukan
+ * error PG mentah). Kontak + pipeline ikut cascade FK; tautan proyek
+ * di-SET NULL di tx yang sama (FK komposit restrict).
+ */
+export async function deleteCompany(
+  userId: string,
+  orgId: string,
+  id: string,
+): Promise<void> {
+  await requireOrgRole(userId, orgId, "admin");
+  await requireOrgCompany(orgId, id);
+  // Pre-checks for friendly errors; the restrict FKs below close the
+  // TOCTOU race (cubic pr10 crm-repo:207).
+  const [deal] = await db
+    .select({ id: crmDeals.id })
+    .from(crmDeals)
+    .where(and(eq(crmDeals.companyId, id), eq(crmDeals.orgId, orgId)))
+    .limit(1);
+  if (deal) {
+    throw new Error(
+      "Perusahaan masih memiliki deal; hapus deal-nya dahulu.",
+    );
+  }
+  const [inv] = await db
+    .select({ id: invoices.id })
+    .from(invoices)
+    .where(and(eq(invoices.companyId, id), eq(invoices.orgId, orgId)))
+    .limit(1);
+  if (inv) {
+    throw new Error(
+      "Perusahaan masih memiliki invoice; tidak bisa dihapus.",
+    );
+  }
+  // Null project links in-tx (projects FK is restrict — cubic pr10
+  // schema:795), then delete. A deal/invoice inserted between the
+  // pre-check and the delete trips the restrict FK (23503): map it to the
+  // same friendly message instead of a raw PG error.
+  try {
+    await db.transaction(async (tx) => {
+      await tx
+        .update(projects)
+        .set({ clientCompanyId: null })
+        .where(
+          and(
+            eq(projects.clientCompanyId, id),
+            eq(projects.orgId, orgId),
+          ),
+        );
+      await tx
+        .delete(crmCompanies)
+        .where(and(eq(crmCompanies.id, id), eq(crmCompanies.orgId, orgId)));
+    });
+  } catch (error) {
+    // Cause-aware + branch per constraint (cubic pr10 r2 crm:230): kode PG
+    // ada di error.cause (DrizzleQueryError membungkus), dan 23503 proyek
+    // butuh pesan berbeda dari deal/invoice.
+    const { code, constraint } = pgErrorParts(error);
+    if (
+      code === "23503" &&
+      (constraint === "crm_deals_company_org_fk" ||
+        constraint === "invoices_company_org_fk")
+    ) {
+      throw new Error(
+        "Perusahaan masih memiliki deal atau invoice; tidak bisa dihapus.",
+      );
+    }
+    if (code === "23503" && constraint === "projects_company_org_fk") {
+      throw new Error(
+        "Perusahaan masih ditautkan ke proyek; lepaskan tautannya dahulu.",
+      );
+    }
+    throw error;
+  }
+  await recordAudit({
+    orgId,
+    userId,
+    action: "crm.company.delete",
+    entity: "crm_company",
+    entityId: id,
+  });
+}
+
 /** Company wajib milik org ini; dipakai lintas repos (deal, proyek). */
 export async function requireOrgCompany(
   orgId: string,
@@ -130,11 +273,31 @@ export async function requireOrgCompany(
   if (!row) throw new NotFoundError("Perusahaan tidak ditemukan.");
 }
 
+/**
+ * Jumlah kontak per perusahaan, SATU query agregat TANPA cap (cubic pr10
+ * r3:9060): "Jumlah Kontak" dihitung dari tabel ini — menurunkannya dari
+ * array contacts (cap 500) diam-diam salah saat kontak > 500.
+ */
+export async function countContactsByCompany(
+  orgId: string,
+): Promise<Map<string, number>> {
+  const rows = await db
+    .select({
+      companyId: crmContacts.companyId,
+      n: sql<number>`count(*)::int`,
+    })
+    .from(crmContacts)
+    .where(eq(crmContacts.orgId, orgId))
+    .groupBy(crmContacts.companyId);
+  return new Map(rows.map((r) => [r.companyId, r.n]));
+}
+
 // ---------------- Contacts ----------------
 
 export async function listContacts(
   orgId: string,
   companyId?: string,
+  limit = CRM_LIST_DEFAULT_LIMIT,
 ): Promise<CrmContact[]> {
   const conds = [eq(crmContacts.orgId, orgId)];
   if (companyId) conds.push(eq(crmContacts.companyId, companyId));
@@ -142,7 +305,8 @@ export async function listContacts(
     .select()
     .from(crmContacts)
     .where(and(...conds))
-    .orderBy(asc(crmContacts.name));
+    .orderBy(asc(crmContacts.name))
+    .limit(limit);
 }
 
 export async function createContact(
@@ -158,8 +322,12 @@ export async function createContact(
 ): Promise<CrmContact> {
   await requireOrgRole(userId, orgId, "member");
   await requireOrgCompany(orgId, input.companyId);
-  const [row] = await db
-    .insert(crmContacts)
+  assertContactEmail(input.email ?? null);
+  assertContactPhone(input.phone ?? null);
+  let row: CrmContact;
+  try {
+    [row] = await db
+      .insert(crmContacts)
     .values({
       orgId,
       companyId: input.companyId,
@@ -167,8 +335,20 @@ export async function createContact(
       email: input.email ?? null,
       phone: input.phone ?? null,
       position: input.position ?? null,
-    })
-    .returning();
+      })
+      .returning();
+  } catch (error) {
+    // Unique email per-org (0029, case-insensitive): pesan domain, bukan
+    // PG mentah (cubic pr10 r2 0029:100).
+    const { code, constraint } = pgErrorParts(error);
+    if (
+      code === "23505" &&
+      constraint === "crm_contacts_org_lower_email_unique"
+    ) {
+      throw new Error("Email kontak sudah dipakai di organisasi ini.");
+    }
+    throw error;
+  }
   await recordAudit({
     orgId,
     userId,
@@ -179,17 +359,98 @@ export async function createContact(
   return row;
 }
 
+export async function updateContact(
+  userId: string,
+  orgId: string,
+  id: string,
+  input: Partial<{
+    name: string;
+    email: string | null;
+    phone: string | null;
+    position: string | null;
+  }>,
+): Promise<CrmContact> {
+  await requireOrgRole(userId, orgId, "member");
+  if (input.email !== undefined) assertContactEmail(input.email);
+  if (input.phone !== undefined) assertContactPhone(input.phone);
+  let row: CrmContact | undefined;
+  try {
+    [row] = await db
+      .update(crmContacts)
+      .set(input)
+      .where(and(eq(crmContacts.id, id), eq(crmContacts.orgId, orgId)))
+      .returning();
+  } catch (error) {
+    const { code, constraint } = pgErrorParts(error);
+    if (
+      code === "23505" &&
+      constraint === "crm_contacts_org_lower_email_unique"
+    ) {
+      throw new Error("Email kontak sudah dipakai di organisasi ini.");
+    }
+    throw error;
+  }
+  if (!row) throw new NotFoundError("Kontak tidak ditemukan.");
+  await recordAudit({
+    orgId,
+    userId,
+    action: "crm.contact.update",
+    entity: "crm_contact",
+    entityId: id,
+    metadata: input as Record<string, unknown>,
+  });
+  return row;
+}
+
+/**
+ * Hapus kontak. Deal/invoice yang menaut di-SET NULL di service layer
+ * dalam tx yang sama (FK komposit restrict — PG akan me-null-kan org_id
+ * bila SET NULL komposit dipakai; cubic pr10 schema:795).
+ */
+export async function deleteContact(
+  userId: string,
+  orgId: string,
+  id: string,
+): Promise<void> {
+  await requireOrgRole(userId, orgId, "member");
+  await db.transaction(async (tx) => {
+    await tx
+      .update(crmDeals)
+      .set({ contactId: null })
+      .where(and(eq(crmDeals.contactId, id), eq(crmDeals.orgId, orgId)));
+    await tx
+      .update(invoices)
+      .set({ contactId: null })
+      .where(and(eq(invoices.contactId, id), eq(invoices.orgId, orgId)));
+    const [row] = await tx
+      .delete(crmContacts)
+      .where(and(eq(crmContacts.id, id), eq(crmContacts.orgId, orgId)))
+      .returning();
+    if (!row) throw new NotFoundError("Kontak tidak ditemukan.");
+  });
+  await recordAudit({
+    orgId,
+    userId,
+    action: "crm.contact.delete",
+    entity: "crm_contact",
+    entityId: id,
+  });
+}
+
 // ---------------- Pipeline / stages ----------------
 
 /**
  * Pipeline + 6 tahap default per company. Idempotent: pipeline unik per
  * (org, company, name); tahap unik per (pipeline, position).
+ * Pembuatan aktual diaudit (bukan re-read) bila opts.userId diisi.
  */
 export async function getOrCreateDefaultPipeline(
   orgId: string,
   companyId: string,
+  opts?: { userId?: string },
 ): Promise<{ pipeline: CrmPipeline; stages: CrmStage[] }> {
   await requireOrgCompany(orgId, companyId);
+  let pipelineCreated = false;
   let [pipeline] = await db
     .select()
     .from(crmPipelines)
@@ -219,6 +480,8 @@ export async function getOrCreateDefaultPipeline(
           ),
         )
         .limit(1);
+    } else {
+      pipelineCreated = true;
     }
   }
   let stages = await db
@@ -226,6 +489,7 @@ export async function getOrCreateDefaultPipeline(
     .from(crmStages)
     .where(eq(crmStages.pipelineId, pipeline.id))
     .orderBy(asc(crmStages.position));
+  let stagesCreated = false;
   if (stages.length === 0) {
     await db
       .insert(crmStages)
@@ -243,6 +507,17 @@ export async function getOrCreateDefaultPipeline(
       .from(crmStages)
       .where(eq(crmStages.pipelineId, pipeline.id))
       .orderBy(asc(crmStages.position));
+    stagesCreated = true;
+  }
+  if (opts?.userId && (pipelineCreated || stagesCreated)) {
+    await recordAudit({
+      orgId,
+      userId: opts.userId,
+      action: "crm.pipeline.create",
+      entity: "crm_pipeline",
+      entityId: pipeline.id,
+      metadata: { companyId, pipelineCreated, stagesCreated },
+    });
   }
   return { pipeline, stages };
 }
@@ -274,6 +549,7 @@ export interface DealInput {
 export async function listDeals(
   orgId: string,
   pipelineId?: string,
+  limit = CRM_LIST_DEFAULT_LIMIT,
 ): Promise<CrmDeal[]> {
   const conds = [eq(crmDeals.orgId, orgId)];
   if (pipelineId) conds.push(eq(crmDeals.pipelineId, pipelineId));
@@ -281,7 +557,8 @@ export async function listDeals(
     .select()
     .from(crmDeals)
     .where(and(...conds))
-    .orderBy(desc(crmDeals.createdAt));
+    .orderBy(desc(crmDeals.createdAt))
+    .limit(limit);
 }
 
 export async function getDeal(
@@ -374,9 +651,15 @@ export async function createDeal(
 }
 
 /** Tahap won/lost dikenali dari nama stage Close Won / Close Lost. */
+/** Samakan nama stage sebelum dibanding: spasi tepi + kapitalisasi diabaikan. */
+export function normalizeStageName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
 function stageOutcome(stageName: string): "open" | "won" | "lost" {
-  if (stageName === "Close Won") return "won";
-  if (stageName === "Close Lost") return "lost";
+  const norm = normalizeStageName(stageName);
+  if (norm === "close won") return "won";
+  if (norm === "close lost") return "lost";
   return "open";
 }
 
@@ -405,7 +688,16 @@ export async function moveDeal(
   if (!stage || stage.pipelineId !== deal.pipelineId) {
     throw new NotFoundError("Stage tidak ditemukan.");
   }
+  // Satu jalur close: pindah (drag) ke Close Won/Lost ditolak — penutupan
+  // wajib lewat closeDeal agar semantik outcome, kopling quotation, dan
+  // idempotensinya berlaku. Lompat antar tahap open tetap bebas (gerak
+  // sales wajar, mis. inbound yang langsung minta quotation).
   const status = stageOutcome(stage.name);
+  if (status !== "open") {
+    throw new Error(
+      `Tidak bisa pindah ke ${stage.name}: tutup deal lewat tombol Close Won/Lost.`,
+    );
+  }
   const [row] = await db
     .update(crmDeals)
     .set({
@@ -454,6 +746,112 @@ export async function moveDeal(
   return row;
 }
 
+/**
+ * Ubah judul/nilai/kontak deal open. Deal closed terminal (judul/nilai
+ * histori tak bisa ditulis ulang); stage/status hanya lewat move/close.
+ */
+export async function updateDeal(
+  userId: string,
+  orgId: string,
+  id: string,
+  input: Partial<{
+    title: string;
+    value: number;
+    contactId: string | null;
+  }>,
+): Promise<CrmDeal> {
+  await requireOrgRole(userId, orgId, "member");
+  const deal = await requireDeal(orgId, id);
+  if (deal.status !== "open") {
+    throw new Error(
+      `Deal sudah ${deal.status}; tidak bisa diubah.`,
+    );
+  }
+  if (input.value !== undefined) assertSafeAmount(input.value, "Nilai deal");
+  if (input.contactId) {
+    const [contact] = await db
+      .select({ id: crmContacts.id })
+      .from(crmContacts)
+      .where(
+        and(
+          eq(crmContacts.id, input.contactId),
+          eq(crmContacts.orgId, orgId),
+          eq(crmContacts.companyId, deal.companyId),
+        ),
+      )
+      .limit(1);
+    if (!contact) throw new NotFoundError("Kontak tidak ditemukan.");
+  }
+  // Expected-state predicate (cubic pr10 crm-repo:300): closeDeal yang
+  // menang di antara pre-read dan UPDATE membuat predicate nol-baris.
+  const [row] = await db
+    .update(crmDeals)
+    .set(input)
+    .where(
+      and(
+        eq(crmDeals.id, id),
+        eq(crmDeals.orgId, orgId),
+        eq(crmDeals.status, "open"),
+      ),
+    )
+    .returning();
+  if (!row) {
+    throw new Error("Deal berubah status saat disimpan; tidak bisa diubah.");
+  }
+  await recordAudit({
+    orgId,
+    userId,
+    action: "crm.deal.update",
+    entity: "crm_deal",
+    entityId: id,
+    metadata: input as Record<string, unknown>,
+  });
+  return row;
+}
+
+/**
+ * Hapus deal OPEN beserta aktivitasnya (cascade FK). Deal won/lost adalah
+ * histori penjualan — tidak bisa dihapus.
+ */
+export async function deleteDeal(
+  userId: string,
+  orgId: string,
+  id: string,
+): Promise<void> {
+  await requireOrgRole(userId, orgId, "member");
+  const deal = await requireDeal(orgId, id);
+  if (deal.status !== "open") {
+    throw new Error(
+      `Deal sudah ${deal.status}; histori closed tidak bisa dihapus.`,
+    );
+  }
+  // Expected-state predicate (cubic pr10 crm-repo:717): closeDeal
+  // konkuren membuat delete ini nol-baris alih-alih menghapus histori.
+  const deleted = await db
+    .delete(crmDeals)
+    .where(
+      and(
+        eq(crmDeals.id, id),
+        eq(crmDeals.orgId, orgId),
+        eq(crmDeals.status, "open"),
+      ),
+    )
+    .returning();
+  if (deleted.length === 0) {
+    throw new Error(
+      "Deal berubah status saat dihapus; histori closed tidak bisa dihapus.",
+    );
+  }
+  await recordAudit({
+    orgId,
+    userId,
+    action: "crm.deal.delete",
+    entity: "crm_deal",
+    entityId: id,
+    metadata: { title: deal.title },
+  });
+}
+
 // ---------------- Activities ----------------
 
 export async function listActivities(
@@ -481,6 +879,9 @@ export async function createActivity(
 ): Promise<CrmActivity> {
   await requireOrgRole(userId, orgId, "member");
   await requireDeal(orgId, input.dealId);
+  if (!["call", "task", "meeting", "note"].includes(input.type)) {
+    throw new Error("Jenis aktivitas tidak valid.");
+  }
   const [row] = await db
     .insert(crmActivities)
     .values({

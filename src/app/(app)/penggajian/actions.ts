@@ -4,9 +4,11 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
-import { runPayroll, PayrollError } from "@/lib/payroll/service";
-import { computePayslip } from "@/lib/payroll/engine";
-import { listEmployees } from "@/lib/repos/hrm-repo";
+import {
+  previewPayrollTotals,
+  runPayroll,
+  PayrollError,
+} from "@/lib/payroll/service";
 import { requireOrgRole } from "@/lib/org-scope";
 
 async function requireSession() {
@@ -72,40 +74,19 @@ export async function previewPayrollAction(formData: FormData): Promise<
         "Bulan 1-12 dan tahun valid dibutuhkan.",
       );
     }
-    const staff = await listEmployees(orgId);
-    const active = staff.filter((e) => e.status === "active");
-    if (active.length === 0) {
+    // Calculator shared with the run: roster and calculation inputs
+    // (real unpaid days, real tenure) are identical, so the preview
+    // cannot diverge from the run for approved izin and mid-year hires.
+    const totals = await previewPayrollTotals(orgId, year, month);
+    if (totals.employeeCount === 0) {
       throw new PayrollError(
         "EMPTY_RUN",
         "Tidak ada karyawan aktif untuk digaji.",
       );
     }
-    let totalBruto = 0;
-    let totalNet = 0;
-    for (const emp of active) {
-      const b = computePayslip({
-        employeeId: emp.id,
-        name: emp.name,
-        taxStatus: emp.taxStatus,
-        baseSalary: emp.baseSalary,
-        unpaidLeaveDays: 0,
-        weekdayOvertimeHours: 0,
-        restdayOvertimeHours: 0,
-        monthsWorked: 12,
-        includeThr: month === 12,
-      });
-      totalBruto += b.gross;
-      totalNet += b.net;
-    }
     return {
       ok: true,
-      preview: {
-        employeeCount: active.length,
-        totalBruto,
-        totalNet,
-        month,
-        year,
-      },
+      preview: { ...totals, month, year },
     };
   } catch (error) {
     const message =

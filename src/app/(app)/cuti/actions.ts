@@ -3,14 +3,15 @@
 import { redirect } from "next/navigation";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
-import {
-  approvalRequests,
-  leaveRequests as leaveRequestsTable,
-} from "@/db/schema";
+import { leaveRequests as leaveRequestsTable } from "@/db/schema";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
 import { hasRole, requireOrgRole } from "@/lib/org-scope";
-import { saveApprovalRequest } from "@/lib/approval/store";
+import {
+  saveApprovalRequest,
+  getApprovalRequestByRowIdForUpdate,
+  saveApprovalRequestTx,
+} from "@/lib/approval/store";
 import {
   approve as approveApproval,
   reject as rejectApproval,
@@ -23,20 +24,24 @@ import {
 import {
   createLeave,
   getOrCreateBalance,
-  debitBalance,
+  debitBalanceChecked,
   getEmployeeByUser,
 } from "@/lib/leave/repo";
 import { listMembers } from "@/lib/repos/member-repo";
 import { recordAudit } from "@/lib/repos/audit-repo";
+import { ValidationError, safeRedirectError } from "@/lib/safe-redirect-error";
 
 async function requireSession() {
   const user = await session.getSession();
   if (!user) redirect("/login");
   // WorkOS session IDs -> internal UUIDs before the org-scoped guards.
   const ids = await resolveSessionIds(user);
-  if (!ids) throw new Error("Tidak ada organisasi aktif.");
+  if (!ids) throw new ValidationError("Tidak ada organisasi aktif.");
   return ids;
 }
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Ajukan cuti/izin. Auto-detect izin/cuti dari tanggal (mid-year rule)
@@ -55,14 +60,15 @@ export async function submitLeaveAction(formData: FormData): Promise<void> {
 
   try {
     if (!startDate || !endDate) {
-      throw new Error("Tanggal mulai dan selesai wajib diisi.");
+      throw new ValidationError("Tanggal mulai dan selesai wajib diisi.");
     }
 
     const employee = await getEmployeeByUser(userId, orgId);
-    if (!employee) throw new Error("Profil karyawan tidak ditemukan.");
+    if (!employee)
+      throw new ValidationError("Profil karyawan tidak ditemukan.");
 
     const days = computeDuration(startDate, endDate);
-    if (days <= 0) throw new Error("Rentang tanggal tidak valid.");
+    if (days <= 0) throw new ValidationError("Rentang tanggal tidak valid.");
 
     // Rantai approval: satu admin/owner org lain (bukan pemohon) — filter
     // per membership.role, bukan sekadar "anggota org manapun".
@@ -72,7 +78,7 @@ export async function submitLeaveAction(formData: FormData): Promise<void> {
       )
       .map((m) => m.user)[0];
     if (!approver) {
-      throw new Error("Tidak ada approver lain di organisasi ini.");
+      throw new ValidationError("Tidak ada approver lain di organisasi ini.");
     }
 
     const requestId = `LV-${crypto.randomUUID()}`;
@@ -119,14 +125,19 @@ export async function submitLeaveAction(formData: FormData): Promise<void> {
       metadata: { type, startDate, endDate, days },
     });
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Terjadi kesalahan.";
+    const message = safeRedirectError(error, "Pengajuan gagal disimpan.");
     redirect(`/cuti?error=${encodeURIComponent(message)}`);
   }
   redirect(`/cuti?ok=${encodeURIComponent("Pengajuan cuti/izin terkirim.")}`);
 }
 
-/** Setujui atau tolak permintaan (approver saat ini di rantai). */
+/**
+ * Setujui atau tolak permintaan (approver saat ini di rantai).
+ *
+ * Atomik dalam satu transaksi: baris approval dikunci (FOR UPDATE) supaya
+ * dua keputusan konkuren terserialisasi — yang kalah melihat status
+ * terminal dan engine menolaknya, bukan menimpa + debit ganda.
+ */
 export async function actLeaveAction(formData: FormData): Promise<void> {
   const { userId, orgId } = await requireSession();
   await requireOrgRole(userId, orgId, "member");
@@ -135,66 +146,85 @@ export async function actLeaveAction(formData: FormData): Promise<void> {
   const decision = String(formData.get("decision") ?? "");
   const note = String(formData.get("note") ?? "").trim() || undefined;
   try {
-    if (!approvalRowId || (decision !== "approve" && decision !== "reject")) {
-      throw new Error("Keputusan tidak valid.");
+    // Bentuk UUID dicek dulu: nilai liar jadi "tidak valid", bukan error
+    // cast uuid PG 22P02.
+    if (
+      !UUID_RE.test(approvalRowId) ||
+      (decision !== "approve" && decision !== "reject")
+    ) {
+      throw new ValidationError("Keputusan tidak valid.");
     }
 
-    const [row] = await db
-      .select({
-        state: approvalRequests.state,
-        requestId: approvalRequests.requestId,
-        employeeId: leaveRequestsTable.employeeId,
-        leaveType: leaveRequestsTable.type,
-        startDate: leaveRequestsTable.startDate,
-        endDate: leaveRequestsTable.endDate,
-      })
-      .from(approvalRequests)
-      .leftJoin(
-        leaveRequestsTable,
-        eq(leaveRequestsTable.approvalId, approvalRequests.id),
-      )
-      .where(
-        and(
-          eq(approvalRequests.id, approvalRowId),
-          eq(approvalRequests.organizationId, orgId),
-        ),
-      )
-      .limit(1);
-    if (!row) throw new Error("Permintaan tidak ditemukan.");
-
-    const nextApproval =
-      decision === "approve"
-        ? approveApproval(row.state, userId, note)
-        : rejectApproval(row.state, userId, note);
-
-    await saveApprovalRequest(orgId, nextApproval);
-
-    // Approved cuti/izin: debit saldo tahun mulai.
-    if (nextApproval.status === "approved" && row.employeeId && row.startDate) {
-      const year = Number(row.startDate.slice(0, 4));
-      const days = computeDuration(row.startDate, row.endDate ?? row.startDate);
-      await getOrCreateBalance(userId, orgId, row.employeeId, year);
-      await debitBalance(
-        userId,
+    await db.transaction(async (tx) => {
+      const approval = await getApprovalRequestByRowIdForUpdate(
+        tx,
         orgId,
-        row.employeeId,
-        year,
-        row.leaveType === "izin" ? "izinRemaining" : "cutiRemaining",
-        days,
+        approvalRowId,
       );
-    }
+      const [leave] = await tx
+        .select({
+          employeeId: leaveRequestsTable.employeeId,
+          leaveType: leaveRequestsTable.type,
+          startDate: leaveRequestsTable.startDate,
+          endDate: leaveRequestsTable.endDate,
+        })
+        .from(leaveRequestsTable)
+        .where(
+          and(
+            eq(leaveRequestsTable.approvalId, approvalRowId),
+            eq(leaveRequestsTable.orgId, orgId),
+          ),
+        )
+        .limit(1);
 
-    await recordAudit({
-      orgId,
-      userId: userId,
-      action: `leave.${decision}`,
-      entity: "leave_request",
-      entityId: row.requestId,
-      metadata: { note },
+      const nextApproval =
+        decision === "approve"
+          ? approveApproval(approval.state, userId, note)
+          : rejectApproval(approval.state, userId, note);
+
+      await saveApprovalRequestTx(tx, orgId, nextApproval);
+
+      // Approved cuti/izin SAJA yang mendebit saldo (cubic pr10 cuti:216):
+      // sakit/wfh tidak punya bucket saldo — versi lama salah mendebit
+      // cutiRemaining untuk keduanya. Bersyarat (remaining >= days):
+      // overdraft melempar, bukan clamp diam.
+      if (
+        nextApproval.status === "approved" &&
+        leave?.employeeId &&
+        leave?.startDate &&
+        (leave.leaveType === "cuti" || leave.leaveType === "izin")
+      ) {
+        const year = Number(leave.startDate.slice(0, 4));
+        const days = computeDuration(
+          leave.startDate,
+          leave.endDate ?? leave.startDate,
+        );
+        await getOrCreateBalance(userId, orgId, leave.employeeId, year, tx);
+        await debitBalanceChecked(
+          userId,
+          orgId,
+          leave.employeeId,
+          year,
+          leave.leaveType === "izin" ? "izinRemaining" : "cutiRemaining",
+          days,
+          tx,
+        );
+      }
+
+      await recordAudit(
+        {
+          orgId,
+          userId: userId,
+          action: `leave.${decision}`,
+          entity: "leave_request",
+          entityId: approval.state.requestId,
+          metadata: { note },
+        },
+        tx,
+      );
     });
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Terjadi kesalahan.";
+    const message = safeRedirectError(error, "Keputusan gagal disimpan.");
     redirect(`/cuti?error=${encodeURIComponent(message)}`);
   }
   redirect(

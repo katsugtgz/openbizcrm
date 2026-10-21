@@ -82,8 +82,10 @@ export async function computeThisMonthSummary(
       .where(
         and(
           eq(posSales.orgId, orgId),
-          gte(posSales.createdAt, since),
-          lt(posSales.createdAt, until),
+          // Tanggal BISNIS, bukan stempel audit (cubic pr10 r2:2206):
+          // transaksi backdate masuk bulan bisnisnya.
+          gte(posSales.saleDate, periodStart),
+          lt(posSales.saleDate, nextMonthStart(periodStart)),
         ),
       ),
   ]);

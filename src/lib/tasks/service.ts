@@ -1,6 +1,6 @@
-import { and, asc, eq, max, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, max, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { projects, tasks } from "@/db/schema";
+import { projects, tasks, timesheets } from "@/db/schema";
 import { NotFoundError, OrgScopeError, requireOrgRole } from "@/lib/org-scope";
 import { recordAudit } from "@/lib/repos/audit-repo";
 import { requireProject } from "@/lib/repos/project-repo";
@@ -117,6 +117,11 @@ export async function createTask(
 ): Promise<Task> {
   await requireOrgRole(userId, orgId, "member");
   await requireProject(orgId, projectId);
+  // Assignee wajib member org ini: tanpa guard, task bisa dipasang ke user
+  // org lain (cross-tenant assignment leak via daftar/kanban assignee).
+  if (input.assigneeId) {
+    await requireOrgRole(input.assigneeId, orgId, "member");
+  }
   if (!input.title.trim()) {
     throw new OrgScopeError("INSUFFICIENT_ROLE", "Judul task wajib diisi.");
   }
@@ -183,6 +188,10 @@ export async function updateTask(
 ): Promise<Task> {
   await requireOrgRole(userId, orgId, "member");
   const task = await requireTask(orgId, taskId);
+  // Guard yang sama dengan createTask: input diteruskan mentah ke .set().
+  if (input.assigneeId) {
+    await requireOrgRole(input.assigneeId, orgId, "member");
+  }
   if (input.title !== undefined && !input.title.trim()) {
     throw new OrgScopeError("INSUFFICIENT_ROLE", "Judul task wajib diisi.");
   }
@@ -244,6 +253,9 @@ export async function updateTask(
   return row;
 }
 
+/** Batas snapshot time log di audit task.delete (sisanya cukup terhitung). */
+const DELETE_TIMESHEET_SNAPSHOT_MAX = 500;
+
 export async function deleteTask(
   userId: string,
   orgId: string,
@@ -259,16 +271,77 @@ export async function deleteTask(
       .from(projects)
       .where(and(eq(projects.id, task.projectId), eq(projects.orgId, orgId)))
       .for("update");
+    // Kunci baris task SEBELUM snapshot (cubic pr10 tasks:277): startTimer
+    // memegang kunci yang sama — timer konkuren menunggu delete selesai
+    // (lalu gagal not-found) alih-alih lolos dari snapshot audit. Hasil
+    // lock dicek (cubic pr10 r3:9075): delete ganda tidak boleh menulis
+    // audit kedua dan mengembalikan sukses.
+    const [locked] = await tx
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(and(eq(tasks.id, taskId), eq(tasks.orgId, orgId)))
+      .for("update");
+    if (!locked) throw new NotFoundError("Task tidak ditemukan.");
+    // FK timesheets.task_id ON DELETE CASCADE: tanpa snapshot, hapus task
+    // menghapus bukti billing. Arsipkan time log ke audit SEBELUM delete
+    // (soft-delete penuh butuh kolom skema — di luar area service).
+    // Snapshot TERBATAS + count terpisah (cubic pr10 tasks:288): select
+    // tanpa limit memuat seluruh time log ke memori sebelum slice.
+    const linked = await tx
+      .select({
+        id: timesheets.id,
+        userId: timesheets.userId,
+        startedAt: timesheets.startedAt,
+        endedAt: timesheets.endedAt,
+        minutes: timesheets.minutes,
+        notes: timesheets.notes,
+      })
+      .from(timesheets)
+      .where(and(eq(timesheets.taskId, taskId), eq(timesheets.orgId, orgId)))
+      .orderBy(asc(timesheets.startedAt))
+      .limit(DELETE_TIMESHEET_SNAPSHOT_MAX + 1)
+      // Kunci baris snapshot (cubic pr10 r3:9124): stopTimer konkuren tak
+      // boleh mengubah state timer setelah snapshot dibaca.
+      .for("update");
+    const [{ total }] = await tx
+      .select({ total: sql<number>`count(*)::int` })
+      .from(timesheets)
+      .where(and(eq(timesheets.taskId, taskId), eq(timesheets.orgId, orgId)));
+    // Service-layer SET NULL (cubic pr10 schema:795): subtask FK is
+    // restrict — orphan subtasks to root before deleting the parent.
+    // ID yatim diaudit (cubic pr10 r2:2166): tanpa ini tak ada yang tahu
+    // anak mana yang kehilangan induk.
+    const orphaned = await tx
+      .update(tasks)
+      .set({ parentId: null })
+      .where(and(eq(tasks.parentId, taskId), eq(tasks.orgId, orgId)))
+      .returning();
     await tx
       .delete(tasks)
       .where(and(eq(tasks.id, taskId), eq(tasks.orgId, orgId)));
-  });
-  await recordAudit({
-    orgId,
-    userId,
-    action: "task.delete",
-    entity: "task",
-    entityId: taskId,
+    await recordAudit(
+      {
+        orgId,
+        userId,
+        action: "task.delete",
+        entity: "task",
+        entityId: taskId,
+        metadata: {
+          title: task.title,
+          orphanedSubtaskIds: orphaned.map((t) => t.id),
+          timesheetCount: total,
+          timesheets: linked
+            .slice(0, DELETE_TIMESHEET_SNAPSHOT_MAX)
+            .map((t) => ({
+              ...t,
+              startedAt: t.startedAt.toISOString(),
+              endedAt: t.endedAt?.toISOString() ?? null,
+            })),
+          timesheetsTruncated: total > DELETE_TIMESHEET_SNAPSHOT_MAX,
+        },
+      },
+      tx,
+    );
   });
 }
 
@@ -392,12 +465,25 @@ async function persistPositions(
   orgId: string,
   updates: { id: string; position: number }[],
 ): Promise<void> {
-  for (const u of updates) {
-    await tx
-      .update(tasks)
-      .set({ position: u.position })
-      .where(and(eq(tasks.id, u.id), eq(tasks.orgId, orgId)));
-  }
+  if (updates.length === 0) return;
+  // Satu UPDATE ... CASE (bukan N UPDATE): kolom besar tidak lagi menahan
+  // lock project selama N round-trip. Guard org + id sama persis dengan loop.
+  const whens = updates.map(
+    (u) => sql`when ${tasks.id} = ${u.id} then ${u.position}`,
+  );
+  await tx.execute(sql`
+    update ${tasks}
+    -- SET target must be unqualified: PG rejects SET "tasks"."position"
+    -- (42703). Qualified refs remain fine in WHEN/WHERE below.
+    set "position" = (case ${sql.join(whens, sql` `)} end)::integer
+    where ${and(
+      eq(tasks.orgId, orgId),
+      inArray(
+        tasks.id,
+        updates.map((u) => u.id),
+      ),
+    )}
+  `);
 }
 
 /** Project milik org? (helper UI actions) */

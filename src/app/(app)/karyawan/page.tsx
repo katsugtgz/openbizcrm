@@ -3,8 +3,11 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
-import { requireOrgRole } from "@/lib/org-scope";
-import { listEmployees } from "@/lib/repos/hrm-repo";
+import { hasRole, requireOrgRole } from "@/lib/org-scope";
+import {
+  EMPLOYEE_LIST_DEFAULT_LIMIT,
+  listEmployees,
+} from "@/lib/repos/hrm-repo";
 import { formatIDR } from "@/lib/money";
 import { KaryawanToasts } from "./toasts";
 import { Badge } from "@/components/ui/badge";
@@ -32,12 +35,22 @@ const STATUS_LABEL: Record<string, string> = {
   suspended: "Suspended",
 };
 
-async function EmployeeTable({ orgId }: { orgId: string }) {
-  const employees = await listEmployees(orgId);
+async function EmployeeTable({ orgId, showSalary }: { orgId: string; showSalary: boolean }) {
+  // Probe +1 (cubic pr10 r3:9134): tepat 500 = lengkap, bukan terpotong.
+  const rows = await listEmployees(orgId, {
+    limit: EMPLOYEE_LIST_DEFAULT_LIMIT + 1,
+  });
+  const truncated = rows.length > EMPLOYEE_LIST_DEFAULT_LIMIT;
+  const employees = rows.slice(0, EMPLOYEE_LIST_DEFAULT_LIMIT);
   return (
     <Card>
       <CardHeader>
         <CardTitle>Daftar Karyawan</CardTitle>
+        {truncated && (
+          <p className="text-xs text-muted-foreground">
+            Menampilkan 500 karyawan pertama (batas baca) — paginasi menyusul.
+          </p>
+        )}
       </CardHeader>
       <CardContent>
         {employees.length === 0 ? (
@@ -80,7 +93,7 @@ async function EmployeeTable({ orgId }: { orgId: string }) {
                   </TableCell>
                   <TableCell>{e.taxStatus}</TableCell>
                   <TableCell className="text-right tabular-nums">
-                    {formatIDR(e.baseSalary)}
+                    {showSalary ? formatIDR(e.baseSalary) : "—"}
                   </TableCell>
                   <TableCell className="text-right">
                     <Button asChild variant="outline" size="sm">
@@ -124,7 +137,7 @@ export default async function KaryawanPage({
   if (!ids) redirect("/dashboard");
   // Membership is guaranteed by the resolver; requireOrgRole enforces the
   // role (and keeps the guard consistent with sibling pages).
-  await requireOrgRole(ids.userId, ids.orgId, "member");
+  const { role } = await requireOrgRole(ids.userId, ids.orgId, "member");
   const { orgId } = ids;
   const sp = await searchParams;
 
@@ -142,7 +155,7 @@ export default async function KaryawanPage({
         </Button>
       </div>
       <Suspense fallback={<TableSkeleton />}>
-        <EmployeeTable orgId={orgId} />
+        <EmployeeTable orgId={orgId} showSalary={hasRole(role, "admin")} />
       </Suspense>
       <KaryawanToasts ok={sp.ok} error={sp.error} />
     </div>

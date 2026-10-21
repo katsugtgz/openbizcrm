@@ -110,7 +110,23 @@ async function Assets({ orgId, userId }: { orgId: string; userId: string }) {
                   </TableCell>
                   <TableCell className="text-right">
                     {a.status === "active" && (
-                      <DisposeAssetButton assetId={a.id} />
+                      <DisposeAssetButton
+                        assetId={a.id}
+                        assetAccounts={accounts
+                          .filter((ac) => ac.type === "asset")
+                          .map((ac) => ({
+                            id: ac.id,
+                            code: ac.code,
+                            name: ac.name,
+                          }))}
+                        expenseAccounts={accounts
+                          .filter((ac) => ac.type === "expense")
+                          .map((ac) => ({
+                            id: ac.id,
+                            code: ac.code,
+                            name: ac.name,
+                          }))}
+                      />
                     )}
                   </TableCell>
                 </TableRow>

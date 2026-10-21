@@ -11,6 +11,7 @@ import {
   recordPayment,
   sendInvoice,
 } from "@/lib/invoicing/service";
+import { assertISODate } from "@/lib/accounting/engine";
 import { parseIDRInput } from "@/lib/money";
 
 export interface ActionResult {
@@ -37,14 +38,11 @@ function fail(error: unknown): { ok: false; error: string } {
 /**
  * Normalisasi tanggal form ke "YYYY-MM-DD" kalender (cubic pr8 actions:60 —
  * createInvoice membandingkan string; input tak valid/offset-zona harus
- * ditolak di boundary, bukan lolos lewat lexical compare).
+ * ditolak di boundary, bukan lolos lewat lexical compare). Memakai guard
+ * bersama yang juga menolak hari tak nyata (2026-02-30 lolos Date.parse).
  */
 function normalizeDate(raw: FormDataEntryValue | null, label: string): string {
-  const v = String(raw ?? "").trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(Date.parse(v))) {
-    throw new Error(`${label} harus tanggal YYYY-MM-DD.`);
-  }
-  return v;
+  return assertISODate(String(raw ?? "").trim(), label);
 }
 
 export async function createInvoiceAction(
@@ -53,18 +51,57 @@ export async function createInvoiceAction(
   const { userId, orgId } = await requireSession();
   try {
     const raw = String(formData.get("items") ?? "[]");
-    const parsed = JSON.parse(raw) as {
-      description: string;
-      qty: string;
-      unitPrice: string;
-    }[];
-    const items = parsed
-      .filter((i) => i.description.trim())
-      .map((i) => ({
-        description: i.description,
-        qty: Number(i.qty),
-        unitPrice: parseIDRInput(i.unitPrice),
-      }));
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error("Item invoice tidak valid (bukan JSON).");
+    }
+    if (!Array.isArray(parsed)) {
+      throw new Error("Item invoice harus array.");
+    }
+    // Baris kosong form dinamis (deskripsi kosong/whitespace) dilewati;
+    // entri MALFORMED (bukan objek / deskripsi bukan string) DITOLAK
+    // eksplisit — diam-diam membuangnya salah menagih pelanggan
+    // (cubic pr10 faktur:65).
+    const items: { description: string; qty: number; unitPrice: number }[] = [];
+    for (const entry of parsed) {
+      if (
+        typeof entry !== "object" ||
+        entry === null ||
+        typeof (entry as { description?: unknown }).description !== "string"
+      ) {
+        throw new Error("Baris invoice tidak valid.");
+      }
+      const e = entry as {
+        description: string;
+        qty?: unknown;
+        unitPrice?: unknown;
+      };
+      if (e.description.trim() === "") continue;
+      // Strictly typed qty/price: Number(true) === 1 and Number("") === 0,
+      // so blind coercion turns malformed JSON into a wrong invoice.
+      // Accept digit-strings or numbers only.
+      if (typeof e.qty !== "string" && typeof e.qty !== "number") {
+        throw new Error("Kuantitas invoice tidak valid.");
+      }
+      const qtyText = typeof e.qty === "number" ? String(e.qty) : e.qty.trim();
+      if (!/^\d+$/.test(qtyText)) {
+        throw new Error("Kuantitas invoice tidak valid.");
+      }
+      const qty = Number(qtyText);
+      if (!Number.isSafeInteger(qty) || qty < 1) {
+        throw new Error("Kuantitas invoice tidak valid.");
+      }
+      if (typeof e.unitPrice !== "string" && typeof e.unitPrice !== "number") {
+        throw new Error("Harga invoice tidak valid.");
+      }
+      items.push({
+        description: e.description,
+        qty,
+        unitPrice: parseIDRInput(String(e.unitPrice)),
+      });
+    }
     const taxRaw = String(formData.get("taxPct") ?? "0").trim();
     const { invoice } = await createInvoice(userId, orgId, {
       companyId: String(formData.get("companyId") ?? ""),
@@ -108,7 +145,7 @@ export async function recordPaymentAction(
       amount: parseIDRInput(String(formData.get("amount") ?? "")),
       method: String(formData.get("method") ?? "transfer") as
         "cash" | "transfer" | "qris",
-      paidAt: String(formData.get("paidAt") ?? ""),
+      paidAt: normalizeDate(formData.get("paidAt"), "Tanggal bayar"),
     });
   } catch (error) {
     return fail(error);

@@ -10,6 +10,11 @@ import {
 import { NotFoundError, requireOrgRole } from "@/lib/org-scope";
 import { recordAudit } from "@/lib/repos/audit-repo";
 import { assertSafeAmount } from "@/lib/money";
+import {
+  assertISODate,
+  sumExact,
+  validateEntry,
+} from "@/lib/accounting/engine";
 
 export class AssetError extends Error {
   constructor(message: string) {
@@ -94,6 +99,7 @@ export async function addAsset(
   if (input.cost === salvageValue) {
     throw new AssetError("Nilai penyusutan tidak boleh 0 (cost == salvage).");
   }
+  assertISODate(input.acquiredDate, "Tanggal perolehan");
   await requireDepreciationAccounts(
     orgId,
     input.depreciationExpenseAccountId,
@@ -300,7 +306,7 @@ export async function runMonthlyDepreciation(
         continue;
       }
       processed += 1;
-      totalAmount += amount;
+      totalAmount = sumExact([totalAmount, amount]);
     }
   });
 
@@ -339,20 +345,192 @@ function minusOneMonth(period: string): string {
   return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
 }
 
-/** Jual/hilangkan aset: status disposed, tanggal disposal dicatat. */
+export interface DisposeInput {
+  /** Akun aset tetap (type asset): dikredit sebesar cost. */
+  assetAccountId: string;
+  /** Akun rugi disposal (type expense): didebit sebesar NBV. */
+  lossAccountId: string;
+}
+
+/**
+ * Akun disposal wajib milik org, ketiganya berbeda, dan tipenya benar
+ * (aset=asset, rugi=expense, akumulasi=asset).
+ */
+async function requireDisposalAccounts(
+  exec: Tx,
+  orgId: string,
+  accumulatedAccountId: string,
+  assetAccountId: string,
+  lossAccountId: string,
+): Promise<{ accumCode: string; assetCode: string; lossCode: string }> {
+  if (new Set([accumulatedAccountId, assetAccountId, lossAccountId]).size !== 3) {
+    throw new AssetError(
+      "Akun aset, akumulasi, dan rugi disposal harus berbeda.",
+    );
+  }
+  const rows = await exec
+    .select({ id: accounts.id, type: accounts.type, code: accounts.code })
+    .from(accounts)
+    .where(
+      and(
+        eq(accounts.orgId, orgId),
+        sql`${accounts.id} in (${accumulatedAccountId}, ${assetAccountId}, ${lossAccountId})`,
+      ),
+    );
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  if (
+    !byId.has(accumulatedAccountId) ||
+    !byId.has(assetAccountId) ||
+    !byId.has(lossAccountId)
+  ) {
+    throw new NotFoundError("Akun tidak ditemukan.");
+  }
+  if (byId.get(assetAccountId)!.type !== "asset") {
+    throw new AssetError("Akun aset disposal harus bertipe asset.");
+  }
+  if (byId.get(lossAccountId)!.type !== "expense") {
+    throw new AssetError("Akun rugi disposal harus bertipe expense.");
+  }
+  if (byId.get(accumulatedAccountId)!.type !== "asset") {
+    throw new AssetError("Akun akumulasi penyusutan harus bertipe asset.");
+  }
+  return {
+    accumCode: byId.get(accumulatedAccountId)!.code,
+    assetCode: byId.get(assetAccountId)!.code,
+    lossCode: byId.get(lossAccountId)!.code,
+  };
+}
+
+/**
+ * Jual/hilangkan aset: status disposed + jurnal derecognition posted dalam
+ * tx yang sama (debit akumulasi + debit rugi NBV vs credit cost) — cost dan
+ * akumulasi tak lagi menggantung di buku. Tanpa hasil penjualan (proceeds):
+ * NBV penuh menjadi rugi.
+ */
 export async function dispose(
   userId: string,
   orgId: string,
   assetId: string,
   disposalDate: string,
+  input: DisposeInput,
 ): Promise<FixedAsset> {
   await requireOrgRole(userId, orgId, "admin");
+  assertISODate(disposalDate, "Tanggal disposal");
   // Serialisasi dengan run depresiasi (lock sama "acct:<orgId>"): disposal
   // tidak bisa menyelinap di antara baca dan tulis run yang sedang berjalan.
   return db.transaction(async (tx) => {
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtext(${`acct:${orgId}`}))`,
     );
+    const [asset] = await tx
+      .select()
+      .from(fixedAssets)
+      .where(
+        and(
+          eq(fixedAssets.id, assetId),
+          eq(fixedAssets.orgId, orgId),
+          eq(fixedAssets.status, "active"),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (!asset) throw new NotFoundError("Aset tidak ditemukan / sudah disposed.");
+    // Tanggal disposal waras (cubic pr10 assets:418): tak boleh sebelum
+    // perolehan, tak boleh mundur ke bulan yang sudah disusutkan.
+    if (disposalDate < asset.acquiredDate) {
+      throw new AssetError(
+        "Tanggal disposal tidak boleh sebelum tanggal perolehan aset.",
+      );
+    }
+    if (
+      asset.lastDepreciatedPeriod &&
+      disposalDate.slice(0, 7) <= asset.lastDepreciatedPeriod
+    ) {
+      throw new AssetError(
+        `Aset sudah disusutkan sampai ${asset.lastDepreciatedPeriod}; ` +
+          "disposal tidak bisa mundur ke periode itu.",
+      );
+    }
+    const codes = await requireDisposalAccounts(
+      tx,
+      orgId,
+      asset.accumulatedDepreciationAccountId,
+      input.assetAccountId,
+      input.lossAccountId,
+    );
+    // Bulan disposal tak boleh periode tertutup (pola guard depresiasi).
+    const closed = await tx.execute(
+      sql`SELECT 1 FROM fiscal_periods WHERE org_id = ${orgId} AND period_start = date_trunc('month', ${disposalDate}::text::date)::date AND closed = true LIMIT 1`,
+    );
+    const closedRows =
+      Array.isArray(closed) === false && "rows" in closed
+        ? closed.rows
+        : (closed as unknown as Record<string, unknown>[]);
+    if (closedRows.length > 0) {
+      throw new AssetError(
+        `Periode fiskal ${disposalDate.slice(0, 7)} sudah ditutup; disposal tidak bisa diposting.`,
+      );
+    }
+    const nbv = asset.cost - asset.totalDepreciated;
+    let journalEntryId: string | null = null;
+    if (asset.cost > 0) {
+      // Baris nol dilewati: CHECK journal_lines_amounts_check menuntut
+      // tepat satu sisi positif per baris.
+      const lines: { accountCode: string; accountId: string; debit: number; credit: number }[] = [];
+      if (asset.totalDepreciated > 0) {
+        lines.push({
+          accountCode: codes.accumCode,
+          accountId: asset.accumulatedDepreciationAccountId,
+          debit: asset.totalDepreciated,
+          credit: 0,
+        });
+      }
+      if (nbv > 0) {
+        lines.push({
+          accountCode: codes.lossCode,
+          accountId: input.lossAccountId,
+          debit: nbv,
+          credit: 0,
+        });
+      }
+      lines.push({
+        accountCode: codes.assetCode,
+        accountId: input.assetAccountId,
+        debit: 0,
+        credit: asset.cost,
+      });
+      const errors = validateEntry(lines);
+      if (errors.length > 0) throw new AssetError(errors.join(" "));
+      const [{ nextNum }] = await tx
+        .select({
+          nextNum: sql<number>`coalesce(max(${journalEntries.entryNumber}), 0) + 1`,
+        })
+        .from(journalEntries)
+        .where(eq(journalEntries.orgId, orgId));
+      const [entry] = await tx
+        .insert(journalEntries)
+        .values({
+          orgId,
+          entryNumber: nextNum,
+          date: disposalDate,
+          description: `Disposal ${asset.name}`,
+          status: "posted",
+          source: "manual",
+          postedAt: new Date(),
+          createdBy: userId,
+        })
+        .returning();
+      await tx.insert(journalLines).values(
+        lines.map((l) => ({
+          orgId,
+          entryId: entry.id,
+          accountId: l.accountId,
+          debit: l.debit,
+          credit: l.credit,
+        })),
+      );
+      journalEntryId = entry.id;
+    }
     const [updated] = await tx
       .update(fixedAssets)
       .set({ status: "disposed", disposalDate })
@@ -361,6 +539,7 @@ export async function dispose(
           eq(fixedAssets.id, assetId),
           eq(fixedAssets.orgId, orgId),
           eq(fixedAssets.status, "active"), // expected-state
+          eq(fixedAssets.totalDepreciated, asset.totalDepreciated),
         ),
       )
       .returning();
@@ -375,7 +554,12 @@ export async function dispose(
         action: "asset.dispose",
         entity: "fixed_asset",
         entityId: assetId,
-        metadata: { disposalDate, name: updated.name },
+        metadata: {
+          disposalDate,
+          name: updated.name,
+          nbv,
+          journalEntryId,
+        },
       },
       tx,
     );

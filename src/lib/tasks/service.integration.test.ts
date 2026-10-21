@@ -448,109 +448,149 @@ describe("tasks reorder integration", () => {
       // Seed state pra-0014 yang membuat 0014 abort: index & CHECK harus
       // diturunkan dulu (dup key & daily tanpa tanggal hanya mungkin tanpa
       // keduanya). Migrasi sendiri yang memasang ulang keduanya di langkah (d).
-      await db.execute(
-        sql`drop index if exists tasks_org_project_daily_title_unique`,
-      );
-      await db.execute(
-        sql`alter table tasks drop constraint if exists tasks_daily_date_required`,
-      );
-      const today = new Date().toISOString().slice(0, 10);
-      await db.insert(tasksTable).values([
-        // Daily tanpa tanggal, PUNYA due_date → (b1) tanggal dipulihkan.
-        {
-          orgId: org.id,
-          projectId: project.id,
-          title: "repair-me",
-          source: "daily" as const,
-          dueDate: today,
-        },
-        // Daily tanpa tanggal, TANPA due_date → (b2) demosi manual.
-        {
-          orgId: org.id,
-          projectId: project.id,
-          title: "demote-me",
-          source: "daily" as const,
-        },
-        // Pasangan dup key → (c) keep earliest created_at, loser manual.
-        {
-          orgId: org.id,
-          projectId: project.id,
-          title: "dup15",
-          source: "daily" as const,
-          dailyForDate: today,
-        },
-        {
-          orgId: org.id,
-          projectId: project.id,
-          title: "dup15",
-          source: "daily" as const,
-          dailyForDate: today,
-        },
-      ]);
+      // try/finally: index & CHECK ini artefak BERSAMA — walau test gagal di
+      // tengah (assert merah sebelum langkah (d)), keduanya wajib hidup
+      // kembali; DB bersama tidak boleh ditinggal tanpa guard unik + CHECK.
+      try {
+        await db.execute(
+          sql`drop index if exists tasks_org_project_daily_title_unique`,
+        );
+        await db.execute(
+          sql`alter table tasks drop constraint if exists tasks_daily_date_required`,
+        );
+        const today = new Date().toISOString().slice(0, 10);
+        await db.insert(tasksTable).values([
+          // Daily tanpa tanggal, PUNYA due_date → (b1) tanggal dipulihkan.
+          {
+            orgId: org.id,
+            projectId: project.id,
+            title: "repair-me",
+            source: "daily" as const,
+            dueDate: today,
+          },
+          // Daily tanpa tanggal, TANPA due_date → (b2) demosi manual.
+          {
+            orgId: org.id,
+            projectId: project.id,
+            title: "demote-me",
+            source: "daily" as const,
+          },
+          // Pasangan dup key → (c) keep earliest created_at, loser manual.
+          {
+            orgId: org.id,
+            projectId: project.id,
+            title: "dup15",
+            source: "daily" as const,
+            dailyForDate: today,
+          },
+          {
+            orgId: org.id,
+            projectId: project.id,
+            title: "dup15",
+            source: "daily" as const,
+            dailyForDate: today,
+          },
+        ]);
 
-      // Jalankan migrasi VERBATIM — dua kali untuk membuktikan idempoten.
-      const raw = await readFile("drizzle/0015_daily-date-repair.sql", "utf8");
-      const statements = raw
-        .split("--> statement-breakpoint")
-        .map((s) => s.trim())
-        .filter(Boolean);
-      for (let pass = 0; pass < 2; pass++) {
-        for (const stmt of statements) {
-          await db.execute(sql.raw(stmt));
+        // Jalankan migrasi VERBATIM — dua kali untuk membuktikan idempoten.
+        const raw = await readFile(
+          "drizzle/0015_daily-date-repair.sql",
+          "utf8",
+        );
+        const statements = raw
+          .split("--> statement-breakpoint")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        for (let pass = 0; pass < 2; pass++) {
+          for (const stmt of statements) {
+            await db.execute(sql.raw(stmt));
+          }
+        }
+
+        const rows = await db
+          .select({
+            title: tasksTable.title,
+            source: tasksTable.source,
+            dailyForDate: tasksTable.dailyForDate,
+            dueDate: tasksTable.dueDate,
+          })
+          .from(tasksTable)
+          .where(
+            and(
+              eq(tasksTable.orgId, org.id),
+              inArray(tasksTable.title, ["repair-me", "demote-me", "dup15"]),
+            ),
+          )
+          .orderBy(asc(tasksTable.title));
+        // (b1): daily_for_date dipulihkan dari due_date, tetap daily.
+        expect(rows.find((r) => r.title === "repair-me")).toEqual({
+          title: "repair-me",
+          source: "daily",
+          dailyForDate: today,
+          dueDate: today,
+        });
+        // (b2): tanpa due_date → demosi manual, daily_for_date NULL.
+        expect(rows.find((r) => r.title === "demote-me")).toEqual({
+          title: "demote-me",
+          source: "manual",
+          dailyForDate: null,
+          dueDate: null,
+        });
+        // (c): tepat satu daily tersisa dari pasangan dup.
+        const dupRows = rows.filter((r) => r.title === "dup15");
+        expect(dupRows.map((r) => r.source).sort()).toEqual([
+          "daily",
+          "manual",
+        ]);
+        expect(dupRows.find((r) => r.source === "daily")!.dailyForDate).toBe(
+          today,
+        );
+
+        // (d): CHECK & partial index hidup kembali dan menolak pelanggaran.
+        await expect(
+          db.execute(sql`
+            insert into tasks (org_id, project_id, title, source)
+            values (${org.id}, ${project.id}, 'chk15', 'daily')
+          `),
+        ).rejects.toMatchObject({
+          cause: {
+            code: "23514",
+            constraint_name: "tasks_daily_date_required",
+          },
+        });
+        await expect(
+          db.execute(sql`
+            insert into tasks (org_id, project_id, title, source, daily_for_date)
+            values (${org.id}, ${project.id}, 'dup15', 'daily', ${today})
+          `),
+        ).rejects.toMatchObject({ cause: { code: "23505" } });
+      } finally {
+        // Pulihkan artefak bersama persis seperti langkah (d) migrasi 0015.
+        // Seed test dihapus dulu: ADD CONSTRAINT memindai SELURUH tabel dan
+        // gagal bila seed pelanggar (daily tanpa tanggal) masih ada karena
+        // test abort sebelum repair.
+        await db.delete(tasksTable).where(eq(tasksTable.orgId, org.id));
+        await db.execute(sql`
+          CREATE UNIQUE INDEX IF NOT EXISTS "tasks_org_project_daily_title_unique"
+          ON "tasks" USING btree ("org_id","project_id","daily_for_date","title")
+          WHERE source = 'daily'
+        `);
+        // PG tak punya ADD CONSTRAINT IF NOT EXISTS — cek katalog dulu.
+        const found = await db.execute(sql`
+          SELECT 1 AS one FROM pg_constraint
+          WHERE conname = 'tasks_daily_date_required'
+        `);
+        const foundRows =
+          Array.isArray(found) === false && "rows" in found
+            ? found.rows
+            : (found as unknown as Record<string, unknown>[]);
+        if (foundRows.length === 0) {
+          await db.execute(sql`
+            ALTER TABLE "tasks" ADD CONSTRAINT "tasks_daily_date_required"
+            CHECK (source <> 'daily' OR daily_for_date IS NOT NULL)
+          `);
         }
       }
-
-      const rows = await db
-        .select({
-          title: tasksTable.title,
-          source: tasksTable.source,
-          dailyForDate: tasksTable.dailyForDate,
-          dueDate: tasksTable.dueDate,
-        })
-        .from(tasksTable)
-        .where(
-          and(
-            eq(tasksTable.orgId, org.id),
-            inArray(tasksTable.title, ["repair-me", "demote-me", "dup15"]),
-          ),
-        )
-        .orderBy(asc(tasksTable.title));
-      // (b1): daily_for_date dipulihkan dari due_date, tetap daily.
-      expect(rows.find((r) => r.title === "repair-me")).toEqual({
-        title: "repair-me",
-        source: "daily",
-        dailyForDate: today,
-        dueDate: today,
-      });
-      // (b2): tanpa due_date → demosi manual, daily_for_date NULL.
-      expect(rows.find((r) => r.title === "demote-me")).toEqual({
-        title: "demote-me",
-        source: "manual",
-        dailyForDate: null,
-        dueDate: null,
-      });
-      // (c): tepat satu daily tersisa dari pasangan dup.
-      const dupRows = rows.filter((r) => r.title === "dup15");
-      expect(dupRows.map((r) => r.source).sort()).toEqual(["daily", "manual"]);
-      expect(dupRows.find((r) => r.source === "daily")!.dailyForDate).toBe(
-        today,
-      );
-
-      // (d): CHECK & partial index hidup kembali dan menolak pelanggaran.
-      await expect(
-        db.execute(sql`
-          insert into tasks (org_id, project_id, title, source)
-          values (${org.id}, ${project.id}, 'chk15', 'daily')
-        `),
-      ).rejects.toMatchObject({
-        cause: { code: "23514", constraint_name: "tasks_daily_date_required" },
-      });
-      await expect(
-        db.execute(sql`
-          insert into tasks (org_id, project_id, title, source, daily_for_date)
-          values (${org.id}, ${project.id}, 'dup15', 'daily', ${today})
-        `),
-      ).rejects.toMatchObject({ cause: { code: "23505" } });
     },
   );
 });

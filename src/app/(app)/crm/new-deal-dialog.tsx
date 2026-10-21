@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -22,7 +22,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { createDealAction } from "@/app/(app)/crm/actions";
+import {
+  createDealAction,
+  listCompanyContactsAction,
+} from "@/app/(app)/crm/actions";
 
 export function NewDealDialog({
   companies,
@@ -35,8 +38,32 @@ export function NewDealDialog({
   // submit gagal, jadi judul/nilai diketik hilang (cubic P2 new-deal:61).
   const [title, setTitle] = useState("");
   const [value, setValue] = useState("");
+  const [contactId, setContactId] = useState("");
+  const [contacts, setContacts] = useState<{ id: string; name: string }[]>([]);
   const [pending, startTransition] = useTransition();
   const router = useRouter();
+
+  // Kontak dimuat per perusahaan terpilih (tanpa ini contactId selalu null).
+  function handleCompanyChange(v: string) {
+    setCompanyId(v);
+    setContactId("");
+    if (!v) setContacts([]);
+  }
+  useEffect(() => {
+    if (!companyId) return;
+    let cancelled = false;
+    listCompanyContactsAction(companyId).then(
+      (rows) => {
+        if (!cancelled) setContacts(rows);
+      },
+      () => {
+        if (!cancelled) setContacts([]);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [companyId]);
 
   function submit(formData: FormData) {
     if (!companyId) {
@@ -44,6 +71,7 @@ export function NewDealDialog({
       return;
     }
     formData.set("companyId", companyId);
+    formData.set("contactId", contactId);
     startTransition(async () => {
       const result = await createDealAction(formData);
       if (result.ok) {
@@ -51,6 +79,8 @@ export function NewDealDialog({
         setCompanyId("");
         setTitle("");
         setValue("");
+        setContactId("");
+        setContacts([]);
         toast.success("Deal dibuat.");
         if (result.redirectTo) router.push(result.redirectTo);
       } else {
@@ -68,6 +98,8 @@ export function NewDealDialog({
       setCompanyId("");
       setTitle("");
       setValue("");
+      setContactId("");
+      setContacts([]);
     }
   }
 
@@ -88,7 +120,7 @@ export function NewDealDialog({
             <Label htmlFor="deal-company">Perusahaan</Label>
             <Select
               value={companyId}
-              onValueChange={setCompanyId}
+              onValueChange={handleCompanyChange}
               name="companyId"
             >
               <SelectTrigger id="deal-company" className="w-full">
@@ -124,6 +156,34 @@ export function NewDealDialog({
               onChange={(e) => setValue(e.target.value)}
               placeholder="15000000"
             />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="deal-contact">Kontak (opsional)</Label>
+            <Select
+              value={contactId}
+              onValueChange={setContactId}
+              name="contactId"
+              disabled={!companyId || contacts.length === 0}
+            >
+              <SelectTrigger id="deal-contact" className="w-full">
+                <SelectValue
+                  placeholder={
+                    !companyId
+                      ? "Pilih perusahaan dahulu"
+                      : contacts.length === 0
+                        ? "Tidak ada kontak"
+                        : "Pilih kontak"
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {contacts.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>
+                    {c.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <DialogFooter>
             <Button

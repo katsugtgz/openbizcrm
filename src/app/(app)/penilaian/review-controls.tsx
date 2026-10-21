@@ -66,13 +66,12 @@ export function ReviewFormActions({
         </Button>
       )}
       {form.slug && (
-        <a
-          href={`/r/${form.slug}`}
-          className="text-xs text-muted-foreground underline"
-          aria-label="Buka tautan publik"
+        <span
+          className="text-xs text-muted-foreground"
+          title="Pengisian publik butuh tautan ber-token per penilai (/r/<slug>?a=<assignmentId>); penilai internal mengisi lewat halaman ini"
         >
-          Tautan publik
-        </a>
+          Pratinjau: /r/{form.slug}
+        </span>
       )}
     </div>
   );

@@ -8,7 +8,7 @@ export interface SessionUser {
   email: string;
   firstName?: string | null;
   lastName?: string | null;
-  /** AuthKit session id; fake uses a fixed value. */
+  /** AuthKit session id; fake mints a random per-sign-in value. */
   sessionId: string;
   /** Present when the user belongs to a WorkOS organization. */
   organizationId?: string;

@@ -9,7 +9,10 @@ import {
   updateEmployee,
   type EmployeeInput,
 } from "@/lib/repos/hrm-repo";
-import { OrgScopeError } from "@/lib/org-scope";
+import {
+  ValidationError,
+  safeRedirectError,
+} from "@/lib/safe-redirect-error";
 
 const TAX_STATUSES = [
   "TK0",
@@ -58,6 +61,8 @@ function parseInput(formData: FormData): EmployeeInput {
     hireDate: String(formData.get("hireDate") ?? "") || null,
     bankName: String(formData.get("bankName") ?? "").trim() || null,
     bankAccount: String(formData.get("bankAccount") ?? "").trim() || null,
+    // Select selalu mengirim nilai eksplisit ("" = tanpa tautan).
+    linkedUserId: String(formData.get("linkedUserId") ?? "").trim() || null,
   };
 }
 
@@ -70,18 +75,15 @@ export async function createEmployeeAction(formData: FormData): Promise<void> {
   const { userId, orgId } = await requireSession();
   const input = parseInput(formData);
   try {
-    if (!input.employeeNo) throw new Error("Nomor karyawan wajib diisi.");
-    if (!input.name) throw new Error("Nama karyawan wajib diisi.");
+    if (!input.employeeNo)
+      throw new ValidationError("Nomor karyawan wajib diisi.");
+    if (!input.name) throw new ValidationError("Nama karyawan wajib diisi.");
     if (!Number.isInteger(input.baseSalary)) {
-      throw new Error("Gaji pokok harus angka rupiah bulat.");
+      throw new ValidationError("Gaji pokok harus angka rupiah bulat.");
     }
     await createEmployee(userId, orgId, input);
   } catch (error) {
-    const message =
-      error instanceof OrgScopeError || error instanceof Error
-        ? error.message
-        : "Terjadi kesalahan.";
-    failBack("new", message);
+    failBack("new", safeRedirectError(error, "Gagal menyimpan karyawan."));
   }
   revalidatePath("/karyawan");
   redirect(
@@ -94,19 +96,16 @@ export async function updateEmployeeAction(formData: FormData): Promise<void> {
   const id = String(formData.get("id") ?? "");
   const input = parseInput(formData);
   try {
-    if (!id) throw new Error("Karyawan tidak ditemukan.");
-    if (!input.employeeNo) throw new Error("Nomor karyawan wajib diisi.");
-    if (!input.name) throw new Error("Nama karyawan wajib diisi.");
+    if (!id) throw new ValidationError("Karyawan tidak ditemukan.");
+    if (!input.employeeNo)
+      throw new ValidationError("Nomor karyawan wajib diisi.");
+    if (!input.name) throw new ValidationError("Nama karyawan wajib diisi.");
     if (!Number.isInteger(input.baseSalary)) {
-      throw new Error("Gaji pokok harus angka rupiah bulat.");
+      throw new ValidationError("Gaji pokok harus angka rupiah bulat.");
     }
     await updateEmployee(userId, orgId, id, input);
   } catch (error) {
-    const message =
-      error instanceof OrgScopeError || error instanceof Error
-        ? error.message
-        : "Terjadi kesalahan.";
-    failBack("edit", message, id);
+    failBack("edit", safeRedirectError(error, "Gagal menyimpan karyawan."), id);
   }
   revalidatePath("/karyawan");
   redirect(

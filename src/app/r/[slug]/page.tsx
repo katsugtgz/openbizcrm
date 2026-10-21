@@ -1,5 +1,5 @@
-import { notFound } from "next/navigation";
 import { getFormBySlug } from "@/lib/review/service";
+import { checkPublicThrottle, verifyAssignmentToken } from "./guard";
 import { PublicSubmit } from "./public-submit";
 
 export const metadata = { title: "Penilaian" };
@@ -20,8 +20,70 @@ export default async function PublicReviewPage({
 }) {
   const { slug } = await params;
   const { a: assignmentId } = await searchParams;
+  // Tanpa token tak ada DB yang disentuh — jangan bakar budget throttle
+  // (cubic pr10 r2: tokenless flood bisa menghabiskan backstop global dan
+  // memblokir penilai sah). Throttle hanya untuk request ber-token.
+  if (!assignmentId) {
+    return (
+      <main className="mx-auto max-w-xl space-y-6 px-4 py-10">
+        <p className="text-sm text-muted-foreground">
+          Tautan tidak lengkap atau tidak valid: token penilai tidak ditemukan.
+          Minta tautan personal (?a=…) dari admin Anda.
+        </p>
+      </main>
+    );
+  }
+  // Throttle brute-force slug/token (bughunt app:17) — sebelum DB: per
+  // requester per slug + backstop global per slug (cubic pr10 r:25).
+  if (
+    !(await checkPublicThrottle(
+      `public-form:${slug}`,
+      60,
+      `public-form-global:${slug}`,
+      600,
+    ))
+  ) {
+    return (
+      <main className="mx-auto max-w-xl space-y-6 px-4 py-10">
+        <p className="text-sm text-muted-foreground">
+          Terlalu banyak permintaan. Coba lagi sebentar.
+        </p>
+      </main>
+    );
+  }
   const form = await getFormBySlug(slug);
-  if (!form || form.status !== "active") notFound();
+  // Slug tak dikenal/nonaktif: respons generik SAMA seperti token salah
+  // (cubic pr10 r:51) — notFound() di sini menjadi oracle eksistensi slug.
+  if (!form || form.status !== "active") {
+    return (
+      <main className="mx-auto max-w-xl space-y-6 px-4 py-10">
+        <p className="text-sm text-muted-foreground">
+          Tautan tidak lengkap atau tidak valid: token penilai tidak ditemukan.
+          Minta tautan personal (?a=…) dari admin Anda.
+        </p>
+      </main>
+    );
+  }
+  // Judul/deskripsi/field hanya dibuka dengan token penilai yang valid
+  // untuk form ini — slug polos tanpa token tidak boleh membocorkan
+  // form aktif lintas-org (bughunt app:3).
+  // assignmentId di sini string (early return di atas), form aktif
+  // (cek generik di atas) — tanpa cabang mati (cubic pr10 r4).
+  const tokenOk = await verifyAssignmentToken(
+    assignmentId,
+    form.id,
+    form.orgId,
+  );
+  if (!tokenOk) {
+    return (
+      <main className="mx-auto max-w-xl space-y-6 px-4 py-10">
+        <p className="text-sm text-muted-foreground">
+          Tautan tidak lengkap atau tidak valid: token penilai tidak ditemukan.
+          Minta tautan personal (?a=…) dari admin Anda.
+        </p>
+      </main>
+    );
+  }
 
   return (
     <main className="mx-auto max-w-xl space-y-6 px-4 py-10">
@@ -33,19 +95,11 @@ export default async function PublicReviewPage({
           </p>
         )}
       </div>
-      {form.status === "active" && assignmentId ? (
-        <PublicSubmit
-          slug={slug}
-          assignmentId={assignmentId}
-          fields={form.fields}
-        />
-      ) : (
-        <p className="text-sm text-muted-foreground">
-          {form.status !== "active"
-            ? "Form ini sudah ditutup."
-            : "Tautan tidak lengkap: token penilai tidak ditemukan."}
-        </p>
-      )}
+      <PublicSubmit
+        slug={slug}
+        assignmentId={assignmentId}
+        fields={form.fields}
+      />
     </main>
   );
 }

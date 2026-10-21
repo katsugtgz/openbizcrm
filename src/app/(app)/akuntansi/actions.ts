@@ -63,7 +63,11 @@ export async function createAccountAction(
   return { ok: true };
 }
 
-/** Baris jurnal dikirim sebagai JSON string (state klien dinamis). */
+/**
+ * Baris jurnal dikirim sebagai JSON string (state klien dinamis). Bentuk
+ * divalidasi di boundary: JSON tak valid / bukan array / baris tak berbentuk
+ * ditolak dengan pesan jelas, bukan TypeError mentah.
+ */
 export async function createJournalEntryAction(
   formData: FormData,
 ): Promise<ActionResult> {
@@ -72,18 +76,39 @@ export async function createJournalEntryAction(
   const description = String(formData.get("description") ?? "").trim() || null;
   try {
     const raw = String(formData.get("lines") ?? "[]");
-    const parsed = JSON.parse(raw) as {
-      accountId: string;
-      debit: string;
-      credit: string;
-    }[];
-    const lines = parsed
-      .filter((l) => l.accountId)
-      .map((l) => ({
-        accountId: l.accountId,
-        debit: l.debit ? parseIDRInput(l.debit) : 0,
-        credit: l.credit ? parseIDRInput(l.credit) : 0,
-      }));
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error("Baris jurnal tidak valid (bukan JSON).");
+    }
+    if (!Array.isArray(parsed)) {
+      throw new Error("Baris jurnal harus array.");
+    }
+    // Baris kosong form dinamis (accountId "") dilewati; baris MALFORMED
+    // (bukan objek / accountId bukan string) DITOLAK eksplisit — diam-diam
+    // membuangnya mengunbalance jurnal (cubic pr10 akuntansi:88).
+    const lines: { accountId: string; debit: number; credit: number }[] = [];
+    for (const entry of parsed) {
+      if (
+        typeof entry !== "object" ||
+        entry === null ||
+        typeof (entry as { accountId?: unknown }).accountId !== "string"
+      ) {
+        throw new Error("Baris jurnal tidak valid.");
+      }
+      const e = entry as {
+        accountId: string;
+        debit?: unknown;
+        credit?: unknown;
+      };
+      if (e.accountId === "") continue;
+      lines.push({
+        accountId: e.accountId,
+        debit: e.debit ? parseIDRInput(String(e.debit)) : 0,
+        credit: e.credit ? parseIDRInput(String(e.credit)) : 0,
+      });
+    }
     await createJournalEntry(userId, orgId, {
       date,
       description,
@@ -182,6 +207,10 @@ export async function disposeAssetAction(
       orgId,
       String(formData.get("assetId") ?? ""),
       String(formData.get("disposalDate") ?? ""),
+      {
+        assetAccountId: String(formData.get("assetAccountId") ?? ""),
+        lossAccountId: String(formData.get("lossAccountId") ?? ""),
+      },
     );
   } catch (error) {
     return fail(error);

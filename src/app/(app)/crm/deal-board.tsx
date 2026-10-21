@@ -16,8 +16,13 @@ import {
 } from "@dnd-kit/core";
 import type { CrmDeal, CrmStage } from "@/lib/repos/crm-repo";
 import { formatIDR } from "@/lib/money";
-import { moveDealAction } from "./actions";
+import { closeDealAction, moveDealAction } from "./actions";
 import { cn } from "cn";
+
+/** Samakan nama stage (cermin normalizeStageName server — modul server tak bisa diimpor ke klien). */
+function normStageName(name: string): string {
+  return name.trim().toLowerCase();
+}
 
 const OUTCOME_RING: Record<string, string> = {
   won: "border-green-500 bg-green-50",
@@ -69,12 +74,9 @@ function DealCard({ deal }: { deal: BoardDeal }) {
 
 function Column({ stage, deals }: { stage: CrmStage; deals: BoardDeal[] }) {
   const { setNodeRef, isOver } = useDroppable({ id: stage.id });
+  const normName = normStageName(stage.name);
   const outcome =
-    stage.name === "Close Won"
-      ? "won"
-      : stage.name === "Close Lost"
-        ? "lost"
-        : "open";
+    normName === "close won" ? "won" : normName === "close lost" ? "lost" : "open";
   return (
     <div
       className="flex min-w-[240px] flex-1 flex-col gap-2 rounded-lg bg-muted/50 p-2"
@@ -147,16 +149,39 @@ export function DealBoard({
     if (!stageId) return;
     const deal = deals.find((d) => d.id === dealId);
     if (!deal || deal.stageId === stageId) return;
+    // Satu jalur close: seret ke kolom Close Won/Lost memanggil closeDeal
+    // (semantik outcome + kopling quotation), bukan moveDeal.
+    const target = stages.find((s) => s.id === stageId);
+    const targetName = target ? normStageName(target.name) : "";
+    const closeOutcome =
+      targetName === "close won"
+        ? ("won" as const)
+        : targetName === "close lost"
+          ? ("lost" as const)
+          : null;
     startTransition(async () => {
       try {
-        const result = await moveDealAction(dealId, stageId);
+        const result = closeOutcome
+          ? await closeDealAction(dealId, closeOutcome)
+          : await moveDealAction(dealId, stageId);
         if (result.ok) {
-          toast.success("Deal dipindahkan.");
+          toast.success(
+            closeOutcome
+              ? closeOutcome === "won"
+                ? "Deal dimenangkan!"
+                : "Deal ditandai kalah."
+              : "Deal dipindahkan.",
+          );
         } else {
-          toast.error(result.error ?? "Gagal memindahkan deal.");
+          toast.error(
+            result.error ??
+              (closeOutcome ? "Gagal menutup deal." : "Gagal memindahkan deal."),
+          );
         }
       } catch {
-        toast.error("Gagal memindahkan deal.");
+        toast.error(
+          closeOutcome ? "Gagal menutup deal." : "Gagal memindahkan deal.",
+        );
       }
     });
   }

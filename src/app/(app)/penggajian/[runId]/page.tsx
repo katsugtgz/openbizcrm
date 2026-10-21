@@ -4,6 +4,8 @@ import { redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
 import { PayrollError, getRun, listPayslips } from "@/lib/payroll/service";
+import { hasRole, requireOrgRole } from "@/lib/org-scope";
+import { getEmployeeByUser } from "@/lib/leave/repo";
 import { formatIDR } from "@/lib/money";
 import { Button } from "@/components/ui/button";
 import {
@@ -44,6 +46,9 @@ export default async function RunDetailPage({
   if (!ids) redirect("/dashboard");
   const { userId, orgId } = ids;
 
+  const { role } = await requireOrgRole(userId, orgId, "member");
+  // Member hanya melihat baris slip miliknya sendiri; admin/owner semua.
+  const selfEmployee = hasRole(role, "admin") ? null : await getEmployeeByUser(userId, orgId);
   let run;
   let slips;
   try {
@@ -54,6 +59,14 @@ export default async function RunDetailPage({
     throw error;
   }
 
+  // Admin/owner sees every row; a linked member sees only their own; a
+  // member WITHOUT a linked employee sees nothing (cubic pr10: null must
+  // not mean admin).
+  const visible = hasRole(role, "admin")
+    ? slips
+    : selfEmployee
+      ? slips.filter((s) => s.employeeId === selfEmployee.id)
+      : [];
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -70,7 +83,7 @@ export default async function RunDetailPage({
         </div>
       </div>
 
-      {slips.length === 0 ? (
+      {visible.length === 0 ? (
         <p className="py-8 text-center text-sm text-muted-foreground">
           Tidak ada slip gaji untuk run ini.
         </p>
@@ -88,7 +101,7 @@ export default async function RunDetailPage({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {slips.map((s) => (
+            {visible.map((s) => (
               <TableRow key={s.employeeId}>
                 <TableCell>{s.name}</TableCell>
                 <TableCell className="text-right tabular-nums">

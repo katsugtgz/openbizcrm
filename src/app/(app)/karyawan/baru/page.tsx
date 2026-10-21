@@ -3,6 +3,8 @@ import { redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
 import { requireOrgRole } from "@/lib/org-scope";
+import { listMembers } from "@/lib/repos/member-repo";
+import { listLinkedUserIds } from "@/lib/repos/hrm-repo";
 import { createEmployeeAction } from "../actions";
 import { EmployeeForm } from "../employee-form";
 import { Button } from "@/components/ui/button";
@@ -20,6 +22,16 @@ export default async function KaryawanBaruPage({
   const { userId, orgId } = ids;
   await requireOrgRole(userId, orgId, "admin");
   const sp = await searchParams;
+  // Sembunyikan user yang sudah tertaut (cubic pr10 r2:2232): memilihnya
+  // pasti gagal validasi — jangan tawarkan.
+  const [linkedIds, allMembers] = await Promise.all([
+    listLinkedUserIds(orgId),
+    listMembers(userId, orgId),
+  ]);
+  const linked = new Set(linkedIds);
+  const members = allMembers
+    .filter((m) => !linked.has(m.user.id))
+    .map((m) => ({ id: m.user.id, name: m.user.name, email: m.user.email }));
 
   return (
     <div className="flex flex-col gap-6">
@@ -34,7 +46,7 @@ export default async function KaryawanBaruPage({
           {sp.error}
         </p>
       )}
-      <EmployeeForm action={createEmployeeAction} />
+      <EmployeeForm members={members} action={createEmployeeAction} />
     </div>
   );
 }

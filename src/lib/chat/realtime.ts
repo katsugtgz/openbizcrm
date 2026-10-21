@@ -12,9 +12,32 @@
 
 let warned = false;
 
-/** Satu REST client per proses (cubic realtime.ts:32) — tanpa cache, tiap
- * pesan membuat client baru dan koneksi menumpuk di bawah traffic chat. */
-let cachedClient: import("ably").Rest | null | undefined;
+/**
+ * Satu REST client per proses — cache PROMISE-nya (bukan hasil): dua publish
+ * konkuren pertama berbagi satu init. Tanpa ini dua Rest client dibuat dan
+ * satu bocor; tanpa cache sama sekali tiap pesan membuat client baru.
+ */
+let clientPromise: Promise<import("ably").Rest | null> | undefined;
+
+/** Batas tunggu satu publish Ably — outage tidak boleh menumpuk promise. */
+export const PUBLISH_TIMEOUT_MS = 10_000;
+
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`publish timeout setelah ${ms}ms`)),
+          ms,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 export interface ChatRealtimeEvent {
   conversationId: string;
@@ -25,8 +48,7 @@ export interface ChatRealtimeEvent {
   createdAt: string;
 }
 
-async function getClient(): Promise<import("ably").Rest | null> {
-  if (cachedClient !== undefined) return cachedClient;
+async function initClient(): Promise<import("ably").Rest | null> {
   const key = process.env.ABLY_API_KEY;
   if (!key) {
     if (!warned) {
@@ -35,23 +57,32 @@ async function getClient(): Promise<import("ably").Rest | null> {
         "[realtime] ABLY_API_KEY tidak diset — realtime chat dinonaktifkan (pesan tetap tersimpan).",
       );
     }
-    cachedClient = null;
     return null;
   }
   const Ably = (await import("ably")).default;
-  cachedClient = new Ably.Rest(key);
-  return cachedClient;
+  return new Ably.Rest(key);
+}
+
+async function getClient(): Promise<import("ably").Rest | null> {
+  if (!clientPromise) {
+    clientPromise = initClient().catch((e) => {
+      clientPromise = undefined; // gagal init boleh dicoba lagi
+      throw e;
+    });
+  }
+  return clientPromise;
 }
 
 /** Publish pesan baru ke channel per-percakapan. Gagal publish tidak pernah gagalkan pesan. */
 export async function publishChatMessage(
   event: ChatRealtimeEvent,
+  timeoutMs = PUBLISH_TIMEOUT_MS,
 ): Promise<void> {
   try {
     const client = await getClient();
     if (!client) return;
     const channel = client.channels.get(`chat:conv:${event.conversationId}`);
-    await channel.publish("message", event);
+    await withTimeout(channel.publish("message", event), timeoutMs);
   } catch (e) {
     console.warn("[realtime] publish gagal (pesan tetap tersimpan):", e);
   }

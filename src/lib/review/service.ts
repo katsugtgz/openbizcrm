@@ -248,6 +248,28 @@ export async function getFormBySlug(slug: string): Promise<ReviewForm | null> {
   return row ?? null;
 }
 
+const REVIEW_DATE_RE = /^(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+
+/** Normalisasi tanggal periode: kosong/null -> null; format + kalender valid. */
+function normalizeReviewDate(
+  value: string | null | undefined,
+  label: "mulai" | "selesai",
+): string | null {
+  const v = (value ?? "").trim();
+  if (!v) return null;
+  const m = REVIEW_DATE_RE.exec(v);
+  const dt = m ? new Date(`${v}T00:00:00Z`) : null;
+  const real =
+    !!m &&
+    !!dt &&
+    !Number.isNaN(dt.getTime()) &&
+    dt.toISOString().slice(0, 10) === v;
+  if (!real) {
+    throw new Error(`Tanggal ${label} tidak valid (pakai YYYY-MM-DD).`);
+  }
+  return v;
+}
+
 // ---------------- Periods ----------------
 
 export async function createPeriod(
@@ -261,6 +283,13 @@ export async function createPeriod(
   },
 ): Promise<ReviewPeriod> {
   await requireOrgRole(userId, orgId, "member");
+  const title = input.title.trim();
+  if (!title) throw new Error("Judul periode wajib diisi.");
+  const startDate = normalizeReviewDate(input.startDate, "mulai");
+  const endDate = normalizeReviewDate(input.endDate, "selesai");
+  if (startDate && endDate && startDate > endDate) {
+    throw new Error("Tanggal selesai harus sama atau setelah tanggal mulai.");
+  }
   // Atomik: cek form aktif + insert dalam satu transaksi (lock org + row
   // form) supaya publish/close form tidak bisa menyelinap di antara cek
   // dan insert.
@@ -284,10 +313,10 @@ export async function createPeriod(
       .values({
         orgId,
         formId: form.id,
-        title: input.title,
+        title,
         status: "open",
-        startDate: input.startDate ?? null,
-        endDate: input.endDate ?? null,
+        startDate,
+        endDate,
         createdBy: userId,
       })
       .returning();

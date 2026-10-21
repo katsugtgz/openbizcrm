@@ -1,5 +1,11 @@
 import { and, eq } from "drizzle-orm";
 import { orgMemberships } from "@/db/schema";
+import type { db } from "@/db";
+
+/** A live connection or an open transaction — guard reuses the caller's. */
+export type DbExecutor =
+  | typeof db
+  | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export type Role = "owner" | "admin" | "member";
 
@@ -30,9 +36,12 @@ export function assertInternalId(
   value: string,
 ): void {
   if (UUID_RE.test(value)) return;
+  // Never echo the full caller-controlled value (log/URL reflection): a
+  // short preview is enough to triage which id failed the contract.
+  const shown = value.length > 32 ? `${value.slice(0, 32)}…` : value;
   throw new UUIDContractError(
     parameter,
-    `WorkOS IDs cannot query the database directly; resolve ${parameter} to the internal UUID first (got: ${value}).`,
+    `WorkOS IDs cannot query the database directly; resolve ${parameter} to the internal UUID first (got: ${shown}).`,
   );
 }
 
@@ -95,14 +104,18 @@ export async function requireOrgRole(
   userId: string,
   orgId: string,
   required: Role,
+  exec?: DbExecutor,
 ): Promise<{ role: Role }> {
   // Internal-ID contract: both params must be database UUIDs. Session
   // values (WorkOS user/org IDs) never match memberships and would
   // silently return NO_MEMBERSHIP — fail loudly instead.
   assertInternalId("userId", userId);
   assertInternalId("orgId", orgId);
-  const { db } = await import("@/db");
-  const [membership] = await db
+  // exec (cubic pr10 cuti:216): callers inside a transaction pass their
+  // tx so the guard reuses the tx connection instead of grabbing a second
+  // pooled connection (pool exhaustion under concurrent approvals).
+  const q = exec ?? (await import("@/db")).db;
+  const [membership] = await q
     .select({ role: orgMemberships.role })
     .from(orgMemberships)
     .where(

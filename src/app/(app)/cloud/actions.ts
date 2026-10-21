@@ -5,6 +5,8 @@ import { redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
 import {
+  ConfigError,
+  DriveError,
   confirmUpload,
   createFolder,
   deleteFile,
@@ -12,14 +14,16 @@ import {
   listFolder,
   presignUpload,
 } from "@/lib/drive/service";
+import { NotFoundError, OrgScopeError } from "@/lib/org-scope";
 
 export interface ActionResult {
   ok: boolean;
   error?: string;
   message?: string;
-  /** Presigned PUT URL + fileId saat presign berhasil. */
+  /** Presigned PUT URL + fileId + MIME bertanda saat presign berhasil. */
   uploadUrl?: string;
   fileId?: string;
+  contentType?: string;
 }
 
 async function requireSession() {
@@ -31,10 +35,18 @@ async function requireSession() {
 }
 
 function fail(error: unknown): ActionResult {
-  return {
-    ok: false,
-    error: error instanceof Error ? error.message : "Gagal.",
-  };
+  // Domain errors carry static Indonesian strings — safe to reflect.
+  // Anything else (R2 SDK, PG) is logged server-side, generic to client.
+  if (
+    error instanceof DriveError ||
+    error instanceof ConfigError ||
+    error instanceof NotFoundError ||
+    error instanceof OrgScopeError
+  ) {
+    return { ok: false, error: error.message };
+  }
+  console.error("[cloud] action gagal:", error);
+  return { ok: false, error: "Terjadi kesalahan. Coba lagi." };
 }
 
 export async function presignUploadAction(
@@ -59,7 +71,12 @@ export async function presignUploadAction(
     // Tidak revalidate di sini (cubic cloud/actions.ts:59): baris masih
     // pending, listFolder hanya menampilkan confirmed. Halaman segar setelah
     // confirmUploadAction sukses.
-    return { ok: true, uploadUrl: result.uploadUrl, fileId: result.fileId };
+    return {
+      ok: true,
+      uploadUrl: result.uploadUrl,
+      fileId: result.fileId,
+      contentType: result.contentType,
+    };
   } catch (error) {
     return fail(error);
   }

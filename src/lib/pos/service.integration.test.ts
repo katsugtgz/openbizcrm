@@ -323,4 +323,66 @@ describe("pos integration", () => {
     expect(afterSale[1].reason).toBe("sale");
     void posSales;
   });
+
+  itDb("checkout Rp0 (item gratis): tanpa jurnal, stok tetap dipotong", async () => {
+    const o = await makeOrg();
+    await seedPosAccounts(o);
+    const product = await pos.addProduct(o.userId, o.orgId, {
+      name: `Sampel ${suffix}`,
+      sku: `SMP-${suffix}`,
+      price: 0,
+      initialStock: 5,
+    });
+    const r = await pos.checkout(o.userId, o.orgId, {
+      items: [{ productId: product.id, qty: 2 }],
+      paymentMethod: "cash",
+      date: "2026-11-01",
+    });
+    expect(r.sale.total).toBe(0);
+    // Tanpa jurnal (baris 0 melanggar CHECK) — bukan error PG mentah.
+    expect(r.sale.journalEntryId).toBeNull();
+    const [p] = await db
+      .select()
+      .from(products)
+      .where(eq(products.id, product.id));
+    expect(p.stockQty).toBe(3);
+    const tb = await acct.trialBalanceService(o.orgId);
+    expect(tb.balanced).toBe(true);
+    expect(tb.totalDebit).toBe(0);
+  });
+
+  itDb("checkout: tanggal tak valid/metode tak valid ditolak; createdAt waktu server", async () => {
+    const o = await makeOrg();
+    await seedPosAccounts(o);
+    const product = await pos.addProduct(o.userId, o.orgId, {
+      name: `Permen ${suffix}`,
+      sku: `PRM-${suffix}`,
+      price: 1_000,
+      initialStock: 5,
+    });
+    await expect(
+      pos.checkout(o.userId, o.orgId, {
+        items: [{ productId: product.id, qty: 1 }],
+        paymentMethod: "cash",
+        date: "2026-02-30",
+      }),
+    ).rejects.toThrow(/kalender/);
+    await expect(
+      pos.checkout(o.userId, o.orgId, {
+        items: [{ productId: product.id, qty: 1 }],
+        paymentMethod: "wesel" as "cash",
+        date: "2026-11-01",
+      }),
+    ).rejects.toThrow(/Metode pembayaran/);
+    // Tanggal lampau untuk jurnal & periode, tapi createdAt tetap waktu
+    // server (input kasir tak boleh memalsukan stempel audit).
+    const before = Date.now();
+    const r = await pos.checkout(o.userId, o.orgId, {
+      items: [{ productId: product.id, qty: 1 }],
+      paymentMethod: "cash",
+      date: "2020-01-05",
+    });
+    expect(r.sale.createdAt.getTime()).toBeGreaterThanOrEqual(before - 60_000);
+    expect(r.sale.createdAt.getFullYear()).toBeGreaterThan(2020);
+  });
 });

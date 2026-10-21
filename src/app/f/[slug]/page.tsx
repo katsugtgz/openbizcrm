@@ -1,5 +1,5 @@
-import { notFound } from "next/navigation";
 import { getFormBySlug } from "@/lib/review/service";
+import { checkPublicThrottle, verifyAssignmentToken } from "@/app/r/[slug]/guard";
 
 export const metadata = { title: "Formulir" };
 
@@ -19,8 +19,67 @@ export default async function PublicFormPage({
 }) {
   const { slug } = await params;
   const { a: assignmentId } = await searchParams;
+  // Tanpa token tak ada DB yang disentuh — jangan bakar budget throttle
+  // (cubic pr10 r2: tokenless flood bisa menghabiskan backstop global dan
+  // memblokir penilai sah). Throttle hanya untuk request ber-token.
+  if (!assignmentId) {
+    return (
+      <main className="mx-auto max-w-xl space-y-6 px-4 py-10">
+        <p className="text-sm text-muted-foreground">
+          Tautan tidak lengkap atau tidak valid: token penilai tidak ditemukan.
+          Minta tautan personal (?a=…) dari admin Anda.
+        </p>
+      </main>
+    );
+  }
+  // Throttle + token gate sama seperti /r/[slug] (bughunt app:3/17):
+  // per requester + backstop global (cubic pr10 r:25).
+  if (
+    !(await checkPublicThrottle(
+      `public-form:${slug}`,
+      60,
+      `public-form-global:${slug}`,
+      600,
+    ))
+  ) {
+    return (
+      <main className="mx-auto max-w-xl space-y-6 px-4 py-10">
+        <p className="text-sm text-muted-foreground">
+          Terlalu banyak permintaan. Coba lagi sebentar.
+        </p>
+      </main>
+    );
+  }
   const form = await getFormBySlug(slug);
-  if (!form || form.status !== "active") notFound();
+  // Respons generik seperti /r/[slug] (cubic pr10 r:51): jangan bocorkan
+  // eksistensi slug lewat notFound().
+  if (!form || form.status !== "active") {
+    return (
+      <main className="mx-auto max-w-xl space-y-6 px-4 py-10">
+        <p className="text-sm text-muted-foreground">
+          Tautan tidak lengkap atau tidak valid: token penilai tidak ditemukan.
+          Minta tautan personal (?a=…) dari admin Anda.
+        </p>
+      </main>
+    );
+  }
+  // assignmentId di sini string (early return di atas) — tanpa cabang
+  // mati (cubic pr10 r4, same-class dengan /r).
+  const tokenOk = await verifyAssignmentToken(
+    assignmentId,
+    form.id,
+    form.orgId,
+  );
+  if (!tokenOk) {
+    return (
+      <main className="mx-auto max-w-xl space-y-6 px-4 py-10">
+        <p className="text-sm text-muted-foreground">
+          Tautan tidak lengkap atau tidak valid: token penilai tidak ditemukan.
+          Minta tautan personal (?a=…) dari admin Anda.
+        </p>
+      </main>
+    );
+  }
 
   return (
     <main className="mx-auto max-w-xl space-y-6 px-4 py-10">
@@ -32,18 +91,11 @@ export default async function PublicFormPage({
           </p>
         )}
       </div>
-      {assignmentId ? (
-        <FormSubmit
-          slug={slug}
-          assignmentId={assignmentId}
-          fields={form.fields}
-        />
-      ) : (
-        <p className="text-sm text-muted-foreground">
-          Tautan tidak lengkap: token penilai tidak ditemukan. Minta tautan
-          personal (?a=…) dari admin Anda.
-        </p>
-      )}
+      <FormSubmit
+        slug={slug}
+        assignmentId={assignmentId}
+        fields={form.fields}
+      />
     </main>
   );
 }

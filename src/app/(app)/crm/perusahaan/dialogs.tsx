@@ -16,6 +16,10 @@ import { Label } from "@/components/ui/label";
 import {
   createCompanyAction,
   createContactAction,
+  deleteCompanyAction,
+  deleteContactAction,
+  updateCompanyAction,
+  updateContactAction,
 } from "@/app/(app)/crm/actions";
 
 export function NewCompanyDialog() {
@@ -80,6 +84,231 @@ export function NewCompanyDialog() {
         </form>
       </DialogContent>
     </Dialog>
+  );
+}
+
+export function EditCompanyDialog({
+  company,
+}: {
+  company: { id: string; name: string; industry: string | null };
+}) {
+  const [open, setOpen] = useState(false);
+  const [pending, startTransition] = useTransition();
+
+  function submit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    formData.set("id", company.id);
+    startTransition(async () => {
+      const result = await updateCompanyAction(formData);
+      if (result.ok) {
+        setOpen(false);
+        toast.success("Perusahaan diperbarui.");
+      } else {
+        toast.error(result.error ?? "Gagal.");
+      }
+    });
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button size="sm" variant="outline">
+          Ubah
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <form onSubmit={submit} className="space-y-4">
+          <DialogHeader>
+            <DialogTitle>Ubah Perusahaan</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor={`company-name-${company.id}`}>Nama</Label>
+            <Input
+              id={`company-name-${company.id}`}
+              name="name"
+              required
+              defaultValue={company.name}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor={`company-industry-${company.id}`}>Industri</Label>
+            <Input
+              id={`company-industry-${company.id}`}
+              name="industry"
+              defaultValue={company.industry ?? ""}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setOpen(false)}
+            >
+              Batal
+            </Button>
+            <Button type="submit" disabled={pending}>
+              {pending ? "Menyimpan..." : "Simpan"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function EditContactDialog({
+  contact,
+}: {
+  contact: {
+    id: string;
+    name: string;
+    email: string | null;
+    phone: string | null;
+    position: string | null;
+  };
+}) {
+  const [open, setOpen] = useState(false);
+  const [pending, startTransition] = useTransition();
+
+  function submit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    formData.set("id", contact.id);
+    startTransition(async () => {
+      const result = await updateContactAction(formData);
+      if (result.ok) {
+        setOpen(false);
+        toast.success("Kontak diperbarui.");
+      } else {
+        toast.error(result.error ?? "Gagal.");
+      }
+    });
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button size="sm" variant="outline">
+          Ubah
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <form onSubmit={submit} className="space-y-4">
+          <DialogHeader>
+            <DialogTitle>Ubah Kontak</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor={`contact-name-${contact.id}`}>Nama</Label>
+            <Input
+              id={`contact-name-${contact.id}`}
+              name="name"
+              required
+              defaultValue={contact.name}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label htmlFor={`contact-email-${contact.id}`}>Email</Label>
+              <Input
+                id={`contact-email-${contact.id}`}
+                name="email"
+                type="email"
+                defaultValue={contact.email ?? ""}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor={`contact-phone-${contact.id}`}>Telepon</Label>
+              <Input
+                id={`contact-phone-${contact.id}`}
+                name="phone"
+                defaultValue={contact.phone ?? ""}
+              />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor={`contact-position-${contact.id}`}>Jabatan</Label>
+            <Input
+              id={`contact-position-${contact.id}`}
+              name="position"
+              defaultValue={contact.position ?? ""}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setOpen(false)}
+            >
+              Batal
+            </Button>
+            <Button type="submit" disabled={pending}>
+              {pending ? "Menyimpan..." : "Simpan"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function DeleteRowButton({
+  kind,
+  id,
+}: {
+  kind: "company" | "contact";
+  id: string;
+}) {
+  const [pending, startTransition] = useTransition();
+  const [confirming, setConfirming] = useState(false);
+  if (!confirming) {
+    return (
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={pending}
+        onClick={() => setConfirming(true)}
+      >
+        Hapus
+      </Button>
+    );
+  }
+  return (
+    <span className="flex items-center justify-end gap-2">
+      <Button
+        size="sm"
+        variant="destructive"
+        disabled={pending}
+        onClick={() => {
+          startTransition(async () => {
+            const result =
+              kind === "company"
+                ? await deleteCompanyAction(id)
+                : await deleteContactAction(id);
+            if (result.ok) {
+              toast.success(
+                kind === "company"
+                  ? "Perusahaan dihapus."
+                  : "Kontak dihapus.",
+              );
+            } else {
+              toast.error(result.error ?? "Gagal.");
+              setConfirming(false);
+            }
+          });
+        }}
+      >
+        {pending ? "Menghapus..." : "Ya"}
+      </Button>
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={pending}
+        onClick={() => setConfirming(false)}
+      >
+        Batal
+      </Button>
+    </span>
   );
 }
 

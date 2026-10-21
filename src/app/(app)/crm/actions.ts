@@ -9,8 +9,15 @@ import {
   createCompany,
   createContact,
   createDeal,
+  deleteCompany,
+  deleteContact,
+  deleteDeal,
   getOrCreateDefaultPipeline,
+  listContacts,
   moveDeal,
+  updateCompany,
+  updateContact,
+  updateDeal,
 } from "@/lib/repos/crm-repo";
 import { closeDeal, setQuotationStatus } from "@/lib/deals/service";
 import { parseIDRInput } from "@/lib/money";
@@ -96,6 +103,7 @@ export async function createDealAction(
     const { pipeline, stages } = await getOrCreateDefaultPipeline(
       orgId,
       companyId,
+      { userId },
     );
     const deal = await createDeal(userId, orgId, {
       pipelineId: pipeline.id,
@@ -170,6 +178,135 @@ export async function closeDealAction(
   revalidatePath(`/crm/${dealId}`);
   revalidatePath("/crm");
   return { ok: true };
+}
+
+export async function updateCompanyAction(
+  formData: FormData,
+): Promise<ActionResult> {
+  const { userId, orgId } = await requireSession();
+  const id = String(formData.get("id") ?? "");
+  const name = String(formData.get("name") ?? "").trim();
+  const industry = String(formData.get("industry") ?? "").trim() || null;
+  try {
+    if (!name) throw new Error("Nama perusahaan wajib diisi.");
+    await updateCompany(userId, orgId, id, { name, industry });
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Gagal.",
+    };
+  }
+  revalidatePath("/crm/perusahaan");
+  return { ok: true };
+}
+
+export async function deleteCompanyAction(
+  id: string,
+): Promise<ActionResult> {
+  const { userId, orgId } = await requireSession();
+  try {
+    await deleteCompany(userId, orgId, id);
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Gagal.",
+    };
+  }
+  revalidatePath("/crm/perusahaan");
+  revalidatePath("/crm");
+  return { ok: true };
+}
+
+export async function updateContactAction(
+  formData: FormData,
+): Promise<ActionResult> {
+  const { userId, orgId } = await requireSession();
+  const id = String(formData.get("id") ?? "");
+  const name = String(formData.get("name") ?? "").trim();
+  const email = String(formData.get("email") ?? "").trim() || null;
+  const phone = String(formData.get("phone") ?? "").trim() || null;
+  const position = String(formData.get("position") ?? "").trim() || null;
+  try {
+    if (!name) throw new Error("Nama kontak wajib diisi.");
+    await updateContact(userId, orgId, id, { name, email, phone, position });
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Gagal.",
+    };
+  }
+  revalidatePath("/crm/perusahaan");
+  return { ok: true };
+}
+
+export async function deleteContactAction(
+  id: string,
+): Promise<ActionResult> {
+  const { userId, orgId } = await requireSession();
+  try {
+    await deleteContact(userId, orgId, id);
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Gagal.",
+    };
+  }
+  revalidatePath("/crm/perusahaan");
+  return { ok: true };
+}
+
+export async function updateDealAction(
+  formData: FormData,
+): Promise<ActionResult> {
+  const { userId, orgId } = await requireSession();
+  const id = String(formData.get("id") ?? "");
+  const title = String(formData.get("title") ?? "").trim();
+  const valueRaw = String(formData.get("value") ?? "").trim();
+  const contactId = String(formData.get("contactId") ?? "") || null;
+  try {
+    if (!title) throw new Error("Judul deal wajib diisi.");
+    // Nilai kosong DITOLAK (cubic pr10 crm:270): koersi diam ke 0
+    // menghapus nilai deal yang sudah ada saat user tak sengaja
+    // mengosongkan field. (Create tetap default 0: tak ada data tertimpa.)
+    if (!valueRaw) throw new Error("Nilai deal wajib diisi.");
+    await updateDeal(userId, orgId, id, {
+      title,
+      value: parseIDRInput(valueRaw),
+      contactId,
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Gagal.",
+    };
+  }
+  revalidatePath(`/crm/${id}`);
+  revalidatePath("/crm");
+  return { ok: true };
+}
+
+export async function deleteDealAction(id: string): Promise<ActionResult> {
+  const { userId, orgId } = await requireSession();
+  try {
+    await deleteDeal(userId, orgId, id);
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Gagal.",
+    };
+  }
+  revalidatePath("/crm");
+  return { ok: true, redirectTo: "/crm" };
+}
+
+/** Kontak satu perusahaan untuk pemilih kontak dialog deal baru. */
+export async function listCompanyContactsAction(
+  companyId: string,
+): Promise<{ id: string; name: string }[]> {
+  const { orgId } = await requireSession();
+  if (!companyId) return [];
+  const rows = await listContacts(orgId, companyId);
+  return rows.map((r) => ({ id: r.id, name: r.name }));
 }
 
 export async function createActivityAction(

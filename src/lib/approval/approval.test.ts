@@ -81,6 +81,14 @@ describe("approval engine", () => {
     });
     expect(() => approve(req, "u3")).toThrow(/bukan penyetuju/i);
     expect(() => reject(req, "u9")).toThrow(/bukan penyetuju/i);
+    // Pesan salah-approver tidak boleh membocorkan id approver yang benar.
+    try {
+      approve(req, "u3");
+      expect.unreachable();
+    } catch (e) {
+      expect((e as Error).message).toContain("u3");
+      expect((e as Error).message).not.toContain("u2");
+    }
   });
 
   it("act on terminal request throws", () => {

@@ -4,7 +4,9 @@ import {
   UUIDContractError,
   assertInternalId,
   hasRole,
+  requireOrgRole,
   requireRole,
+  type DbExecutor,
 } from "./org-scope";
 
 describe("hasRole", () => {
@@ -56,6 +58,37 @@ describe("requireRole", () => {
 
   it("OrgScopeError adalah Error", () => {
     expect(new OrgScopeError("NO_MEMBERSHIP", "x")).toBeInstanceOf(Error);
+  });
+});
+
+describe("requireOrgRole exec passthrough", () => {
+  // Executor palsu: rantai select→from→where→limit seperti drizzle.
+  function fakeExec(rows: unknown[]): DbExecutor {
+    return {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => rows,
+          }),
+        }),
+      }),
+    } as unknown as DbExecutor;
+  }
+  const UID = "11111111-1111-4111-8111-111111111111";
+  const OID = "22222222-2222-4222-8222-222222222222";
+
+  it("memakai executor yang diberikan, bukan pool global (cubic pr10 r2)", async () => {
+    const seen = await requireOrgRole(
+      UID,
+      OID,
+      "admin",
+      fakeExec([{ role: "admin" }]),
+    );
+    expect(seen).toEqual({ role: "admin" });
+    // Executor tanpa baris => ditolak (bukan baca pool global).
+    await expect(
+      requireOrgRole(UID, OID, "member", fakeExec([])),
+    ).rejects.toBeInstanceOf(OrgScopeError);
   });
 });
 

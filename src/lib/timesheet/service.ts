@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gte, isNull, lte } from "drizzle-orm";
 import { db } from "@/db";
-import { tasks, timesheets } from "@/db/schema";
+import { tasks, timesheets, users } from "@/db/schema";
 import { NotFoundError, OrgScopeError, requireOrgRole } from "@/lib/org-scope";
 import { recordAudit } from "@/lib/repos/audit-repo";
 import { requireTask } from "@/lib/tasks/service";
@@ -23,30 +23,52 @@ export async function startTimer(
 ): Promise<Timesheet> {
   await requireOrgRole(userId, orgId, "member");
   await requireTask(orgId, taskId);
-  const [open] = await db
-    .select()
-    .from(timesheets)
-    .where(and(eq(timesheets.userId, userId), isNull(timesheets.endedAt)))
-    .limit(1);
-  if (open) {
-    throw new OrgScopeError(
-      "INSUFFICIENT_ROLE",
-      "Masih ada timer yang berjalan. Hentikan dulu sebelum memulai yang baru.",
+  return db.transaction(async (tx) => {
+    // Kunci baris task (cubic pr10 tasks:277): deleteTask memegang kunci
+    // yang sama sebelum snapshot — start konkuren menunggu delete selesai
+    // (lalu gagal not-found di bawah) alih-alih lolos dari snapshot audit.
+    const [locked] = await tx
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(and(eq(tasks.id, taskId), eq(tasks.orgId, orgId)))
+      .for("update");
+    if (!locked) throw new NotFoundError("Task tidak ditemukan.");
+    // Kunci baris user (cubic pr10 r3:9162): cek satu-timer-terbuka hanya
+    // atomik bila start konkuren di task BERBEDA ikut serialize — tanpa
+    // ini pemenangnya lolos dengan error PG mentah, bukan pesan ramah.
+    await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, userId))
+      .for("update");
+    const [open] = await tx
+      .select()
+      .from(timesheets)
+      .where(and(eq(timesheets.userId, userId), isNull(timesheets.endedAt)))
+      .limit(1);
+    if (open) {
+      throw new OrgScopeError(
+        "INSUFFICIENT_ROLE",
+        "Masih ada timer yang berjalan. Hentikan dulu sebelum memulai yang baru.",
+      );
+    }
+    const [row] = await tx
+      .insert(timesheets)
+      .values({ orgId, taskId, userId, startedAt: new Date() })
+      .returning();
+    await recordAudit(
+      {
+        orgId,
+        userId,
+        action: "timesheet.start",
+        entity: "timesheet",
+        entityId: row.id,
+        metadata: { taskId },
+      },
+      tx,
     );
-  }
-  const [row] = await db
-    .insert(timesheets)
-    .values({ orgId, taskId, userId, startedAt: new Date() })
-    .returning();
-  await recordAudit({
-    orgId,
-    userId,
-    action: "timesheet.start",
-    entity: "timesheet",
-    entityId: row.id,
-    metadata: { taskId },
+    return row;
   });
-  return row;
 }
 
 /**
@@ -80,11 +102,17 @@ export async function stopTimer(
     0,
     Math.floor((endedAt.getTime() - open.startedAt.getTime()) / 60_000),
   );
+  // Predikat endedAt-IS-NULL: dua stop konkuren membaca baris terbuka yang
+  // sama — hanya satu yang menang; yang kalah melihat 0 baris (bukan
+  // double-update + double-audit).
   const [row] = await db
     .update(timesheets)
     .set({ endedAt, minutes })
-    .where(eq(timesheets.id, open.id))
+    .where(and(eq(timesheets.id, open.id), isNull(timesheets.endedAt)))
     .returning();
+  if (!row) {
+    throw new NotFoundError("Timer sudah dihentikan.");
+  }
   await recordAudit({
     orgId,
     userId,

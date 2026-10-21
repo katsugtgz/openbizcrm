@@ -119,7 +119,7 @@ function act(
   const expected = req.chain[req.level].approverId;
   if (actorId !== expected) {
     throw new ApprovalError(
-      `${actorId} bukan penyetuju saat ini (harusnya: ${expected}).`,
+      `${actorId} bukan penyetuju saat ini untuk request ini.`,
     );
   }
   const event: ApprovalEvent = {
