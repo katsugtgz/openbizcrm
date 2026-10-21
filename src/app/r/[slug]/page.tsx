@@ -51,18 +51,6 @@ export default async function PublicReviewPage({
       </main>
     );
   }
-  // Tanpa token: respons generik TANPA query DB — slug valid/tidak valid
-  // tak bisa dibedakan (tutup oracle eksistensi form aktif lintas-org).
-  if (!assignmentId) {
-    return (
-      <main className="mx-auto max-w-xl space-y-6 px-4 py-10">
-        <p className="text-sm text-muted-foreground">
-          Tautan tidak lengkap atau tidak valid: token penilai tidak ditemukan.
-          Minta tautan personal (?a=…) dari admin Anda.
-        </p>
-      </main>
-    );
-  }
   const form = await getFormBySlug(slug);
   // Slug tak dikenal/nonaktif: respons generik SAMA seperti token salah
   // (cubic pr10 r:51) — notFound() di sini menjadi oracle eksistensi slug.
@@ -79,9 +67,13 @@ export default async function PublicReviewPage({
   // Judul/deskripsi/field hanya dibuka dengan token penilai yang valid
   // untuk form ini — slug polos tanpa token tidak boleh membocorkan
   // form aktif lintas-org (bughunt app:3).
-  const tokenOk = assignmentId
-    ? await verifyAssignmentToken(assignmentId, form.id, form.orgId)
-    : false;
+  // assignmentId di sini string (early return di atas), form aktif
+  // (cek generik di atas) — tanpa cabang mati (cubic pr10 r4).
+  const tokenOk = await verifyAssignmentToken(
+    assignmentId,
+    form.id,
+    form.orgId,
+  );
   if (!tokenOk) {
     return (
       <main className="mx-auto max-w-xl space-y-6 px-4 py-10">
@@ -103,19 +95,11 @@ export default async function PublicReviewPage({
           </p>
         )}
       </div>
-      {form.status === "active" && assignmentId ? (
-        <PublicSubmit
-          slug={slug}
-          assignmentId={assignmentId}
-          fields={form.fields}
-        />
-      ) : (
-        <p className="text-sm text-muted-foreground">
-          {form.status !== "active"
-            ? "Form ini sudah ditutup."
-            : "Tautan tidak lengkap: token penilai tidak ditemukan."}
-        </p>
-      )}
+      <PublicSubmit
+        slug={slug}
+        assignmentId={assignmentId}
+        fields={form.fields}
+      />
     </main>
   );
 }

@@ -351,6 +351,13 @@ export async function sendMessage(
           )
           .limit(1);
         if (!winner) throw new ChatError("Pesan gagal dikirim, coba lagi.");
+        // Pemenang konflik harus milik pengirim yang sama dengan isi sama
+        // (cubic pr10 r4): retry yang memakai ulang kunci dengan teks edit
+        // tidak boleh melapor sukses selagi teks baru dibuang. Pesan
+        // generik — jangan bocorkan isi/pengirim baris pemenang.
+        if (winner.userId !== userId || winner.body !== text) {
+          throw new ChatError("Pesan gagal dikirim, coba lagi.");
+        }
         return { msg: winner, inserted: false };
       }
       await recordAudit(

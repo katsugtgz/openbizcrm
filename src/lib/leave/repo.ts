@@ -14,6 +14,7 @@ import {
 } from "@/db/schema";
 import { requireOrgRole } from "@/lib/org-scope";
 import { currentState, type ApprovalRequest } from "@/lib/approval";
+import { ValidationError } from "@/lib/safe-redirect-error";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -182,7 +183,14 @@ export async function debitBalance(
   return row;
 }
 
-export class InsufficientBalanceError extends Error {
+/**
+ * Saldo tak cukup saat approval: user-actionable (approver perlu tahu
+ * kenapa keputusan gagal), jadi subclass ValidationError agar
+ * safeRedirectError merefleksikannya, bukan fallback generik (cubic pr10
+ * r4, same-class dengan karyawan:9069). Angka hari/sisanya data approver
+ * sendiri — aman tampil di ?error=.
+ */
+export class InsufficientBalanceError extends ValidationError {
   constructor(message = "Sisa cuti/izin tidak cukup.") {
     super(message);
     this.name = "InsufficientBalanceError";

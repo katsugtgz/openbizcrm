@@ -225,6 +225,13 @@
       "when": 1792541732802,
       "tag": "0031_mean_kinsey_walden",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1792544415371,
+      "tag": "0032_soft_the_fury",
+      "breakpoints": true
     }
   ]
 }

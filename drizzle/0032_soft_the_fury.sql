@@ -1,0 +1,1 @@
+CREATE INDEX "pos_sales_org_sale_date_idx" ON "pos_sales" USING btree ("org_id","sale_date");

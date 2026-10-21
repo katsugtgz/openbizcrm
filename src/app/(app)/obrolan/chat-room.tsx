@@ -53,6 +53,10 @@ export function ChatRoom({
   // double-click/retry, diganti hanya setelah sukses terkirim. Diisi di
   // effect (bukan render) agar lolos react-hooks/purity.
   const draftKey = React.useRef<string>("");
+  // Teks yang diikat kunci draf saat ini (cubic pr10 r4): kunci
+  // idempotensi mengikat SATU teks — retry dengan teks edit memakai
+  // kunci lama akan ditolak server sebagai mismatch.
+  const draftText = React.useRef<string>("");
   React.useEffect(() => {
     if (!draftKey.current) draftKey.current = newClientMsgId();
   }, []);
@@ -61,8 +65,16 @@ export function ChatRoom({
     const form = e.currentTarget;
     const fd = new FormData(form);
     fd.set("conversationId", conversationId);
+    const body = String(fd.get("body") ?? "");
+    if (!body.trim()) return;
+    // Rotasi kunci saat teks berubah (cubic pr10 r4): draf yang diedit
+    // setelah kirim gagal harus memakai kunci baru, kalau tidak error
+    // mismatch server akan berulang selamanya.
+    if (draftText.current !== "" && body !== draftText.current) {
+      draftKey.current = newClientMsgId();
+    }
+    draftText.current = body;
     fd.set("clientMsgId", draftKey.current);
-    if (!String(fd.get("body") ?? "").trim()) return;
     startTransition(async () => {
       const result = await sendMessageAction(fd);
       if (!result.ok) {
