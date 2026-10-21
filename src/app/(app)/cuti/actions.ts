@@ -29,10 +29,7 @@ import {
 } from "@/lib/leave/repo";
 import { listMembers } from "@/lib/repos/member-repo";
 import { recordAudit } from "@/lib/repos/audit-repo";
-import {
-  ValidationError,
-  safeRedirectError,
-} from "@/lib/safe-redirect-error";
+import { ValidationError, safeRedirectError } from "@/lib/safe-redirect-error";
 
 async function requireSession() {
   const user = await session.getSession();
@@ -67,7 +64,8 @@ export async function submitLeaveAction(formData: FormData): Promise<void> {
     }
 
     const employee = await getEmployeeByUser(userId, orgId);
-    if (!employee) throw new ValidationError("Profil karyawan tidak ditemukan.");
+    if (!employee)
+      throw new ValidationError("Profil karyawan tidak ditemukan.");
 
     const days = computeDuration(startDate, endDate);
     if (days <= 0) throw new ValidationError("Rentang tanggal tidak valid.");

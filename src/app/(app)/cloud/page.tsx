@@ -56,13 +56,10 @@ export default async function CloudPage({
       : Promise.resolve(null),
   ]);
 
-  // Batas baca listFolder (200) terlihat, bukan diam (cubic pr10 drive:440).
-  const truncated =
-    entry.folders.length === 200 || entry.files.length === 200;
 
   return (
     <div className="space-y-6">
-      {truncated && (
+      {entry.truncated && (
         <p className="text-xs text-muted-foreground">
           Menampilkan 200 folder/berkas pertama (batas baca) — paginasi
           menyusul.

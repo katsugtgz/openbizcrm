@@ -49,9 +49,10 @@ async function readRequestSession(): Promise<
   // Cookie reads are gated on explicit AUTH_FAKE=1 (cubic pr10 fake:51):
   // SessionFake also serves unconfigured-WorkOS envs so the login page can
   // render — without this gate anyone there could forge the cookie and
-  // impersonate a seed user. (The test fixture below stays ungated: it is
-  // in-memory, settable only by test code, never remotely.)
-  if (process.env.AUTH_FAKE !== "1") return null;
+  // impersonate a seed user. Kembalikan sentinel "unavailable" (cubic pr10
+  // r3:9091), BUKAN null: null melewati fallback fixture in-memory dan
+  // merusak setFakeUser() saat AUTH_FAKE tak diset.
+  if (process.env.AUTH_FAKE !== "1") return "unavailable";
   try {
     const { cookies } = await import("next/headers");
     return fromCookieValue((await cookies()).get(FAKE_SESSION_COOKIE)?.value);

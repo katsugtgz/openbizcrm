@@ -50,8 +50,12 @@ export function ChatRoom({
   }, [router]);
 
   // Satu kunci idempotensi per draf (cubic pr10 chat:339): stabil di
-  // double-click/retry, diganti hanya setelah sukses terkirim.
-  const draftKey = React.useRef<string>(crypto.randomUUID());
+  // double-click/retry, diganti hanya setelah sukses terkirim. Diisi di
+  // effect (bukan render) agar lolos react-hooks/purity.
+  const draftKey = React.useRef<string>("");
+  React.useEffect(() => {
+    if (!draftKey.current) draftKey.current = newClientMsgId();
+  }, []);
   function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const form = e.currentTarget;
@@ -68,7 +72,7 @@ export function ChatRoom({
       // Reset HANYA setelah sukses (cubic chat-room.tsx:37) — teks user
       // tidak hilang saat pengiriman ditolak.
       form.reset();
-      draftKey.current = crypto.randomUUID();
+      draftKey.current = newClientMsgId();
       router.refresh();
     });
   }
@@ -103,5 +107,17 @@ export function ChatRoom({
         </Button>
       </form>
     </div>
+  );
+}
+
+/**
+ * ID idempotensi klien (cubic pr10 r3:9109): crypto.randomUUID hanya ada
+ * di konteks aman (HTTPS/localhost); fallback timestamp+acak agar halaman
+ * chat tak crash di LAN http. Dipakai di effect/handler (bukan render).
+ */
+function newClientMsgId(): string {
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
   );
 }

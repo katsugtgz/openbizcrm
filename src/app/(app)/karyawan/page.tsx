@@ -4,7 +4,10 @@ import { redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
 import { hasRole, requireOrgRole } from "@/lib/org-scope";
-import { listEmployees } from "@/lib/repos/hrm-repo";
+import {
+  EMPLOYEE_LIST_DEFAULT_LIMIT,
+  listEmployees,
+} from "@/lib/repos/hrm-repo";
 import { formatIDR } from "@/lib/money";
 import { KaryawanToasts } from "./toasts";
 import { Badge } from "@/components/ui/badge";
@@ -33,12 +36,17 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 async function EmployeeTable({ orgId, showSalary }: { orgId: string; showSalary: boolean }) {
-  const employees = await listEmployees(orgId);
+  // Probe +1 (cubic pr10 r3:9134): tepat 500 = lengkap, bukan terpotong.
+  const rows = await listEmployees(orgId, {
+    limit: EMPLOYEE_LIST_DEFAULT_LIMIT + 1,
+  });
+  const truncated = rows.length > EMPLOYEE_LIST_DEFAULT_LIMIT;
+  const employees = rows.slice(0, EMPLOYEE_LIST_DEFAULT_LIMIT);
   return (
     <Card>
       <CardHeader>
         <CardTitle>Daftar Karyawan</CardTitle>
-        {employees.length === 500 && (
+        {truncated && (
           <p className="text-xs text-muted-foreground">
             Menampilkan 500 karyawan pertama (batas baca) — paginasi menyusul.
           </p>

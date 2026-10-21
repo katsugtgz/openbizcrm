@@ -3,7 +3,12 @@ import { redirect } from "next/navigation";
 import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
 import { hasRole, requireOrgRole } from "@/lib/org-scope";
-import { listCompanies, listContacts } from "@/lib/repos/crm-repo";
+import {
+  CRM_LIST_DEFAULT_LIMIT,
+  countContactsByCompany,
+  listCompanies,
+  listContacts,
+} from "@/lib/repos/crm-repo";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -26,16 +31,19 @@ export const metadata = { title: "Perusahaan CRM" };
 
 async function Tables({ orgId, userId }: { orgId: string; userId: string }) {
   const { role } = await requireOrgRole(userId, orgId, "member");
-  const [companies, contacts] = await Promise.all([
-    listCompanies(orgId),
-    listContacts(orgId),
+  // Probe +1 (cubic pr10 r3:9134/9193): tepat 500 = lengkap.
+  const [companyProbe, contactProbe, contactCount] = await Promise.all([
+    listCompanies(orgId, CRM_LIST_DEFAULT_LIMIT + 1),
+    listContacts(orgId, undefined, CRM_LIST_DEFAULT_LIMIT + 1),
+    // Agregat DB tanpa cap (cubic pr10 r3:9060): hitungan tetap benar
+    // walau daftar kontak dibatasi 500 baris.
+    countContactsByCompany(orgId),
   ]);
+  const companiesTruncated = companyProbe.length > CRM_LIST_DEFAULT_LIMIT;
+  const contactsTruncated = contactProbe.length > CRM_LIST_DEFAULT_LIMIT;
+  const companies = companyProbe.slice(0, CRM_LIST_DEFAULT_LIMIT);
+  const contacts = contactProbe.slice(0, CRM_LIST_DEFAULT_LIMIT);
   const companyName = new Map(companies.map((c) => [c.id, c.name]));
-  // Count contacts in one pass instead of scanning the list per table row.
-  const contactCount = new Map<string, number>();
-  for (const k of contacts) {
-    contactCount.set(k.companyId, (contactCount.get(k.companyId) ?? 0) + 1);
-  }
 
   return (
     <div className="space-y-6">
@@ -50,7 +58,7 @@ async function Tables({ orgId, userId }: { orgId: string; userId: string }) {
           </div>
         </CardHeader>
         <CardContent>
-          {companies.length === 500 && (
+          {companiesTruncated && (
             <p className="pb-2 text-xs text-muted-foreground">
               Menampilkan 500 perusahaan pertama (batas baca) — paginasi
               menyusul.
@@ -105,7 +113,7 @@ async function Tables({ orgId, userId }: { orgId: string; userId: string }) {
           <CardTitle>Daftar Kontak</CardTitle>
         </CardHeader>
         <CardContent>
-          {contacts.length === 500 && (
+          {contactsTruncated && (
             <p className="pb-2 text-xs text-muted-foreground">
               Menampilkan 500 kontak pertama (batas baca) — paginasi menyusul.
             </p>

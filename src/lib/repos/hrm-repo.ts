@@ -23,12 +23,12 @@ import {
   shifts,
 } from "@/db/schema";
 import {
-  NotFoundError,
   OrgScopeError,
   assertInternalId,
   requireOrgRole,
 } from "@/lib/org-scope";
 import { pgErrorParts } from "@/lib/db-errors";
+import { ValidationError } from "@/lib/safe-redirect-error";
 import { assertSafeAmount } from "@/lib/money";
 import { recordAudit } from "@/lib/repos/audit-repo";
 import { approve, createApproval, currentState, reject } from "@/lib/approval";
@@ -192,12 +192,18 @@ export interface EmployeeInput {
   linkedUserId?: string | null;
 }
 
+/** Batas baca default daftar karyawan; halaman memakai +1 untuk probe. */
+export const EMPLOYEE_LIST_DEFAULT_LIMIT = 500;
+
 export async function listEmployees(
   orgId: string,
   opts?: { limit?: number },
 ): Promise<Employee[]> {
   // Default cap: halaman karyawan me-render seluruh tabel tanpa ini.
-  const limit = Math.min(Math.max(opts?.limit ?? 500, 1), 5000);
+  const limit = Math.min(
+    Math.max(opts?.limit ?? EMPLOYEE_LIST_DEFAULT_LIMIT, 1),
+    5000,
+  );
   return db
     .select()
     .from(employees)
@@ -285,7 +291,9 @@ async function requireLinkableUser(
     )
     .limit(1);
   if (!membership) {
-    throw new NotFoundError("User tidak terdaftar di organisasi ini.");
+    // User-actionable: pilih member aktif (cubic pr10 r3:9069) — typed
+    // agar safeRedirectError menampilkannya, bukan fallback generik.
+    throw new ValidationError("User tidak terdaftar di organisasi ini.");
   }
   const conds = [
     eq(employees.orgId, orgId),
@@ -297,7 +305,9 @@ async function requireLinkableUser(
     .from(employees)
     .where(and(...conds))
     .limit(1);
-  if (taken) throw new Error("User sudah tertaut ke karyawan lain.");
+  if (taken) {
+    throw new ValidationError("User sudah tertaut ke karyawan lain.");
+  }
 }
 
 /**
@@ -308,7 +318,7 @@ async function requireLinkableUser(
 function throwIfLinkRace(error: unknown): never {
   const { code, constraint } = pgErrorParts(error);
   if (code === "23505" && constraint === "employees_org_user_unique") {
-    throw new Error("User sudah tertaut ke karyawan lain.");
+    throw new ValidationError("User sudah tertaut ke karyawan lain.");
   }
   throw error;
 }

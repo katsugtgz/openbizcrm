@@ -39,11 +39,6 @@ describe("SessionFake", () => {
   });
 });
 
-/**
- * Adapter pick matrix (src/lib/auth/index.ts). The module caches the picked
- * adapter in a module-level promise, so each matrix case runs in a fresh
- * module registry via importActual reset below (vitest resetModules).
- */
 describe("fromCookieValue", () => {
   it("resolves allowlisted seed ids", async () => {
     const { fromCookieValue } = await import("@/lib/auth/fake");
@@ -66,6 +61,11 @@ describe("fromCookieValue", () => {
   });
 });
 
+/**
+ * Adapter pick matrix (src/lib/auth/index.ts). The module caches the picked
+ * adapter in a module-level promise, so each matrix case runs in a fresh
+ * module registry via importActual reset below (vitest resetModules).
+ */
 describe("auth adapter pick matrix", () => {
   const saved = { ...process.env };
 
@@ -119,7 +119,7 @@ describe("auth adapter pick matrix", () => {
     expect(await pickEnv({ NODE_ENV: "test" })).toBe(true);
   });
 
-  it("absence cells truly delete keys (no \"undefined\" strings)", async () => {
+  it('absence cells truly delete keys (no "undefined" strings)', async () => {
     process.env = { ...saved };
     delete process.env.AUTH_FAKE;
     delete process.env.WORKOS_API_KEY;

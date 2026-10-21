@@ -1,8 +1,8 @@
 /**
  * AI provider: OpenAI-compatible endpoint via @ai-sdk/openai-compatible.
  * TANPA SDK resmi openai — hanya AI SDK. Konfigurasi env:
- * - AI_GATEWAY_URL: base URL endpoint OpenAI-compatible (wajib, https
- *   kecuali host lokal/dev).
+ * - AI_GATEWAY_URL: base URL endpoint OpenAI-compatible (wajib; https
+ *   ditegakkan route guard hanya di production).
  * - AI_GATEWAY_MODEL: id model, default "gpt-4o-mini".
  * - AI_GATEWAY_API_KEY: kunci API gateway (opsional, Bearer auth).
  * URL kosong => ConfigError (route membalas 503 dengan pesan setup).

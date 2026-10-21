@@ -273,12 +273,15 @@ export async function deleteTask(
       .for("update");
     // Kunci baris task SEBELUM snapshot (cubic pr10 tasks:277): startTimer
     // memegang kunci yang sama — timer konkuren menunggu delete selesai
-    // (lalu gagal not-found) alih-alih lolos dari snapshot audit.
-    await tx
+    // (lalu gagal not-found) alih-alih lolos dari snapshot audit. Hasil
+    // lock dicek (cubic pr10 r3:9075): delete ganda tidak boleh menulis
+    // audit kedua dan mengembalikan sukses.
+    const [locked] = await tx
       .select({ id: tasks.id })
       .from(tasks)
       .where(and(eq(tasks.id, taskId), eq(tasks.orgId, orgId)))
       .for("update");
+    if (!locked) throw new NotFoundError("Task tidak ditemukan.");
     // FK timesheets.task_id ON DELETE CASCADE: tanpa snapshot, hapus task
     // menghapus bukti billing. Arsipkan time log ke audit SEBELUM delete
     // (soft-delete penuh butuh kolom skema — di luar area service).
@@ -296,7 +299,10 @@ export async function deleteTask(
       .from(timesheets)
       .where(and(eq(timesheets.taskId, taskId), eq(timesheets.orgId, orgId)))
       .orderBy(asc(timesheets.startedAt))
-      .limit(DELETE_TIMESHEET_SNAPSHOT_MAX + 1);
+      .limit(DELETE_TIMESHEET_SNAPSHOT_MAX + 1)
+      // Kunci baris snapshot (cubic pr10 r3:9124): stopTimer konkuren tak
+      // boleh mengubah state timer setelah snapshot dibaca.
+      .for("update");
     const [{ total }] = await tx
       .select({ total: sql<number>`count(*)::int` })
       .from(timesheets)

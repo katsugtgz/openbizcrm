@@ -54,8 +54,8 @@ function stripYamlComments(source: string): string {
   return source
     .split("\n")
     .map((line) => {
-      // Quote-aware (cubic pr10 e2e:53): '#' di dalam string (mis. run:
-      // "echo #hi") bukan komentar — hanya potong '#' di luar quote.
+      // Quote-aware (cubic pr10 e2e:53): '#' inside a string (for example,
+      // run: "echo #hi") is not a comment; only strip '#' outside quotes.
       let inSingle = false;
       let inDouble = false;
       for (let i = 0; i < line.length; i++) {

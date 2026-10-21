@@ -1,4 +1,4 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   crmActivities,
@@ -83,11 +83,14 @@ export function assertContactPhone(phone: string | null): void {
   }
 }
 
+/** Batas baca default daftar CRM; halaman memakai +1 untuk probe. */
+export const CRM_LIST_DEFAULT_LIMIT = 500;
+
 // ---------------- Companies ----------------
 
 export async function listCompanies(
   orgId: string,
-  limit = 500,
+  limit = CRM_LIST_DEFAULT_LIMIT,
 ): Promise<CrmCompany[]> {
   return db
     .select()
@@ -270,12 +273,31 @@ export async function requireOrgCompany(
   if (!row) throw new NotFoundError("Perusahaan tidak ditemukan.");
 }
 
+/**
+ * Jumlah kontak per perusahaan, SATU query agregat TANPA cap (cubic pr10
+ * r3:9060): "Jumlah Kontak" dihitung dari tabel ini — menurunkannya dari
+ * array contacts (cap 500) diam-diam salah saat kontak > 500.
+ */
+export async function countContactsByCompany(
+  orgId: string,
+): Promise<Map<string, number>> {
+  const rows = await db
+    .select({
+      companyId: crmContacts.companyId,
+      n: sql<number>`count(*)::int`,
+    })
+    .from(crmContacts)
+    .where(eq(crmContacts.orgId, orgId))
+    .groupBy(crmContacts.companyId);
+  return new Map(rows.map((r) => [r.companyId, r.n]));
+}
+
 // ---------------- Contacts ----------------
 
 export async function listContacts(
   orgId: string,
   companyId?: string,
-  limit = 500,
+  limit = CRM_LIST_DEFAULT_LIMIT,
 ): Promise<CrmContact[]> {
   const conds = [eq(crmContacts.orgId, orgId)];
   if (companyId) conds.push(eq(crmContacts.companyId, companyId));
@@ -527,7 +549,7 @@ export interface DealInput {
 export async function listDeals(
   orgId: string,
   pipelineId?: string,
-  limit = 500,
+  limit = CRM_LIST_DEFAULT_LIMIT,
 ): Promise<CrmDeal[]> {
   const conds = [eq(crmDeals.orgId, orgId)];
   if (pipelineId) conds.push(eq(crmDeals.pipelineId, pipelineId));

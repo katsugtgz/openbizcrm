@@ -487,6 +487,8 @@ export async function createFolder(
 export interface FolderEntry {
   folders: DriveFolder[];
   files: DriveFile[];
+  /** True bila daftar dipotong batas baca (probe limit+1, bukan heuristik). */
+  truncated: boolean;
 }
 
 export async function listFolder(
@@ -505,7 +507,9 @@ export async function listFolder(
     if (!folder) throw new NotFoundError("Folder tidak ditemukan.");
   }
   const capped = Math.min(Math.max(limit, 1), 1000);
-  const [folders, files] = await Promise.all([
+  // Probe +1 baris per sisi (cubic pr10 r3:9193): length === batas BUKAN
+  // bukti pemotongan (tepat 200 = lengkap) — kelebihan probe yang bicara.
+  const [foldersProbe, filesProbe] = await Promise.all([
     db
       .select()
       .from(driveFolders)
@@ -518,7 +522,7 @@ export async function listFolder(
         ),
       )
       .orderBy(asc(driveFolders.name))
-      .limit(capped),
+      .limit(capped + 1),
     db
       .select()
       .from(driveFiles)
@@ -533,9 +537,13 @@ export async function listFolder(
         ),
       )
       .orderBy(asc(driveFiles.fileName))
-      .limit(capped),
+      .limit(capped + 1),
   ]);
-  return { folders, files };
+  return {
+    folders: foldersProbe.slice(0, capped),
+    files: filesProbe.slice(0, capped),
+    truncated: foldersProbe.length > capped || filesProbe.length > capped,
+  };
 }
 
 /** Pohon folder org (breadcrumb / navigasi). */

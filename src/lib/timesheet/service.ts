@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gte, isNull, lte } from "drizzle-orm";
 import { db } from "@/db";
-import { tasks, timesheets } from "@/db/schema";
+import { tasks, timesheets, users } from "@/db/schema";
 import { NotFoundError, OrgScopeError, requireOrgRole } from "@/lib/org-scope";
 import { recordAudit } from "@/lib/repos/audit-repo";
 import { requireTask } from "@/lib/tasks/service";
@@ -26,13 +26,21 @@ export async function startTimer(
   return db.transaction(async (tx) => {
     // Kunci baris task (cubic pr10 tasks:277): deleteTask memegang kunci
     // yang sama sebelum snapshot — start konkuren menunggu delete selesai
-    // (lalu gagal FK di bawah) alih-alih lolos dari snapshot audit.
+    // (lalu gagal not-found di bawah) alih-alih lolos dari snapshot audit.
     const [locked] = await tx
       .select({ id: tasks.id })
       .from(tasks)
       .where(and(eq(tasks.id, taskId), eq(tasks.orgId, orgId)))
       .for("update");
     if (!locked) throw new NotFoundError("Task tidak ditemukan.");
+    // Kunci baris user (cubic pr10 r3:9162): cek satu-timer-terbuka hanya
+    // atomik bila start konkuren di task BERBEDA ikut serialize — tanpa
+    // ini pemenangnya lolos dengan error PG mentah, bukan pesan ramah.
+    await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, userId))
+      .for("update");
     const [open] = await tx
       .select()
       .from(timesheets)

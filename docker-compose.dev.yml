@@ -7,10 +7,11 @@ services:
       - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_USER: postgres
-      # Init-only (cubic pr10 compose:10): dibaca HANYA saat volume
-      # openbizcrm-pgdata pertama dibuat. Mengganti nilai ini setelahnya
-      # TIDAK memutar password (DB lama tetap pakai password lama):
-      # rotasi butuh ALTER USER … PASSWORD atau hapus volume (data hilang).
+      # Init-only (cubic pr10 compose:10): read ONLY when the volume
+      # openbizcrm-pgdata is created for the first time. Changing this later
+      # does NOT rotate the password (the existing DB keeps its old one):
+      # rotation requires ALTER USER ... PASSWORD or deleting the volume
+      # (data loss).
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: openbizcrm
     volumes:
