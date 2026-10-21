@@ -70,7 +70,7 @@ function stripYamlComments(source: string): string {
 }
 
 /**
- * Structural workflow checks (cubic pr10 r4): markers must not be sought
+ * Structural workflow checks: markers must not be sought
  * with `includes()` on raw workflow text — a quoted `run: "echo next
  * start"` would spoof every check. Instead, locate real `run:` steps and
  * `uses:`/`with:` pairs by indentation, drop YAML comments and quoted

@@ -103,10 +103,10 @@ type PayrollStaffRow = Awaited<
 >[number];
 
 /**
- * Input slip BERSAMA run + preview (cubic pr10 r4): unpaid riil (clamp
- * prorasi) + masa kerja riil. Preview yang memakai 0/12 statis berbohong
- * untuk izin-approved dan hire tengah tahun — satu-satunya sumber
- * kebenaran adalah konstruktor ini.
+ * Input slip BERSAMA run + preview: unpaid riil (clamp prorasi) + masa
+ * kerja riil. Preview yang memakai 0/12 statis berbohong untuk
+ * izin-approved dan hire tengah tahun — satu-satunya sumber kebenaran
+ * adalah konstruktor ini.
  */
 function buildPayslipInput(
   emp: PayrollStaffRow,
@@ -187,7 +187,7 @@ export interface RunPayrollResult {
  * Petakan balapan run konkuren untuk periode sama (unique
  * payroll_runs_org_period_unique) ke DUPLICATE_PERIOD, bukan 500. Baca
  * via cause: outer DrizzleQueryError tak membawa code. Diekspor agar
- * mapping cabangnya teruji deterministik (cubic pr10 r4).
+ * mapping cabangnya teruji deterministik.
  */
 export function throwIfPayrollRace(
   error: unknown,

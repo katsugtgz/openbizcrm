@@ -311,14 +311,12 @@ async function requireLinkableUser(
 }
 
 /**
- * Link race (cek lolos bersamaan): unique index bicara terakhir. Baca via
- * cause (cubic pr10 r2 hrm:251): nama constraint TIDAK ada di outer
- * DrizzleQueryError.message.
- */
-/**
- * Petakan balapan link konkuren (unique employees_org_user_unique) ke
- * ValidationError ramah; error lain dilempar ulang apa adanya. Diekspor
- * agar mapping cabangnya teruji deterministik (cubic pr10 r4).
+ * Map a concurrent link race to a friendly ValidationError: when two
+ * pre-checks pass together, the employees_org_user_unique unique index
+ * speaks last. Reads through drizzle's cause wrapper, where the
+ * constraint name lives (it is absent from the outer error message).
+ * Anything else is rethrown unchanged. Exported so the branch mapping
+ * is covered by deterministic tests.
  */
 export function throwIfLinkRace(error: unknown): never {
   const { code, constraint } = pgErrorParts(error);

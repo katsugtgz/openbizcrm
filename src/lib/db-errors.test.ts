@@ -35,7 +35,7 @@ describe("pgErrorParts", () => {
   });
 
   it("returns parts for non-23505 codes (callers filter by code)", () => {
-    // pgErrorParts tidak memfilter kode — cabang pemanggil yang memilih.
+    // pgErrorParts does not filter by code; the caller chooses the branch.
     expect(
       pgErrorParts({
         cause: { code: "23502", constraint: "payroll_runs_org_id_fkey" },
