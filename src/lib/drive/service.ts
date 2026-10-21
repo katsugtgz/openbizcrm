@@ -278,8 +278,11 @@ export async function presignUpload(
 
 /**
  * Hapus reservasi pending yang kadaluarsa (dipanggil dalam transaksi).
- * Kembalikan object key yang dibebaskan agar pemanggil menghapus objek
- * R2-nya setelah commit (cubic pr10 drive:562).
+ * Kembalikan object key yang BENAR-BENAR dihapus agar pemanggil menghapus
+ * objek R2-nya setelah commit (cubic pr10 drive:562, r2:296): DELETE
+ * mengulang predikat pending+kadaluarsa — reservasi yang terkonfirmasi
+ * di antara SELECT dan DELETE tidak boleh ikut terhapus, dan key-nya
+ * tidak boleh masuk daftar hapus objek (itu data user!).
  */
 async function purgeExpiredPending(
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
@@ -296,13 +299,21 @@ async function purgeExpiredPending(
       ),
     );
   if (expired.length === 0) return [];
-  await tx.delete(driveFiles).where(
-    inArray(
-      driveFiles.id,
-      expired.map((r) => r.id),
-    ),
-  );
-  return expired.map((r) => r.key);
+  const deleted = await tx
+    .delete(driveFiles)
+    .where(
+      and(
+        inArray(
+          driveFiles.id,
+          expired.map((r) => r.id),
+        ),
+        eq(driveFiles.orgId, orgId),
+        eq(driveFiles.status, "pending"),
+        sql`${driveFiles.expiresAt} is not null and ${driveFiles.expiresAt} < now()`,
+      ),
+    )
+    .returning();
+  return deleted.map((r) => r.key);
 }
 
 /**

@@ -15,6 +15,7 @@ import {
   type PayrollRun,
 } from "@/db/schema";
 import { listEmployeesForPayroll } from "@/lib/repos/hrm-repo";
+import { pgErrorParts } from "@/lib/db-errors";
 import { requireOrgRole } from "@/lib/org-scope";
 import { recordAudit } from "@/lib/repos/audit-repo";
 import { currentState } from "@/lib/approval";
@@ -185,12 +186,13 @@ export async function runPayroll(
         .returning();
     } catch (error) {
       // Balapan run konkuren untuk periode sama: unique
-      // payroll_runs_org_period_unique — laporkan sebagai duplikat, bukan 500.
+      // payroll_runs_org_period_unique — laporkan sebagai duplikat, bukan
+      // 500. Baca via cause: outer DrizzleQueryError tak membawa code
+      // (cubic pr10 r2 crm:230 — pola lama tak pernah trip).
+      const { code, constraint } = pgErrorParts(error);
       if (
-        error &&
-        typeof error === "object" &&
-        "code" in error &&
-        (error as { code: unknown }).code === "23505"
+        code === "23505" &&
+        constraint === "payroll_runs_org_period_unique"
       ) {
         throw new PayrollError(
           "DUPLICATE_PERIOD",

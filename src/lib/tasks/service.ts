@@ -303,10 +303,13 @@ export async function deleteTask(
       .where(and(eq(timesheets.taskId, taskId), eq(timesheets.orgId, orgId)));
     // Service-layer SET NULL (cubic pr10 schema:795): subtask FK is
     // restrict — orphan subtasks to root before deleting the parent.
-    await tx
+    // ID yatim diaudit (cubic pr10 r2:2166): tanpa ini tak ada yang tahu
+    // anak mana yang kehilangan induk.
+    const orphaned = await tx
       .update(tasks)
       .set({ parentId: null })
-      .where(and(eq(tasks.parentId, taskId), eq(tasks.orgId, orgId)));
+      .where(and(eq(tasks.parentId, taskId), eq(tasks.orgId, orgId)))
+      .returning();
     await tx
       .delete(tasks)
       .where(and(eq(tasks.id, taskId), eq(tasks.orgId, orgId)));
@@ -319,6 +322,7 @@ export async function deleteTask(
         entityId: taskId,
         metadata: {
           title: task.title,
+          orphanedSubtaskIds: orphaned.map((t) => t.id),
           timesheetCount: total,
           timesheets: linked
             .slice(0, DELETE_TIMESHEET_SNAPSHOT_MAX)

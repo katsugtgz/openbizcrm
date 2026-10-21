@@ -200,9 +200,11 @@ export async function createGroup(
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtext(${`chat-group:${orgId}`}))`,
     );
-    // Dedupe double-submit: grup identik (pembuat+nama) dalam jendela
-    // singkat dianggap satu — tanpa idempotency key di skema.
-    const [dup] = await tx
+    // Dedupe double-submit: grup identik (pembuat+nama+anggota) dalam
+    // jendela singkat dianggap satu — tanpa idempotency key di skema.
+    // SEMUA kandidat dicek (cubic pr10 r2:2191): limit(1) bisa mengambil
+    // grup bernama sama yang SALAH anggotanya lalu membuat duplikat.
+    const dups = await tx
       .select()
       .from(chatConversations)
       .where(
@@ -217,22 +219,24 @@ export async function createGroup(
           ),
         ),
       )
-      .limit(1);
-    if (dup) {
+      .limit(10);
+    if (dups.length > 0) {
       // Nama + pembuat saja tidak cukup (cubic pr10 chat:214): grup baru
       // bernama sama dengan anggota beda wajib jadi conversation baru.
       // Samakan himpunan anggota persis sebelum memakai ulang.
-      const dupMembers = await tx
-        .select({ userId: chatConversationMembers.userId })
-        .from(chatConversationMembers)
-        .where(eq(chatConversationMembers.conversationId, dup.id));
       const want = new Set([userId, ...memberIds]);
-      const got = new Set(dupMembers.map((m) => m.userId));
-      if (
-        want.size === got.size &&
-        [...want].every((id) => got.has(id))
-      ) {
-        return dup;
+      for (const dup of dups) {
+        const dupMembers = await tx
+          .select({ userId: chatConversationMembers.userId })
+          .from(chatConversationMembers)
+          .where(eq(chatConversationMembers.conversationId, dup.id));
+        const got = new Set(dupMembers.map((m) => m.userId));
+        if (
+          want.size === got.size &&
+          [...want].every((id) => got.has(id))
+        ) {
+          return dup;
+        }
       }
     }
     const [row] = await tx

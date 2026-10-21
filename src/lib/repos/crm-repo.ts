@@ -12,6 +12,7 @@ import {
   projects,
 } from "@/db/schema";
 import { NotFoundError, requireOrgRole } from "@/lib/org-scope";
+import { pgErrorParts } from "@/lib/db-errors";
 import { assertSafeAmount } from "@/lib/money";
 import { recordAudit } from "@/lib/repos/audit-repo";
 
@@ -227,9 +228,22 @@ export async function deleteCompany(
         .where(and(eq(crmCompanies.id, id), eq(crmCompanies.orgId, orgId)));
     });
   } catch (error) {
-    if ((error as { code?: unknown }).code === "23503") {
+    // Cause-aware + branch per constraint (cubic pr10 r2 crm:230): kode PG
+    // ada di error.cause (DrizzleQueryError membungkus), dan 23503 proyek
+    // butuh pesan berbeda dari deal/invoice.
+    const { code, constraint } = pgErrorParts(error);
+    if (
+      code === "23503" &&
+      (constraint === "crm_deals_company_org_fk" ||
+        constraint === "invoices_company_org_fk")
+    ) {
       throw new Error(
         "Perusahaan masih memiliki deal atau invoice; tidak bisa dihapus.",
+      );
+    }
+    if (code === "23503" && constraint === "projects_company_org_fk") {
+      throw new Error(
+        "Perusahaan masih ditautkan ke proyek; lepaskan tautannya dahulu.",
       );
     }
     throw error;
@@ -288,8 +302,10 @@ export async function createContact(
   await requireOrgCompany(orgId, input.companyId);
   assertContactEmail(input.email ?? null);
   assertContactPhone(input.phone ?? null);
-  const [row] = await db
-    .insert(crmContacts)
+  let row: CrmContact;
+  try {
+    [row] = await db
+      .insert(crmContacts)
     .values({
       orgId,
       companyId: input.companyId,
@@ -297,8 +313,20 @@ export async function createContact(
       email: input.email ?? null,
       phone: input.phone ?? null,
       position: input.position ?? null,
-    })
-    .returning();
+      })
+      .returning();
+  } catch (error) {
+    // Unique email per-org (0029, case-insensitive): pesan domain, bukan
+    // PG mentah (cubic pr10 r2 0029:100).
+    const { code, constraint } = pgErrorParts(error);
+    if (
+      code === "23505" &&
+      constraint === "crm_contacts_org_lower_email_unique"
+    ) {
+      throw new Error("Email kontak sudah dipakai di organisasi ini.");
+    }
+    throw error;
+  }
   await recordAudit({
     orgId,
     userId,
@@ -323,11 +351,23 @@ export async function updateContact(
   await requireOrgRole(userId, orgId, "member");
   if (input.email !== undefined) assertContactEmail(input.email);
   if (input.phone !== undefined) assertContactPhone(input.phone);
-  const [row] = await db
-    .update(crmContacts)
-    .set(input)
-    .where(and(eq(crmContacts.id, id), eq(crmContacts.orgId, orgId)))
-    .returning();
+  let row: CrmContact | undefined;
+  try {
+    [row] = await db
+      .update(crmContacts)
+      .set(input)
+      .where(and(eq(crmContacts.id, id), eq(crmContacts.orgId, orgId)))
+      .returning();
+  } catch (error) {
+    const { code, constraint } = pgErrorParts(error);
+    if (
+      code === "23505" &&
+      constraint === "crm_contacts_org_lower_email_unique"
+    ) {
+      throw new Error("Email kontak sudah dipakai di organisasi ini.");
+    }
+    throw error;
+  }
   if (!row) throw new NotFoundError("Kontak tidak ditemukan.");
   await recordAudit({
     orgId,

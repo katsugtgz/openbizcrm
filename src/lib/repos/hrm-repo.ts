@@ -1,4 +1,14 @@
-import { and, asc, desc, eq, gte, lte, ne, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gte,
+  isNotNull,
+  lte,
+  ne,
+  sql,
+} from "drizzle-orm";
 import { db } from "@/db";
 import {
   attendances,
@@ -18,6 +28,7 @@ import {
   assertInternalId,
   requireOrgRole,
 } from "@/lib/org-scope";
+import { pgErrorParts } from "@/lib/db-errors";
 import { assertSafeAmount } from "@/lib/money";
 import { recordAudit } from "@/lib/repos/audit-repo";
 import { approve, createApproval, currentState, reject } from "@/lib/approval";
@@ -227,6 +238,19 @@ export async function listEmployeesForPayroll(
     .orderBy(employees.employeeNo);
 }
 
+/**
+ * userId yang sudah tertaut ke karyawan (untuk filter dropdown linking —
+ * cubic pr10 r2:2232): memilih user tertaut pasti gagal validasi, jadi
+ * jangan tawarkan.
+ */
+export async function listLinkedUserIds(orgId: string): Promise<string[]> {
+  const rows = await db
+    .select({ userId: employees.userId })
+    .from(employees)
+    .where(and(eq(employees.orgId, orgId), isNotNull(employees.userId)));
+  return rows.flatMap((r) => (r.userId ? [r.userId] : []));
+}
+
 export async function getEmployee(
   orgId: string,
   id: string,
@@ -276,12 +300,14 @@ async function requireLinkableUser(
   if (taken) throw new Error("User sudah tertaut ke karyawan lain.");
 }
 
-/** Link race (cek lolos bersamaan): unique index bicara terakhir. */
+/**
+ * Link race (cek lolos bersamaan): unique index bicara terakhir. Baca via
+ * cause (cubic pr10 r2 hrm:251): nama constraint TIDAK ada di outer
+ * DrizzleQueryError.message.
+ */
 function throwIfLinkRace(error: unknown): never {
-  if (
-    error instanceof Error &&
-    error.message.includes("employees_org_user_unique")
-  ) {
+  const { code, constraint } = pgErrorParts(error);
+  if (code === "23505" && constraint === "employees_org_user_unique") {
     throw new Error("User sudah tertaut ke karyawan lain.");
   }
   throw error;
@@ -295,7 +321,9 @@ export async function createEmployee(
   await requireOrgRole(userId, orgId, "admin");
   assertSafeAmount(input.baseSalary, "Gaji pokok");
   await requireEmployeeUnits(orgId, input);
-  if (input.linkedUserId) {
+  // Eksplisit != null (cubic pr10 r2:2261): "" bukan tautan valid dan
+  // tidak boleh diam-diam menjadi NULL (unlink).
+  if (input.linkedUserId != null) {
     await requireLinkableUser(orgId, input.linkedUserId);
   }
   let row: Employee;
@@ -341,7 +369,10 @@ export async function updateEmployee(
   input: Partial<EmployeeInput>,
 ): Promise<Employee> {
   await requireOrgRole(userId, orgId, "admin");
-  await requireEmployee(orgId, id);
+  // Nilai yang SAMA dengan tautan existing dilewati tanpa validasi
+  // (cubic pr10 r2:2200): user yang keluar org tak boleh membuat update
+  // lain gagal — tautan basi dipertahankan sampai admin menggantinya.
+  const current = await requireEmployee(orgId, id);
   if (input.baseSalary !== undefined) {
     assertSafeAmount(input.baseSalary, "Gaji pokok");
   }
@@ -349,7 +380,7 @@ export async function updateEmployee(
   // linkedUserId bukan nama kolom (kolomnya userId): validasi + petakan
   // eksplisit; undefined = biarkan tautan, null = lepas tautan.
   const { linkedUserId, ...rest } = input;
-  if (linkedUserId) {
+  if (linkedUserId != null && linkedUserId !== current.userId) {
     await requireLinkableUser(orgId, linkedUserId, id);
   }
   let row: Employee;

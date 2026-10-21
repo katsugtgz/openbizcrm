@@ -231,6 +231,11 @@ export async function submitPublicResponseAction(
   try {
     const slug = String(formData.get("slug") ?? "");
     const assignmentId = String(formData.get("assignmentId") ?? "");
+    // Tanpa assignment tak ada DB yang disentuh — tolak sebelum throttle
+    // (cubic pr10 r2: jangan bakar budget untuk request tanpa token).
+    if (!slug || !assignmentId) {
+      return { ok: false, error: "Tautan tidak valid." };
+    }
     // Submit publik tanpa login: throttle per requester per form +
     // backstop global per form (cubic pr10 penilaian:236) — kunci
     // assignmentId saja bisa diputar penyerang. Flood anonim tak boleh

@@ -36,16 +36,16 @@ export function isWorkosEnvPresent(): boolean {
 }
 
 /**
- * Session-readiness for the adapter picker: can AuthKit read a session
- * without throwing? Unlike isWorkosConfigured this omits AUTH_FAKE (the
- * picker handles it) and the redirect URI (only needed to mint sign-in
- * URLs, not to read sessions).
+ * Session-readiness: can AuthKit read a session without throwing? Presence
+ * plus the seal length. Unlike isWorkosConfigured this omits AUTH_FAKE and
+ * the redirect URI (only needed to mint sign-in URLs, not to read
+ * sessions). Built on isWorkosEnvPresent so the key/client checks can't
+ * drift (cubic pr10 r2:2258).
  */
 export function isWorkosSessionEnvReady(): boolean {
   const cookiePassword = process.env.WORKOS_COOKIE_PASSWORD ?? "";
   return (
-    !!process.env.WORKOS_API_KEY &&
-    !!process.env.WORKOS_CLIENT_ID &&
+    isWorkosEnvPresent() &&
     cookiePassword.length >= WORKOS_MIN_COOKIE_PASSWORD_LENGTH
   );
 }

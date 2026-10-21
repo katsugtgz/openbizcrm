@@ -393,6 +393,38 @@ describe("invoicing integration", () => {
     expect(await orgEntries(o.orgId)).toHaveLength(0);
   });
 
+  itDb(
+    "sendInvoice menolak total-0 tak konsisten tanpa jurnal (cubic pr10 r2)",
+    async () => {
+      const o = await makeOrg();
+      await seedAccounts(o);
+      const company = await (
+        await import("@/lib/repos/crm-repo")
+      ).createCompany(o.userId, o.orgId, { name: `PT Rusak ${suffix}` });
+      // Baris manual/rusak: total 0 tapi subtotal positif.
+      const { db } = await import("@/db");
+      const { invoices } = await import("@/db/schema");
+      const [bad] = await db
+        .insert(invoices)
+        .values({
+          orgId: o.orgId,
+          invoiceNumber: "INV-BAD",
+          companyId: company.id,
+          issueDate: "2026-11-01",
+          dueDate: "2026-12-01",
+          taxPct: 0,
+          subtotal: 100_000,
+          taxAmount: 0,
+          total: 0,
+        })
+        .returning();
+      await expect(
+        svc.sendInvoice(o.userId, o.orgId, bad.id),
+      ).rejects.toThrow(/tidak konsisten/);
+      expect(await orgEntries(o.orgId)).toHaveLength(0);
+    },
+  );
+
   itDb("tanggal tak valid dan metode tak valid ditolak tegas", async () => {
     const o = await makeOrg();
     await seedAccounts(o);

@@ -4,6 +4,7 @@ import { session } from "@/lib/auth";
 import { resolveSessionIds } from "@/lib/auth/ids";
 import { getEmployee } from "@/lib/repos/hrm-repo";
 import { listMembers } from "@/lib/repos/member-repo";
+import { listLinkedUserIds } from "@/lib/repos/hrm-repo";
 import { requireOrgRole } from "@/lib/org-scope";
 import { updateEmployeeAction } from "../../actions";
 import { EmployeeForm } from "../../employee-form";
@@ -27,11 +28,13 @@ export default async function KaryawanEditPage({
   const employee = await getEmployee(orgId, id);
   if (!employee) notFound();
   const sp = await searchParams;
-  const members = (await listMembers(userId, orgId)).map((m) => ({
-    id: m.user.id,
-    name: m.user.name,
-    email: m.user.email,
-  }));
+  // Sembunyikan user tertaut ke karyawan LAIN (cubic pr10 r2:2232);
+  // tautan milik sendiri tetap ditawarkan agar tak terlepas diam-diam.
+  const linked = new Set(await listLinkedUserIds(orgId));
+  if (employee.userId) linked.delete(employee.userId);
+  const members = (await listMembers(userId, orgId))
+    .filter((m) => !linked.has(m.user.id))
+    .map((m) => ({ id: m.user.id, name: m.user.name, email: m.user.email }));
 
   return (
     <div className="flex flex-col gap-6">

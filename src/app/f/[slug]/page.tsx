@@ -19,6 +19,19 @@ export default async function PublicFormPage({
 }) {
   const { slug } = await params;
   const { a: assignmentId } = await searchParams;
+  // Tanpa token tak ada DB yang disentuh — jangan bakar budget throttle
+  // (cubic pr10 r2: tokenless flood bisa menghabiskan backstop global dan
+  // memblokir penilai sah). Throttle hanya untuk request ber-token.
+  if (!assignmentId) {
+    return (
+      <main className="mx-auto max-w-xl space-y-6 px-4 py-10">
+        <p className="text-sm text-muted-foreground">
+          Tautan tidak lengkap atau tidak valid: token penilai tidak ditemukan.
+          Minta tautan personal (?a=…) dari admin Anda.
+        </p>
+      </main>
+    );
+  }
   // Throttle + token gate sama seperti /r/[slug] (bughunt app:3/17):
   // per requester + backstop global (cubic pr10 r:25).
   if (

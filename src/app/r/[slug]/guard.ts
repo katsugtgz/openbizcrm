@@ -38,20 +38,26 @@ export function checkThrottle(
 
 /**
  * Identitas requester terbaik untuk throttle publik (cubic pr10 r:25,
- * penilaian:236): entri pertama x-forwarded-for (atau x-real-ip bila tak
- * ada). Bukan identitas tepercaya penuh — header bisa dipalsukan tanpa
- * proxy tepercaya — tapi menaikkan biaya serang dari "tahu slug" menjadi
- * "rotasi IP". Di luar scope request (tes): kunci global saja.
+ * penilaian:236, r2:2194): entri pertama x-forwarded-for (atau x-real-ip
+ * bila tak ada).
+ *
+ * DEPLOYMENT REQUIREMENT: header ini hanya bermakna bila edge proxy
+ * membersihkan X-Forwarded-For yang masuk dan menambahkan IP klien
+ * sebenarnya — tanpa proxy tepercaya penyerang memalsukan IP dan hanya
+ * backstop global yang menahannya. Null di luar scope request (tes) atau
+ * bila header absen: lapis requester dilewati (bukan berbagi satu bucket
+ * "unknown" yang bisa dijenuhkan bersama — cubic pr10 r2:2172).
  */
-async function requesterIp(): Promise<string> {
+async function requesterIp(): Promise<string | null> {
   try {
     const { headers } = await import("next/headers");
     const h = await headers();
     const fwd = h.get("x-forwarded-for");
-    if (fwd) return fwd.split(",")[0].trim() || "unknown";
-    return h.get("x-real-ip")?.trim() || "unknown";
+    if (fwd) return fwd.split(",")[0].trim() || null;
+    return h.get("x-real-ip")?.trim() || null;
   } catch {
-    return "unknown";
+    // Di luar scope request (tes/unit): tak ada identitas requester.
+    return null;
   }
 }
 
@@ -69,10 +75,12 @@ export async function checkPublicThrottle(
   windowMs = 60_000,
 ): Promise<boolean> {
   const ip = await requesterIp();
-  return (
-    checkThrottle(`${ip}:${requesterBase}`, requesterLimit, windowMs) &&
-    checkThrottle(globalBase, globalLimit, windowMs)
-  );
+  // Tanpa IP: hanya backstop global yang berlaku (tanpa bucket "unknown"
+  // bersama yang bisa dijenuhkan lintas requester).
+  const requesterOk = ip
+    ? checkThrottle(`${ip}:${requesterBase}`, requesterLimit, windowMs)
+    : true;
+  return requesterOk && checkThrottle(globalBase, globalLimit, windowMs);
 }
 
 const UUID_RE =

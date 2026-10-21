@@ -40,6 +40,19 @@ describe("shouldRequireSsl (pure)", () => {
     ).toBe(false);
   });
 
+  it("unix-socket ?host= entries stay plaintext (cubic pr10 r2)", () => {
+    expect(
+      shouldRequireSsl(
+        "postgres://u:p@localhost:5432/db?host=/var/run/postgresql",
+      ),
+    ).toBe(false);
+    expect(
+      shouldRequireSsl(
+        "postgres://u:p@localhost:5432/db?host=/var/run/postgresql,db.internal",
+      ),
+    ).toBe(true);
+  });
+
   it("postgres-js ?host= override decides, not the authority (cubic pr10)", () => {
     expect(
       shouldRequireSsl("postgres://u:p@localhost:5432/db?host=db.internal"),

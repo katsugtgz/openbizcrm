@@ -164,6 +164,13 @@ export function EmployeeForm({
                 className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs"
               >
                 <option value="">— Tanpa tautan —</option>
+                {employee?.userId &&
+                  !members.some((m) => m.id === employee.userId) && (
+                    <option value={employee.userId}>
+                      Tautan lama (user keluar org) — dipertahankan bila tak
+                      diubah
+                    </option>
+                  )}
                 {members.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.name ?? m.email} ({m.email})
