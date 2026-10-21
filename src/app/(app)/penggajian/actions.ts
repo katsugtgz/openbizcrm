@@ -74,9 +74,9 @@ export async function previewPayrollAction(formData: FormData): Promise<
         "Bulan 1-12 dan tahun valid dibutuhkan.",
       );
     }
-    // Kalkulator bersama run: roster dan input hitung (unpaid riil, masa
-    // kerja riil) identik, sehingga preview tidak menyimpang dari run untuk
-    // izin-approved dan hire tengah tahun.
+    // Calculator shared with the run: roster and calculation inputs
+    // (real unpaid days, real tenure) are identical, so the preview
+    // cannot diverge from the run for approved izin and mid-year hires.
     const totals = await previewPayrollTotals(orgId, year, month);
     if (totals.employeeCount === 0) {
       throw new PayrollError(

@@ -103,10 +103,10 @@ type PayrollStaffRow = Awaited<
 >[number];
 
 /**
- * Input slip BERSAMA run + preview: unpaid riil (clamp prorasi) + masa
- * kerja riil. Preview yang memakai 0/12 statis berbohong untuk
- * izin-approved dan hire tengah tahun — satu-satunya sumber kebenaran
- * adalah konstruktor ini.
+ * Payslip input SHARED by run + preview: real unpaid days (prorata
+ * clamp) + real tenure. A preview using static 0/12 lies for approved
+ * izin and mid-year hires — this constructor is the single source of
+ * truth for both.
  */
 function buildPayslipInput(
   emp: PayrollStaffRow,
@@ -135,9 +135,9 @@ function buildPayslipInput(
 }
 
 /**
- * Total preview TANPA menulis run: roster + input hitung persis sama
- * dengan runPayroll (unpaid riil, masa kerja riil), hanya agregatnya
- * yang dikembalikan. Auth di tangan pemanggil (admin-only).
+ * Preview totals WITHOUT writing a run: roster and calculation inputs
+ * exactly matching runPayroll (real unpaid days, real tenure) — only
+ * the aggregates are returned. Auth stays with the caller (admin-only).
  */
 export async function previewPayrollTotals(
   orgId: string,
@@ -184,10 +184,11 @@ export interface RunPayrollResult {
 }
 
 /**
- * Petakan balapan run konkuren untuk periode sama (unique
- * payroll_runs_org_period_unique) ke DUPLICATE_PERIOD, bukan 500. Baca
- * via cause: outer DrizzleQueryError tak membawa code. Diekspor agar
- * mapping cabangnya teruji deterministik.
+ * Map a concurrent run race for the same period (the
+ * payroll_runs_org_period_unique unique index) to DUPLICATE_PERIOD
+ * instead of a 500. Reads through drizzle's cause wrapper, which
+ * carries the code. Exported so the branch mapping is covered by
+ * deterministic tests.
  */
 export function throwIfPayrollRace(
   error: unknown,

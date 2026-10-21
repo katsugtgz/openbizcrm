@@ -79,9 +79,9 @@ export async function createInvoiceAction(
         unitPrice?: unknown;
       };
       if (e.description.trim() === "") continue;
-      // Qty/harga bertipe ketat: Number(true) === 1 dan Number("") === 0
-      // — koersi buta meloloskan JSON malformed menjadi tagihan salah.
-      // Terima digit-string atau number saja.
+      // Strictly typed qty/price: Number(true) === 1 and Number("") === 0,
+      // so blind coercion turns malformed JSON into a wrong invoice.
+      // Accept digit-strings or numbers only.
       if (typeof e.qty !== "string" && typeof e.qty !== "number") {
         throw new Error("Kuantitas invoice tidak valid.");
       }
