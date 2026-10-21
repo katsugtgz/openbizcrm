@@ -30,9 +30,13 @@ export default async function KaryawanEditPage({
   const sp = await searchParams;
   // Sembunyikan user tertaut ke karyawan LAIN (cubic pr10 r2:2232);
   // tautan milik sendiri tetap ditawarkan agar tak terlepas diam-diam.
-  const linked = new Set(await listLinkedUserIds(orgId));
+  const [linkedIds, allMembers] = await Promise.all([
+    listLinkedUserIds(orgId),
+    listMembers(userId, orgId),
+  ]);
+  const linked = new Set(linkedIds);
   if (employee.userId) linked.delete(employee.userId);
-  const members = (await listMembers(userId, orgId))
+  const members = allMembers
     .filter((m) => !linked.has(m.user.id))
     .map((m) => ({ id: m.user.id, name: m.user.name, email: m.user.email }));
 

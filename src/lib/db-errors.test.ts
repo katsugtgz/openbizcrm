@@ -17,7 +17,9 @@ describe("pgErrorParts", () => {
   });
 
   it("reads a Neon-style `constraint` on the outer error", () => {
-    expect(pgErrorParts({ code: "23503", constraint: "deals_company_fk" })).toEqual({
+    expect(
+      pgErrorParts({ code: "23503", constraint: "deals_company_fk" }),
+    ).toEqual({
       code: "23503",
       constraint: "deals_company_fk",
     });
@@ -25,8 +27,20 @@ describe("pgErrorParts", () => {
 
   it("handles a plain PG error with no cause", () => {
     expect(
-      pgErrorParts({ code: "23505", constraint_name: "contacts_org_email_unique" }),
+      pgErrorParts({
+        code: "23505",
+        constraint_name: "contacts_org_email_unique",
+      }),
     ).toEqual({ code: "23505", constraint: "contacts_org_email_unique" });
+  });
+
+  it("returns parts for non-23505 codes (callers filter by code)", () => {
+    // pgErrorParts tidak memfilter kode — cabang pemanggil yang memilih.
+    expect(
+      pgErrorParts({
+        cause: { code: "23502", constraint: "payroll_runs_org_id_fkey" },
+      }),
+    ).toEqual({ code: "23502", constraint: "payroll_runs_org_id_fkey" });
   });
 
   it("returns empty parts for unknown shapes", () => {
@@ -34,6 +48,9 @@ describe("pgErrorParts", () => {
       code: undefined,
       constraint: undefined,
     });
-    expect(pgErrorParts(null)).toEqual({ code: undefined, constraint: undefined });
+    expect(pgErrorParts(null)).toEqual({
+      code: undefined,
+      constraint: undefined,
+    });
   });
 });

@@ -315,7 +315,12 @@ async function requireLinkableUser(
  * cause (cubic pr10 r2 hrm:251): nama constraint TIDAK ada di outer
  * DrizzleQueryError.message.
  */
-function throwIfLinkRace(error: unknown): never {
+/**
+ * Petakan balapan link konkuren (unique employees_org_user_unique) ke
+ * ValidationError ramah; error lain dilempar ulang apa adanya. Diekspor
+ * agar mapping cabangnya teruji deterministik (cubic pr10 r4).
+ */
+export function throwIfLinkRace(error: unknown): never {
   const { code, constraint } = pgErrorParts(error);
   if (code === "23505" && constraint === "employees_org_user_unique") {
     throw new ValidationError("User sudah tertaut ke karyawan lain.");

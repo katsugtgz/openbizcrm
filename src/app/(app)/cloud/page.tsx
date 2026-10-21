@@ -56,7 +56,6 @@ export default async function CloudPage({
       : Promise.resolve(null),
   ]);
 
-
   return (
     <div className="space-y-6">
       {entry.truncated && (

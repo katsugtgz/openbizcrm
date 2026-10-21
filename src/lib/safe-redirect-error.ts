@@ -13,11 +13,11 @@ export class ValidationError extends Error {
 }
 
 /**
- * Pesan aman untuk ?error= di URL redirect: HANYA ValidationError statis
- * yang direfleksikan (whitelist tipe, bukan batas panjang — cubic pr10
- * cuti:51/karyawan:72). Error driver PG (detail constraint + nilai),
- * OrgScopeError, dan semua error dinamis lain dipetakan ke fallback
- * generik agar tidak masuk history browser, log, atau header Referer.
+ * Safe message for ?error= in redirect URLs: ONLY static ValidationError
+ * text is reflected (a type whitelist, not a length cap). PG driver
+ * errors (constraint detail + values), OrgScopeError, and all other
+ * dynamic errors map to the generic fallback so they never land in
+ * browser history, logs, or the Referer header.
  */
 export function safeRedirectError(error: unknown, fallback: string): string {
   if (error instanceof OrgScopeError) return "Akses ditolak.";

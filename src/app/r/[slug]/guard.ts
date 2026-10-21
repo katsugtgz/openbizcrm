@@ -37,16 +37,15 @@ export function checkThrottle(
 }
 
 /**
- * Identitas requester terbaik untuk throttle publik (cubic pr10 r:25,
- * penilaian:236, r2:2194): entri pertama x-forwarded-for (atau x-real-ip
- * bila tak ada).
+ * Best-effort requester identity for public throttling: the first
+ * x-forwarded-for entry (or x-real-ip when absent).
  *
- * DEPLOYMENT REQUIREMENT: header ini hanya bermakna bila edge proxy
- * membersihkan X-Forwarded-For yang masuk dan menambahkan IP klien
- * sebenarnya — tanpa proxy tepercaya penyerang memalsukan IP dan hanya
- * backstop global yang menahannya. Null di luar scope request (tes) atau
- * bila header absen: lapis requester dilewati (bukan berbagi satu bucket
- * "unknown" yang bisa dijenuhkan bersama — cubic pr10 r2:2172).
+ * DEPLOYMENT REQUIREMENT: these headers are only meaningful when the edge
+ * proxy scrubs inbound X-Forwarded-For and appends the real client IP —
+ * without a trusted proxy an attacker spoofs the IP and only the global
+ * backstop holds. Null outside a request scope (tests) or when the
+ * headers are absent: the requester layer is then skipped rather than
+ * sharing one "unknown" bucket that could be saturated jointly.
  */
 async function requesterIp(): Promise<string | null> {
   try {
@@ -62,10 +61,11 @@ async function requesterIp(): Promise<string | null> {
 }
 
 /**
- * Throttle dua lapis untuk endpoint publik tanpa login: lapis requester
- * (per IP per resource) + backstop global per resource. Keduanya harus
- * lolos — kunci slug/tautan saja bisa diputar penyerang untuk DoS form
- * publik atau membanjiri DB.
+ * Two-layer throttle for login-less public endpoints: a requester layer
+ * (per IP per resource) plus a global backstop per resource. When the
+ * requester IP is known both layers must pass; without an IP only the
+ * backstop applies. Slug/link keys alone are not enough — an attacker
+ * could rotate them to DoS public forms or flood the DB.
  */
 export async function checkPublicThrottle(
   requesterBase: string,

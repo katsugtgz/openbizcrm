@@ -69,6 +69,126 @@ function stripYamlComments(source: string): string {
     .join("\n");
 }
 
+/**
+ * Structural workflow checks (cubic pr10 r4): markers must not be sought
+ * with `includes()` on raw workflow text — a quoted `run: "echo next
+ * start"` would spoof every check. Instead, locate real `run:` steps and
+ * `uses:`/`with:` pairs by indentation, drop YAML comments and quoted
+ * spans, and match markers only in remaining command text. No YAML
+ * dependency: GitHub workflows use 2-space indentation, which is all the
+ * scanning below assumes.
+ */
+
+/** Remove single/double-quoted spans (backslash escapes skipped). */
+function stripQuotedSpans(cmd: string): string {
+  let out = "";
+  let quote: "'" | '"' | null = null;
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    if (quote) {
+      if (ch === "\\") i++;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') quote = ch;
+    else out += ch;
+  }
+  return out;
+}
+
+/** If the whole value is one YAML-quoted scalar, unwrap it once. */
+function unwrapOuterQuotes(value: string): string {
+  const t = value.trim();
+  if (
+    t.length >= 2 &&
+    (t.startsWith('"') || t.startsWith("'")) &&
+    t.endsWith(t[0])
+  ) {
+    return t.slice(1, -1);
+  }
+  return value;
+}
+
+function indentOf(line: string): number {
+  const m = /^ */.exec(line);
+  return m ? m[0].length : 0;
+}
+
+/** The mapping body of one top-level job (stops at the next 2-space key). */
+function jobBlock(workflowYaml: string, job: string): string {
+  const lines = stripYamlComments(workflowYaml).split("\n");
+  const start = lines.findIndex((l) => new RegExp(`^  ${job}:\\s*$`).test(l));
+  if (start === -1) return "";
+  const body: string[] = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    const l = lines[i];
+    if (l.trim() === "") continue;
+    if (indentOf(l) <= 2) break;
+    body.push(l);
+  }
+  return body.join("\n");
+}
+
+/**
+ * Shell text of every `run:` step in one job mapping: inline values plus
+ * `|`/`>` block lines. Comment-free; quotes intact (callers strip quoted
+ * spans before marker matching).
+ */
+function jobRunCommands(jobYaml: string): string[] {
+  const lines = jobYaml.split("\n");
+  const cmds: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^(\s*)(?:-\s+)?run:\s*(\||>|.*)?\s*$/.exec(lines[i]);
+    if (!m) continue;
+    const base = m[1].length;
+    const rest = (m[2] ?? "").trim();
+    if (rest === "|" || rest === ">") {
+      const body: string[] = [];
+      while (i + 1 < lines.length) {
+        const next = lines[i + 1];
+        i++;
+        if (next.trim() === "") continue;
+        if (indentOf(next) <= base) {
+          i--;
+          break;
+        }
+        body.push(next);
+      }
+      if (body.length > 0) cmds.push(body.join("\n"));
+    } else if (rest !== "") {
+      cmds.push(unwrapOuterQuotes(rest));
+    }
+  }
+  return cmds;
+}
+
+/**
+ * True when an `actions/upload-artifact` step's own `with:` mapping names
+ * the artifact — step and name must be structurally paired, so a stray
+ * `name: next-build` elsewhere (or in quotes) cannot satisfy this.
+ */
+function uploadsArtifact(workflowYaml: string, artifact: string): boolean {
+  const lines = stripYamlComments(workflowYaml).split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    // The `- ` sits on the step's FIRST key (often `name:`), so `uses:`
+    // usually has no dash; the step mapping runs until indentation drops
+    // below the `uses:` line (`with:` sits at the same level).
+    const m = /^(\s*)(?:-\s*)?uses:\s*["']?actions\/upload-artifact\b/.exec(
+      lines[i],
+    );
+    if (!m) continue;
+    const base = m[1].length;
+    const want = new RegExp(`^\\s*name:\\s*["']?${artifact}["']?\\s*$`);
+    for (let j = i + 1; j < lines.length; j++) {
+      const l = lines[j];
+      if (l.trim() === "") continue;
+      if (indentOf(l) < base) break;
+      if (want.test(l)) return true;
+    }
+  }
+  return false;
+}
+
 function runChecks(input: DryRunInput): DryRunCheck[] {
   const { repoRoot, exists, readFile } = input;
   const checks: DryRunCheck[] = [];
@@ -86,12 +206,13 @@ function runChecks(input: DryRunInput): DryRunCheck[] {
   let workflow = "";
   let workflowExists = false;
   try {
-    workflow = stripYamlComments(readFile(workflowPath));
+    workflow = readFile(workflowPath);
     workflowExists = true;
   } catch {
     workflowExists = false;
   }
-  const hasJob = workflowExists && /(?:^|\n)\s{2}e2e-dry-run:/.test(workflow);
+  const job = workflowExists ? jobBlock(workflow, "e2e-dry-run") : "";
+  const hasJob = job !== "";
   checks.push({
     name: "ci.yml declares e2e-dry-run job",
     pass: Boolean(hasJob),
@@ -100,18 +221,26 @@ function runChecks(input: DryRunInput): DryRunCheck[] {
 
   // 3. The job downloads the `next-build` artifact into .next — the build
   //    job must upload it, and locally .next must exist (or be buildable).
-  const uploadsArtifact = workflow.includes("name: next-build");
+  const uploaded = workflowExists && uploadsArtifact(workflow, "next-build");
   checks.push({
     name: "ci.yml build job uploads next-build artifact",
-    pass: uploadsArtifact,
-    detail: uploadsArtifact
+    pass: uploaded,
+    detail: uploaded
       ? "artifact 'next-build' found"
       : "no upload named 'next-build'",
   });
 
-  // 4. Server boot + smoke-test commands present in the job.
-  const startsNext = workflow.includes("next start");
-  const smokeTests = workflow.includes(`http://localhost:${APP_PORT}`);
+  // 4. Server boot + smoke-test commands present in the job's real steps.
+  //    Matched on unquoted run-step text: `next start` must be the command
+  //    (not an echo argument), the probe URL must share a line with curl.
+  const commands = jobRunCommands(job).map(stripQuotedSpans).join("\n");
+  const startsNext =
+    /(^|[\n;&|]+)\s*(npx\s+--no-install\s+)?next start(\s|$)/.test(commands);
+  const smokeTests = commands
+    .split("\n")
+    .some(
+      (l) => l.includes("curl") && l.includes(`http://localhost:${APP_PORT}`),
+    );
   checks.push({
     name: `e2e-dry-run job boots 'next start' and smoke-tests :${APP_PORT}`,
     pass: startsNext && smokeTests,

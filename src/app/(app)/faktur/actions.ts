@@ -79,10 +79,27 @@ export async function createInvoiceAction(
         unitPrice?: unknown;
       };
       if (e.description.trim() === "") continue;
+      // Qty/harga bertipe ketat (cubic pr10 r4): Number(true) === 1 dan
+      // Number("") === 0 — koersi buta meloloskan JSON malformed menjadi
+      // tagihan salah. Terima digit-string atau number saja.
+      if (typeof e.qty !== "string" && typeof e.qty !== "number") {
+        throw new Error("Kuantitas invoice tidak valid.");
+      }
+      const qtyText = typeof e.qty === "number" ? String(e.qty) : e.qty.trim();
+      if (!/^\d+$/.test(qtyText)) {
+        throw new Error("Kuantitas invoice tidak valid.");
+      }
+      const qty = Number(qtyText);
+      if (!Number.isSafeInteger(qty) || qty < 1) {
+        throw new Error("Kuantitas invoice tidak valid.");
+      }
+      if (typeof e.unitPrice !== "string" && typeof e.unitPrice !== "number") {
+        throw new Error("Harga invoice tidak valid.");
+      }
       items.push({
         description: e.description,
-        qty: Number(e.qty),
-        unitPrice: parseIDRInput(String(e.unitPrice ?? "")),
+        qty,
+        unitPrice: parseIDRInput(String(e.unitPrice)),
       });
     }
     const taxRaw = String(formData.get("taxPct") ?? "0").trim();

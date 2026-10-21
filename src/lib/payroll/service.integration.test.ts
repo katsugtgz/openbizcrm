@@ -19,6 +19,7 @@ describe("payroll service integration", () => {
   let createEmployee!: (typeof import("@/lib/repos/hrm-repo"))["createEmployee"];
   let PayrollError!: PayrollService["PayrollError"];
   let runPayroll!: PayrollService["runPayroll"];
+  let throwIfPayrollRace!: PayrollService["throwIfPayrollRace"];
   let exportBankTransfer!: PayrollService["exportBankTransfer"];
   let getRun!: PayrollService["getRun"];
 
@@ -28,8 +29,13 @@ describe("payroll service integration", () => {
     ({ createUser } = await import("@/lib/repos/user-repo"));
     ({ createOrg } = await import("@/lib/repos/org-repo"));
     ({ createEmployee } = await import("@/lib/repos/hrm-repo"));
-    ({ PayrollError, runPayroll, exportBankTransfer, getRun } =
-      await import("./service"));
+    ({
+      PayrollError,
+      runPayroll,
+      throwIfPayrollRace,
+      exportBankTransfer,
+      getRun,
+    } = await import("./service"));
   });
 
   // Roundtrip may fail midway; track every resource at creation time so
@@ -157,6 +163,30 @@ describe("payroll service integration", () => {
     await expect(getRun(other.id, otherOrg.id, runs[0].id)).rejects.toThrow(
       PayrollError,
     );
+  });
+
+  itDb("throwIfPayrollRace maps the concurrent-run conflict only", async () => {
+    const drizzleRace = Object.assign(new Error("duplicate key"), {
+      cause: { code: "23505", constraint: "payroll_runs_org_period_unique" },
+    });
+    try {
+      throwIfPayrollRace(drizzleRace, 2026, 12);
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(PayrollError);
+      expect((error as InstanceType<typeof PayrollError>).code).toBe(
+        "DUPLICATE_PERIOD",
+      );
+    }
+    // Constraint lain / kode lain: lempar ulang apa adanya.
+    const other = Object.assign(new Error("duplicate key"), {
+      cause: { code: "23505", constraint: "payroll_runs_pkey" },
+    });
+    expect(() => throwIfPayrollRace(other, 2026, 12)).toThrow(other);
+    const notNull = Object.assign(new Error("null value"), {
+      cause: { code: "23502", constraint: "payroll_runs_org_period_unique" },
+    });
+    expect(() => throwIfPayrollRace(notNull, 2026, 12)).toThrow(notNull);
   });
 
   // Org deletion cascades memberships/employees/payslips; deletes registered

@@ -112,4 +112,54 @@ describe("ai tools integration (this-month summary)", () => {
     expect(text).toContain("Deal baru: 1");
     expect(text).toContain("Kontak baru: 0");
   });
+
+  itDb(
+    "posSalesTotal memakai tanggal bisnis, bukan stempel audit",
+    async () => {
+      const o = await makeOrg();
+      const other = await makeOrg();
+      const period = "2026-03-01";
+      await db.insert(schema.posSales).values([
+        {
+          // Backdate ke bulan berjalan: created Februari, bisnis Maret.
+          orgId: o.orgId,
+          saleNumber: `SLS-BD-${suffix}`,
+          saleDate: "2026-03-15",
+          paymentMethod: "cash",
+          taxPct: 0,
+          subtotal: 100000,
+          taxAmount: 0,
+          total: 100000,
+          createdAt: new Date("2026-02-20T10:00:00.000Z"),
+        },
+        {
+          // Dibuat bulan berjalan tapi bisnis bulan lalu: tak terhitung.
+          orgId: o.orgId,
+          saleNumber: `SLS-PM-${suffix}`,
+          saleDate: "2026-02-10",
+          paymentMethod: "cash",
+          taxPct: 0,
+          subtotal: 50000,
+          taxAmount: 0,
+          total: 50000,
+          createdAt: new Date("2026-03-05T10:00:00.000Z"),
+        },
+        {
+          // Org lain: tak terhitung.
+          orgId: other.orgId,
+          saleNumber: `SLS-OO-${suffix}`,
+          saleDate: "2026-03-12",
+          paymentMethod: "cash",
+          taxPct: 0,
+          subtotal: 70000,
+          taxAmount: 0,
+          total: 70000,
+          createdAt: new Date("2026-03-12T10:00:00.000Z"),
+        },
+      ]);
+
+      const summary = await tools.computeThisMonthSummary(o.orgId, period);
+      expect(summary.posSalesTotal).toBe(100000);
+    },
+  );
 });

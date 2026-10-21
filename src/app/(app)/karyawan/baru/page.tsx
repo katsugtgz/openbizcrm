@@ -24,8 +24,12 @@ export default async function KaryawanBaruPage({
   const sp = await searchParams;
   // Sembunyikan user yang sudah tertaut (cubic pr10 r2:2232): memilihnya
   // pasti gagal validasi — jangan tawarkan.
-  const linked = new Set(await listLinkedUserIds(orgId));
-  const members = (await listMembers(userId, orgId))
+  const [linkedIds, allMembers] = await Promise.all([
+    listLinkedUserIds(orgId),
+    listMembers(userId, orgId),
+  ]);
+  const linked = new Set(linkedIds);
+  const members = allMembers
     .filter((m) => !linked.has(m.user.id))
     .map((m) => ({ id: m.user.id, name: m.user.name, email: m.user.email }));
 

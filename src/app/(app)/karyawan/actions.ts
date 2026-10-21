@@ -75,7 +75,8 @@ export async function createEmployeeAction(formData: FormData): Promise<void> {
   const { userId, orgId } = await requireSession();
   const input = parseInput(formData);
   try {
-    if (!input.employeeNo) throw new ValidationError("Nomor karyawan wajib diisi.");
+    if (!input.employeeNo)
+      throw new ValidationError("Nomor karyawan wajib diisi.");
     if (!input.name) throw new ValidationError("Nama karyawan wajib diisi.");
     if (!Number.isInteger(input.baseSalary)) {
       throw new ValidationError("Gaji pokok harus angka rupiah bulat.");
@@ -96,7 +97,8 @@ export async function updateEmployeeAction(formData: FormData): Promise<void> {
   const input = parseInput(formData);
   try {
     if (!id) throw new ValidationError("Karyawan tidak ditemukan.");
-    if (!input.employeeNo) throw new ValidationError("Nomor karyawan wajib diisi.");
+    if (!input.employeeNo)
+      throw new ValidationError("Nomor karyawan wajib diisi.");
     if (!input.name) throw new ValidationError("Nama karyawan wajib diisi.");
     if (!Number.isInteger(input.baseSalary)) {
       throw new ValidationError("Gaji pokok harus angka rupiah bulat.");

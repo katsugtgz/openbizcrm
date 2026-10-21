@@ -40,8 +40,8 @@ ALTER TABLE "chat_conversation_members" ALTER COLUMN "org_id" SET NOT NULL;--> s
 -- cubic pr10 pos:366: business date for every sale; legacy rows inherit
 -- the audit stamp, then NOT NULL is enforced.
 ALTER TABLE "pos_sales" ADD COLUMN "sale_date" date;--> statement-breakpoint
--- WIB (Asia/Jakarta): created_at timestamptz — ::date telanjang memakai
--- TZ sesi dan bisa menggeser hari (cubic pr10 r2:2159).
+-- WIB (Asia/Jakarta): created_at is timestamptz. A bare ::date uses the
+-- session TimeZone and can shift the day, so convert to WIB first.
 UPDATE "pos_sales" SET "sale_date" = ("created_at" AT TIME ZONE 'Asia/Jakarta')::date WHERE "sale_date" IS NULL;--> statement-breakpoint
 ALTER TABLE "pos_sales" ALTER COLUMN "sale_date" SET NOT NULL;--> statement-breakpoint
 ALTER TABLE "whatsapp_outbox" ADD COLUMN "claimed_at" timestamp;--> statement-breakpoint

@@ -233,7 +233,9 @@ export async function submitPublicResponseAction(
     const assignmentId = String(formData.get("assignmentId") ?? "");
     // Tanpa assignment tak ada DB yang disentuh — tolak sebelum throttle
     // (cubic pr10 r2: jangan bakar budget untuk request tanpa token).
-    if (!slug || !assignmentId) {
+    // Format UUID divalidasi di sini (cubic pr10 r4): nilai malformed
+    // tidak boleh mencapai query DB dan membocorkan error PG mentah.
+    if (!slug || !UUID_RE.test(assignmentId)) {
       return { ok: false, error: "Tautan tidak valid." };
     }
     // Submit publik tanpa login: throttle per requester per form +

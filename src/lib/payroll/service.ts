@@ -98,6 +98,67 @@ async function unpaidLeaveDaysByEmployee(
   return result;
 }
 
+type PayrollStaffRow = Awaited<
+  ReturnType<typeof listEmployeesForPayroll>
+>[number];
+
+/**
+ * Input slip BERSAMA run + preview (cubic pr10 r4): unpaid riil (clamp
+ * prorasi) + masa kerja riil. Preview yang memakai 0/12 statis berbohong
+ * untuk izin-approved dan hire tengah tahun — satu-satunya sumber
+ * kebenaran adalah konstruktor ini.
+ */
+function buildPayslipInput(
+  emp: PayrollStaffRow,
+  unpaidDaysRaw: number,
+  year: number,
+  month: number,
+): PayslipInput {
+  // Bulan 22–23 weekday yang semuanya izin melebihi denominator 21:
+  // clamp ke batas prorasi (gaji 0 — sebulan penuh absen) supaya satu
+  // karyawan tidak menggagalkan run se-organisasi. Kontrak throw
+  // prorateBase untuk input liar tetap dipertahankan di engine.
+  // (Hari libur nasional belum dikecualikan: repo belum punya
+  // kalender libur.)
+  const unpaidDays = Math.min(unpaidDaysRaw, DEFAULT_WORKING_DAYS);
+  return {
+    employeeId: emp.id,
+    name: emp.name,
+    taxStatus: emp.taxStatus,
+    baseSalary: emp.baseSalary,
+    unpaidLeaveDays: unpaidDays,
+    weekdayOvertimeHours: 0, // ponytail: agregasi jam lembur dari attendances
+    restdayOvertimeHours: 0, // saat kolom otomatis tersedia; input manual menyusul.
+    monthsWorked: monthsWorkedAt(emp.hireDate, year, month),
+    includeThr: month === 12,
+  };
+}
+
+/**
+ * Total preview TANPA menulis run: roster + input hitung persis sama
+ * dengan runPayroll (unpaid riil, masa kerja riil), hanya agregatnya
+ * yang dikembalikan. Auth di tangan pemanggil (admin-only).
+ */
+export async function previewPayrollTotals(
+  orgId: string,
+  year: number,
+  month: number,
+): Promise<{ employeeCount: number; totalBruto: number; totalNet: number }> {
+  const staff = await listEmployeesForPayroll(orgId);
+  const active = staff.filter((e) => e.status === "active");
+  const unpaid = await unpaidLeaveDaysByEmployee(orgId, year, month);
+  let totalBruto = 0;
+  let totalNet = 0;
+  for (const emp of active) {
+    const b = computePayslip(
+      buildPayslipInput(emp, unpaid.get(emp.id) ?? 0, year, month),
+    );
+    totalBruto += b.gross;
+    totalNet += b.net;
+  }
+  return { employeeCount: active.length, totalBruto, totalNet };
+}
+
 /** Masa kerja bulan utuh per tanggal gajian (akhir bulan tsb). */
 function monthsWorkedAt(
   hireDate: string | null,
@@ -120,6 +181,27 @@ export interface RunPayrollResult {
     breakdown: PayslipBreakdown;
     net: number;
   }>;
+}
+
+/**
+ * Petakan balapan run konkuren untuk periode sama (unique
+ * payroll_runs_org_period_unique) ke DUPLICATE_PERIOD, bukan 500. Baca
+ * via cause: outer DrizzleQueryError tak membawa code. Diekspor agar
+ * mapping cabangnya teruji deterministik (cubic pr10 r4).
+ */
+export function throwIfPayrollRace(
+  error: unknown,
+  year: number,
+  month: number,
+): never {
+  const { code, constraint } = pgErrorParts(error);
+  if (code === "23505" && constraint === "payroll_runs_org_period_unique") {
+    throw new PayrollError(
+      "DUPLICATE_PERIOD",
+      `Payroll ${year}-${String(month).padStart(2, "0")} sudah ada.`,
+    );
+  }
+  throw error;
 }
 
 export async function runPayroll(
@@ -185,49 +267,16 @@ export async function runPayroll(
         .values({ orgId, year, month, createdBy: userId })
         .returning();
     } catch (error) {
-      // Balapan run konkuren untuk periode sama: unique
-      // payroll_runs_org_period_unique — laporkan sebagai duplikat, bukan
-      // 500. Baca via cause: outer DrizzleQueryError tak membawa code
-      // (cubic pr10 r2 crm:230 — pola lama tak pernah trip).
-      const { code, constraint } = pgErrorParts(error);
-      if (
-        code === "23505" &&
-        constraint === "payroll_runs_org_period_unique"
-      ) {
-        throw new PayrollError(
-          "DUPLICATE_PERIOD",
-          `Payroll ${year}-${String(month).padStart(2, "0")} sudah ada.`,
-        );
-      }
-      throw error;
+      throwIfPayrollRace(error, year, month);
     }
     // TS: run pasti terisi (insert gagal selalu melempar).
     const payrollRun: PayrollRun = run;
 
     const rows: RunPayrollResult["payslips"] = [];
     for (const emp of selected) {
-      // Bulan 22–23 weekday yang semuanya izin melebihi denominator 21:
-      // clamp ke batas prorasi (gaji 0 — sebulan penuh absen) supaya satu
-      // karyawan tidak menggagalkan run se-organisasi. Kontrak throw
-      // prorateBase untuk input liar tetap dipertahankan di engine.
-      // (Hari libur nasional belum dikecualikan: repo belum punya
-      // kalender libur.)
-      const unpaidDays = Math.min(
-        unpaid.get(emp.id) ?? 0,
-        DEFAULT_WORKING_DAYS,
+      const breakdown = computePayslip(
+        buildPayslipInput(emp, unpaid.get(emp.id) ?? 0, year, month),
       );
-      const input: PayslipInput = {
-        employeeId: emp.id,
-        name: emp.name,
-        taxStatus: emp.taxStatus,
-        baseSalary: emp.baseSalary,
-        unpaidLeaveDays: unpaidDays,
-        weekdayOvertimeHours: 0, // ponytail: agregasi jam lembur dari attendances
-        restdayOvertimeHours: 0, // saat kolom otomatis tersedia; input manual menyusul.
-        monthsWorked: monthsWorkedAt(emp.hireDate, year, month),
-        includeThr: month === 12,
-      };
-      const breakdown = computePayslip(input);
       const [slip] = await tx
         .insert(payslips)
         .values({

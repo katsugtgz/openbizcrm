@@ -42,8 +42,8 @@ export function shouldRequireSsl(url: string): boolean {
     const hosts = rawHosts.split(",").map((h) => {
       // URL keeps IPv6 brackets in hostname ("[::1]"); strip an explicit
       // :port only from bare hostnames/IPv4 (IPv6 keeps its colons).
-      // Entri diawali "/" = unix-socket dir postgres (cubic pr10 r2:2151):
-      // socket lokal, bukan host remote — jangan paksa TLS.
+      // Entries starting with "/" are postgres unix-socket dirs: a local
+      // socket, not a remote host, so TLS must not be forced.
       let host = h.trim().toLowerCase();
       if (host.startsWith("/")) return "localhost";
       const bare = host.match(/^(\[.*\]|[^:]+)(:\d+)?$/);
