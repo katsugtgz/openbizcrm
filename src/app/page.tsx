@@ -45,14 +45,9 @@ export default function Home() {
     <div className="flex flex-1 flex-col">
       <header className="border-b">
         <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between px-6">
-          <div className="flex items-center gap-2">
-            <span className="flex size-8 items-center justify-center rounded-md bg-primary text-sm font-bold text-primary-foreground">
-              OB
-            </span>
-            <span className="text-lg font-semibold tracking-tight">
-              OpenBizCRM
-            </span>
-          </div>
+          <span className="text-lg font-semibold tracking-tight">
+            OpenBizCRM
+          </span>
           <Button asChild>
             <Link href="/login">Masuk</Link>
           </Button>
@@ -98,7 +93,7 @@ export default function Home() {
                     Oktober 2026, PT Nusantara Karya
                   </p>
                 </div>
-                <p className="font-mono text-xs text-muted-foreground">
+                <p className="shrink-0 whitespace-nowrap font-mono text-xs text-muted-foreground">
                   No. 071/HRM
                 </p>
               </div>
@@ -111,14 +106,13 @@ export default function Home() {
                     key={row.label}
                     className="flex items-baseline justify-between gap-4 border-t border-dashed py-1.5 first:border-t-0"
                   >
-                    <dt className="text-muted-foreground">{row.label}</dt>
+                    <dt className="min-w-0 flex-1 text-muted-foreground">{row.label}</dt>
                     <dd
-                      className={
-                        row.deduction ? "text-destructive" : "tabular-nums"
-                      }
+                      className={`whitespace-nowrap ${
+                        row.deduction ? "text-destructive" : ""
+                      }`}
                     >
-                      {row.deduction ? "− " : ""}
-                      <span className="tabular-nums">{row.value}</span>
+                      {row.deduction ? "− " : ""}{row.value}
                     </dd>
                   </div>
                 ))}
