@@ -161,6 +161,20 @@
   }
 }
 
+/* Landing: satu animasi masuk slip gaji (landing hero). */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes slip-masuk {
+    from {
+      opacity: 0;
+      transform: translateY(16px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
 /* Slip gaji: cetak bersih A4, sembunyikan chrome aplikasi. */
 @media print {
   @page {
